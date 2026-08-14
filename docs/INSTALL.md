@@ -1,0 +1,203 @@
+# 땡땡엑셀 설치 가이드
+
+> `xmux`는 저장소와 개발 프로젝트의 이름이고, 사용자가 Excel에서 보는 제품명은
+> **땡땡엑셀**입니다. `%LOCALAPPDATA%\DdotExcel` 같은 영문 경로는 제품의 내부
+> 식별자입니다.
+
+## 1. 설치 방식
+
+땡땡엑셀은 각 Windows PC에서 `https://localhost:3927` 로컬 서비스를 실행합니다.
+
+- 로컬 관리자 권한이 필요하지 않습니다.
+- Node.js나 pnpm을 별도로 설치하지 않습니다.
+- SMB 공유 폴더나 Microsoft 365 관리자 배포를 사용하지 않습니다.
+- 서비스는 IPv4 loopback에만 연결되므로 다른 PC에서는 접근할 수 없습니다.
+- Synology Drive는 ZIP 파일을 전달하고 보관하는 용도로만 사용합니다.
+
+## 2. 지원 환경과 사전 확인
+
+- 배포 ZIP 기준: Windows x64
+- Windows 10 1607 이상 또는 Windows 11
+- Microsoft 365용 Excel 또는 Excel 2019 이상
+- Excel을 사용할 Windows 계정으로 로그인
+- TCP 3927번 포트가 비어 있어야 함
+
+3927번 포트 사용 여부는 일반 PowerShell에서 확인할 수 있습니다.
+
+```powershell
+Get-NetTCPConnection -LocalPort 3927 -State Listen -ErrorAction SilentlyContinue
+```
+
+아무것도 표시되지 않으면 포트를 사용할 수 있습니다. 다른 프로세스가 표시되면
+그 프로그램을 종료하거나 담당자에게 확인한 뒤 설치합니다.
+
+## 3. 설치
+
+1. Synology Drive에서 `ddot-excel-windows-x64.zip`을 로컬 PC로 복사합니다.
+2. ZIP을 우클릭하고 **속성 > 차단 해제 > 확인**을 선택합니다.
+   **차단 해제**가 보이지 않으면 이 단계를 건너뜁니다.
+3. ZIP 전체를 로컬 폴더에 압축 해제합니다. 네트워크 드라이브에서 직접 실행하지
+   마십시오.
+4. 열려 있는 Excel 창을 모두 닫습니다.
+5. **일반 Windows PowerShell**을 실행합니다. 관리자 권한으로 실행하지 않아도
+   됩니다.
+6. 압축을 푼 폴더에서 다음 명령을 실행합니다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+정상 설치되면 다음 주소가 표시됩니다.
+
+```text
+Service: https://localhost:3927
+```
+
+7. Excel을 실행합니다.
+8. **홈 > 추가 기능 > 더 많은 추가 기능 > 개발자 추가 기능**에서
+   **땡땡엑셀 > 추가**를 선택합니다. Excel 버전에 따라 첫 메뉴가
+   **추가 기능 가져오기**로 표시될 수 있습니다.
+9. **홈 > 땡땡엑셀** 리본 버튼을 눌러 작업창을 엽니다.
+
+개발자 추가 기능에서 **추가**를 누르는 과정은 최초 1회만 필요합니다.
+
+## 4. 설치 확인
+
+압축을 푼 폴더에서 다음 명령을 실행합니다.
+
+```powershell
+.\manage.ps1 status
+```
+
+설치 폴더의 관리 스크립트를 직접 실행할 수도 있습니다.
+
+```powershell
+& "$env:LOCALAPPDATA\DdotExcel\manage.ps1" status
+```
+
+정상 상태:
+
+```text
+DdotExcel local service is running at https://localhost:3927.
+```
+
+브라우저에서 `https://localhost:3927/health`를 열었을 때 정상 응답은 다음과
+같습니다.
+
+```json
+{"service":"ddot-excel","status":"running"}
+```
+
+## 5. 설치되는 항목
+
+모든 항목은 현재 Windows 사용자 범위에만 설치됩니다.
+
+| 항목 | 위치 또는 이름 |
+|---|---|
+| 앱·런타임 | `%LOCALAPPDATA%\DdotExcel` |
+| Office 등록 | `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer` |
+| 로그인 자동 실행 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` |
+| 인증서 | `Cert:\CurrentUser\My`, `Cert:\CurrentUser\Root` |
+| 서비스 주소 | `https://localhost:3927` |
+
+설치기는 시스템 전역 레지스트리, Windows 서비스, 방화벽 규칙 또는 다른 사용자
+프로필을 변경하지 않습니다.
+
+## 6. 서비스 제어
+
+```powershell
+.\manage.ps1 status
+.\manage.ps1 start
+.\manage.ps1 stop
+.\manage.ps1 restart
+```
+
+서비스는 Windows 로그인 시 자동으로 시작됩니다.
+
+## 7. 업데이트
+
+1. 새 ZIP을 내려받고 **속성 > 차단 해제**를 적용합니다.
+2. 새 로컬 폴더에 전체 압축 해제합니다.
+3. Excel을 완전히 종료합니다.
+4. 새 폴더에서 `install.ps1`을 다시 실행합니다.
+5. Excel을 다시 실행합니다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+설치기는 기존 프로세스를 정지한 뒤 제품 소유 파일만 교체합니다. 아직 유효한
+인증서는 재사용합니다. 기존 Office 등록과 AI 연결 설정도 같은 origin을 사용하는
+동안 유지됩니다.
+
+## 8. 제거
+
+설치 폴더의 제거 스크립트를 실행합니다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass `
+  -File "$env:LOCALAPPDATA\DdotExcel\uninstall.ps1"
+```
+
+제거 후 Excel을 완전히 종료했다가 다시 실행합니다.
+
+제거기는 자신이 등록한 시작 항목, Office 등록, 인증서와 설치 파일만 삭제합니다.
+같은 이름의 항목이 다른 경로를 가리키면 삭제하지 않고 경고를 표시합니다.
+
+## 9. 문제 해결
+
+### `TCP port 3927 is already used by process ...`
+
+다른 프로그램이 3927번 포트를 사용 중입니다.
+
+```powershell
+Get-NetTCPConnection -LocalPort 3927 -State Listen
+```
+
+표시된 프로세스를 확인하고 종료한 뒤 다시 설치합니다.
+
+### `The deployment package is incomplete`
+
+ZIP이 부분적으로 압축 해제되었습니다. 새 로컬 폴더에 전체 압축 해제한 뒤 다시
+실행합니다.
+
+### 서비스가 15초 안에 시작되지 않음
+
+백신, AppLocker 또는 WDAC가 포함된 `node.exe` 실행을 차단했을 수 있습니다.
+회사 정책 담당자에게 `%LOCALAPPDATA%\DdotExcel\runtime\node.exe` 실행 허용을
+문의합니다.
+
+### HTTPS health check 실패
+
+현재 사용자 인증서 신뢰가 차단되었을 수 있습니다. 제거 후 다시 설치해도
+반복되면 회사의 인증서 정책을 확인해야 합니다.
+
+### 개발자 추가 기능에 땡땡엑셀이 보이지 않음
+
+모든 Office 앱을 완전히 종료한 뒤 Excel을 다시 실행합니다. 계속 보이지 않으면
+회사 정책이 Office 개발자 추가 기능을 차단한 것입니다.
+
+### 작업창이 열리지 않거나 빈 화면
+
+```powershell
+& "$env:LOCALAPPDATA\DdotExcel\manage.ps1" restart
+```
+
+재시작 후 `https://localhost:3927/health`를 확인합니다.
+
+## 10. 회사 PC 정책 관련 제한
+
+다음 항목 중 하나라도 회사 정책으로 차단되면 IT 정책 변경 없이는 설치할 수
+없습니다.
+
+- PowerShell 스크립트 실행
+- 현재 사용자 인증서 등록
+- `%LOCALAPPDATA%`의 실행 파일
+- Office 개발자 추가 기능 sideload
+- 현재 사용자 로그인 시작 항목
+
+이 패키지는 Microsoft의 사용자별 **개발자 sideload** 채널을 사용하는 소수 내부
+PC용 배포 방식입니다. Microsoft가 공식 지원하는 조직 배포 경로는 Marketplace
+또는 Microsoft 365 관리자 배포입니다.
+
+AI 대화 기능에 필요한 API 키는 패키지에 포함되어 있지 않습니다.

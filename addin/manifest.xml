@@ -1,0 +1,104 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp
+  xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0"
+  xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides"
+  xsi:type="TaskPaneApp">
+
+  <Id>6374B2A1-D997-4BB0-B23B-17F28561827B</Id>
+  <!-- Office rejects anything below 1.0.0.0, regardless of the package's own version. -->
+  <Version>1.0.1.0</Version>
+  <ProviderName>땡땡엑셀</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="땡땡엑셀" />
+  <Description DefaultValue="수식이 가리키는 범위를, 다른 시트라도, 그리드 옆에서 바로 보고 고칩니다." />
+  <IconUrl DefaultValue="https://localhost:3927/assets/icon-32.png?v=2" />
+  <HighResolutionIconUrl DefaultValue="https://localhost:3927/assets/icon-64.png?v=2" />
+  <SupportUrl DefaultValue="https://github.com/ddotz/xmux" />
+
+  <AppDomains>
+    <AppDomain>https://localhost:3927</AppDomain>
+    <!-- The 대화 tab calls these OpenAI-compatible endpoints from the pane itself. -->
+    <AppDomain>https://ai.kdb.co.kr:32210</AppDomain>
+    <AppDomain>https://api.openai.com</AppDomain>
+  </AppDomains>
+
+  <Hosts>
+    <Host Name="Workbook" />
+  </Hosts>
+
+  <Requirements>
+    <Sets DefaultMinVersion="1.7">
+      <Set Name="ExcelApi" MinVersion="1.7" />
+    </Sets>
+  </Requirements>
+
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://localhost:3927/index.html" />
+  </DefaultSettings>
+
+  <Permissions>ReadWriteDocument</Permissions>
+
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <GetStarted>
+            <Title resid="GetStarted.Title" />
+            <Description resid="GetStarted.Description" />
+            <LearnMoreUrl resid="GetStarted.LearnMoreUrl" />
+          </GetStarted>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <OfficeTab id="TabHome">
+              <Group id="xmux.Group">
+                <Label resid="Group.Label" />
+                <Icon>
+                  <bt:Image size="16" resid="Icon.16x16" />
+                  <bt:Image size="32" resid="Icon.32x32" />
+                  <bt:Image size="80" resid="Icon.80x80" />
+                </Icon>
+                <Control xsi:type="Button" id="xmux.OpenPane">
+                  <Label resid="OpenPane.Label" />
+                  <Supertip>
+                    <Title resid="OpenPane.Label" />
+                    <Description resid="OpenPane.Tooltip" />
+                  </Supertip>
+                  <Icon>
+                    <bt:Image size="16" resid="Icon.16x16" />
+                    <bt:Image size="32" resid="Icon.32x32" />
+                    <bt:Image size="80" resid="Icon.80x80" />
+                  </Icon>
+                  <Action xsi:type="ShowTaskpane">
+                    <TaskpaneId>ButtonId1</TaskpaneId>
+                    <SourceLocation resid="Taskpane.Url" />
+                  </Action>
+                </Control>
+              </Group>
+            </OfficeTab>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+      </Host>
+    </Hosts>
+    <Resources>
+      <bt:Images>
+        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3927/assets/icon-16.png?v=2" />
+        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3927/assets/icon-32.png?v=2" />
+        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3927/assets/icon-80.png?v=2" />
+      </bt:Images>
+      <bt:Urls>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3927/index.html" />
+        <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://github.com/ddotz/xmux" />
+      </bt:Urls>
+      <bt:ShortStrings>
+        <bt:String id="Group.Label" DefaultValue="땡땡엑셀" />
+        <bt:String id="OpenPane.Label" DefaultValue="땡땡엑셀" />
+        <bt:String id="GetStarted.Title" DefaultValue="땡땡엑셀이 설치되었습니다" />
+      </bt:ShortStrings>
+      <bt:LongStrings>
+        <bt:String id="OpenPane.Tooltip" DefaultValue="선택한 셀의 수식이 가리키는 범위를 봅니다." />
+        <bt:String id="GetStarted.Description" DefaultValue="수식 셀을 선택하고 홈 탭에서 땡땡엑셀을 여세요." />
+      </bt:LongStrings>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

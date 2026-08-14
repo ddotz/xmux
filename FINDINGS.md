@@ -1,0 +1,95 @@
+# xmux — measured platform facts
+
+Everything here was measured on the target machine, not assumed. Re-run with
+`probes/ax_probe` (build: `swiftc -parse-as-library -O probes/ax_probe.swift -o probes/ax_probe`).
+
+Environment: macOS 26.6.1, Apple M4 Pro, **Excel for Mac 16.111.3**, Swift 6.3 / Xcode 26.6,
+node + bun + python3(openpyxl). The dev terminal already holds Accessibility permission
+(`AXIsProcessTrusted() == true`). Test workbook: `/tmp/xmux_probe.xlsx` (sheets `Main`,
+`Data`, `Far Away`; `Main!B2 = =SUM(Data!B2:D5)+Main!A1*Data!F1`).
+
+## F1 — Excel's edit mode is observable from the accessibility layer
+
+| Signal | Ready | Edit (after F2) |
+|---|---|---|
+| Status-bar static text | `준비` (Ready) | `편집` (Edit) |
+| Focused element | `AXLayoutArea` (the grid) | `AXTextArea` id=**`XLIncellEditor`** |
+
+Two independent signals, either sufficient. Transition observed ~2.8 s into the
+scripted run, i.e. immediately on the synthetic F2 (`key code 120`).
+
+## F2 — The live, in-progress formula text is readable during edit mode
+
+`XLIncellEditor` exposes, while the user is mid-edit:
+
+```
+AXValue               = =SUM(Data!B2:D5)+Main!A1*Data!F1
+AXSelectedTextRange   = range(32,0)        # caret offset, 0-based
+AXNumberOfCharacters  = 32
+AXSelectedText        = <current selection>
+AXVisibleCharacterRange = range(0,32)
+```
+
+The always-present formula bar (`AXTextArea` id=`XLFormulaEditor`) carries the same
+text in its **`AXDescription`** (`수식 입력줄. B,2 =SUM(...)`), *not* in `AXValue`,
+which reads nil. Use `XLIncellEditor.AXValue` while editing; the formula bar's
+description is the fallback when no editor is open.
+
+## F3 — The editor's selection is WRITABLE (this is the load-bearing find)
+
+Of every attribute on `XLIncellEditor`, exactly two are settable:
+
+```
+W AXFocused
+W AXSelectedTextRange
+```
+
+Setting it works and is visible in Excel:
+
+```
+set AXSelectedTextRange to (5,10) -> success
+readback: sel=range(5,10)  selText=Data!B2:D5
+```
+
+So a helper can highlight reference token *n* by selecting its character span —
+Excel then applies its own reference coloring/marching ants to the matching range.
+Tab-cycling references is therefore implementable without typing anything into the
+cell, and without risking content mutation.
+
+## F4 — Tab inside a formula edit commits the cell
+
+Scripted `F2, Tab` moved the active cell `B2 → C2` and returned the mode to `준비`.
+Tab is *not* free for xmux to use while editing: it must be intercepted before Excel
+sees it, or a different chord must be chosen.
+
+## F5 — Workbook structure is readable without automation
+
+* `AXComboBox` id=`NameBox` → active cell/selection address (e.g. `B2`), updates live.
+* `AXLayoutArea` description → active sheet, sheet count and used range
+  (`통합 문서 영역, Main, 1/3 시트, 사용 범위: A1에서 B5까지`).
+* Sheet tabs are `AXButton`s whose `AXIdentifier` is the sheet name (`Main`, `Data`,
+  `Far Away`), so the sheet list is enumerable from AX alone.
+* The Excel window frame is readable (`pos=(0,33) size=1512x949`, plus `AXFullScreen`),
+  which is what a docked panel would track.
+
+## F6 — Full-tree traversal is too slow to poll
+
+Re-running a breadth-first search for elements on every sample stalls the sampler
+once Excel is in edit mode (the first probe run went silent for ~20 s). Resolve
+element references **once**, then read attributes off the retained references; treat
+a nil read as a signal rather than a reason to re-scan. Production code should use
+`AXObserver` notifications instead of polling.
+
+## F7 — What this means for an Office.js add-in
+
+The add-in sandbox sees **none** of F1–F4: no F2 event, no keystrokes inside the cell
+editor, and Excel's API stalls while a cell is being edited. Consequences:
+
+* A pure add-in can deliver the side panel, cross-sheet reference previews, and
+  range-picking — triggered by selection change / an add-in shortcut / a ribbon button.
+* The verbatim "press F2, then Tab cycles the highlighted reference" behaviour needs a
+  native companion (macOS: AX + event tap, proven above; Windows: the equivalent
+  UIA + low-level keyboard hook) and is inherently platform-specific.
+
+The macOS sideload directory does not exist yet and must be created on first sideload:
+`~/Library/Containers/com.microsoft.Excel/Data/Documents/wef`.

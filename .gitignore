@@ -1,0 +1,30 @@
+# Local agent and tool state
+.gjc/
+.gstack/
+.omo/
+.serena/
+
+# Dependencies, caches, and generated web output
+node_modules/
+addin/dist/
+coverage/
+*.tsbuildinfo
+__pycache__/
+*.pyc
+
+# Locally compiled helper binaries
+companion/xmux-companion
+probes/ax_probe
+
+# Environment files and private key material
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+
+# OS and editor files
+.DS_Store
+*.swp
+*~

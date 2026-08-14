@@ -1,0 +1,1088 @@
+:root {
+  --ink: #1a1a1a;
+  --muted: #767676;
+  --line: #dcdcdc;
+  --line-strong: #b4b4b4;
+  --surface: #fff;
+  --surface-alt: #f5f5f5;
+  --accent: #217346; /* Excel's green, used only where something is active */
+  --host-chrome-safe-area: 56px;
+  --host-chrome-height: 56px;
+  --tab-row-height: 33px;
+  --pane-body-host-inset: calc(var(--host-chrome-height) - var(--tab-row-height));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.pane-badge {
+  max-width: 78px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pane-badge-action {
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+
+.pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  padding: var(--pane-body-host-inset) 12px 14px;
+}
+
+/* The formula, with its references marked. One accent, no numbering: the active
+   reference is the one that is filled, and the region below says which it is. */
+.formula-strip {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  margin-bottom: 10px;
+}
+
+.formula-block {
+  margin-bottom: 10px;
+}
+
+.formula-block .formula-strip {
+  margin-bottom: 0;
+}
+
+.chip {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.chip-active {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-color: var(--accent);
+}
+
+
+
+
+
+
+
+
+/* Korean must not break mid-word; the formula strip is the one place that may. */
+.pane-empty,
+.pane-note,
+.reference-label,
+.pane-onboarding {
+  overflow-wrap: break-word;
+  word-break: keep-all;
+}
+
+.pane-empty {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.pane-empty strong {
+  color: var(--ink);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 400;
+}
+
+.pane-onboarding {
+  padding: 18px 2px 8px;
+}
+
+.onboarding-title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.onboarding-lead {
+  margin: 7px 0 16px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.onboarding-steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.onboarding-step {
+  padding-left: 2px;
+  line-height: 1.55;
+}
+
+.onboarding-step + .onboarding-step {
+  margin-top: 7px;
+}
+
+.onboarding-keyboard {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.onboarding-keyboard kbd {
+  display: inline-block;
+  min-width: 18px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  font: inherit;
+  line-height: 17px;
+  text-align: center;
+}
+
+/* A miniature sheet: headers, gridlines, and the referenced block outlined. */
+.sheet {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.sheet-head {
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-weight: 400;
+  text-align: center;
+  border: 1px solid var(--line);
+  padding: 1px 4px;
+}
+
+.sheet-row-head {
+  min-width: 26px;
+}
+
+.sheet-corner {
+  background: var(--surface-alt);
+  border: 1px solid var(--line);
+}
+
+.sheet-cell {
+  border: 1px solid var(--line);
+  padding: 1px 5px;
+  min-width: 44px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sheet-number {
+  text-align: right;
+}
+
+.focus {
+  background: color-mix(in srgb, var(--region-color, var(--accent)) 10%, transparent);
+}
+
+.focus-top {
+  border-top: 1px solid var(--region-color, var(--accent));
+}
+
+.focus-bottom {
+  border-bottom: 1px solid var(--region-color, var(--accent));
+}
+
+.focus-left {
+  border-left: 1px solid var(--region-color, var(--accent));
+}
+
+.focus-right {
+  border-right: 1px solid var(--region-color, var(--accent));
+}
+
+
+/* Second viewport: browse a sheet, pick a range. */
+.sheet-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 12px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+  cursor: grab;
+  touch-action: pan-y;
+  user-select: none;
+  scrollbar-width: none;
+}
+
+.sheet-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.sheet-tabs[data-dragging="true"] {
+  cursor: grabbing;
+}
+
+.sheet-tab {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 0 0 3px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.sheet-tab-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.sheet-tab-hidden {
+  font-style: italic;
+}
+
+
+
+
+
+/* The window itself moves, so the viewport clips instead of scrolling. */
+
+.sheet-pickable {
+  cursor: cell;
+}
+
+.sheet-editing {
+  padding: 0;
+}
+
+.sheet-editor {
+  width: 100%;
+  border: 1px solid var(--accent);
+  padding: 0 3px;
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface);
+  color: var(--ink);
+}
+
+/* One reference at a time: what is open, and what can be done with it. */
+.reference-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 8px 0 6px;
+}
+
+.reference-label {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.inline-action {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.pane-note,
+.range-summary {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+
+/* The sheet window itself moves, so the viewport clips instead of scrolling. */
+.grid-viewport {
+  flex: 1;
+  min-height: 140px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.grid-position {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 1px solid var(--line-strong);
+}
+
+/* What the formula is doing, said plainly. */
+.explain {
+  margin-bottom: 8px;
+}
+
+.explain-line {
+  line-height: 1.6;
+  word-break: keep-all;
+}
+
+.explain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.explain-item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  column-gap: 6px;
+  font-size: 12px;
+  line-height: 1.8;
+  word-break: keep-all;
+}
+
+.explain-step-index {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.explain-step-content {
+  min-width: 0;
+}
+
+.explain-result {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Two tabs: the live sheet, and asking for a change in words. */
+.tabs {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  height: var(--tab-row-height);
+  align-items: center;
+  flex-wrap: nowrap;
+  padding: 0 0 0 12px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.tabs > [hidden],
+.tab-context-action > [hidden] {
+  display: none;
+}
+
+.tab-list {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 14px;
+}
+
+.tab {
+  border: 0;
+  background: none;
+  color: var(--muted);
+  padding: 6px 0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tab-active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+#linked-workbooks-root {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.linked-workbooks {
+  position: relative;
+  color: var(--muted);
+  font-size: 11px;
+  word-break: keep-all;
+}
+
+.linked-workbooks summary {
+  cursor: pointer;
+}
+
+.linked-workbook-list {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 4px);
+  right: 0;
+  width: min(300px, calc(100vw - 24px));
+  margin: 0;
+  padding: 7px 9px 28px 24px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.linked-workbook-id {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.linked-workbooks > .inline-action {
+  position: absolute;
+  z-index: 2;
+  right: 9px;
+  top: calc(100% + 8px);
+}
+
+.linked-workbook-status {
+  position: absolute;
+  z-index: 2;
+  right: 9px;
+  top: calc(100% + 24px);
+  width: 276px;
+  color: var(--muted);
+  text-align: right;
+}
+
+.tab-utilities {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-left: auto;
+  overflow: hidden;
+}
+
+.tab-context-action {
+  display: flex;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+}
+
+.host-chrome-safe-area {
+  flex: 0 0 var(--host-chrome-safe-area);
+  width: var(--host-chrome-safe-area);
+  height: 1px;
+  pointer-events: none;
+}
+
+.keyboard-help {
+  position: static;
+  width: 32px;
+  height: 32px;
+  color: var(--muted);
+  font-size: 11px;
+  word-break: keep-all;
+}
+
+.keyboard-help summary {
+  display: flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.keyboard-help summary::-webkit-details-marker {
+  display: none;
+}
+
+.keyboard-help summary:hover,
+.keyboard-help summary:focus-visible {
+  background: var(--surface-alt);
+  color: var(--ink);
+}
+
+.tab-action {
+  flex: 0 0 32px;
+}
+
+.keyboard-help-copy {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 1px);
+  right: var(--host-chrome-safe-area);
+  width: min(260px, calc(100vw - 24px));
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.keyboard-help-copy p {
+  margin: 0;
+  line-height: 1.7;
+}
+
+.keyboard-help-copy kbd {
+  display: inline-block;
+  min-width: 50px;
+  color: var(--muted);
+  font: inherit;
+}
+
+.chat-layout {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.chat-layout,
+.chat-layout * {
+  min-width: 0;
+}
+
+.icon-button {
+  display: inline-flex;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.icon-button:hover,
+.icon-button:focus-visible {
+  background: var(--surface-alt);
+  color: var(--ink);
+}
+
+.icon-button-flat {
+  flex: 0 0 32px;
+  border-radius: 0;
+}
+
+.chat-log {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+
+.chat-empty {
+  max-width: 260px;
+  padding: 4px 0;
+  line-height: 1.45;
+}
+
+.turn,
+.chat-error,
+.skill-option-description,
+.attachment-label,
+.selected-skill-label {
+  line-height: 1.55;
+  word-break: keep-all;
+  white-space: pre-wrap;
+}
+
+.turn-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 5px 9px;
+  border-radius: 10px;
+  background: var(--surface-alt);
+}
+
+.chat-pending {
+  color: var(--muted);
+}
+
+.chat-error {
+  margin-top: 8px;
+  color: #b3261e;
+  font-size: 12px;
+}
+
+.plan {
+  max-height: 34vh;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  overflow: auto;
+}
+
+.skill-proposal {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 9px 8px 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+}
+
+.skill-proposal-copy {
+  flex: 1;
+  min-width: 0;
+  max-height: 34vh;
+  overflow: auto;
+}
+
+.skill-proposal-kicker {
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.skill-proposal-heading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.skill-proposal-heading > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.skill-proposal-label {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skill-proposal-description {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: break-word;
+  word-break: keep-all;
+}
+
+.skill-proposal-command {
+  margin-top: 2px;
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.skill-proposal-detail-label {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.skill-proposal-detail {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+.skill-proposal-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+
+.skill-proposal-action {
+  display: inline-flex;
+  min-width: 0;
+  min-height: 30px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.skill-proposal-action:hover,
+.skill-proposal-action:focus-visible {
+  background: var(--surface-alt);
+}
+
+.plan-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.plan-list {
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.plan-item {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.payload {
+  overflow-wrap: anywhere;
+}
+
+.plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.plan-action {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.plan-action:hover,
+.plan-action:focus-visible {
+  background: var(--surface-alt);
+}
+
+.composer-block {
+  position: relative;
+  margin-top: 8px;
+}
+
+.composer-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.selection-attachment,
+.selected-skill-chip {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding-left: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.attachment-label,
+.selected-skill-label {
+  flex: 1;
+  font-size: 12px;
+}
+
+.attachment-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+
+.selected-skill-chip > svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.composer-surface {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.composer-surface:focus-within {
+  border-color: var(--accent);
+}
+
+.composer-surface[data-pending="true"] {
+  opacity: 0.7;
+}
+
+.composer-input {
+  display: block;
+  width: 100%;
+  min-height: 54px;
+  max-height: 130px;
+  padding: 10px 11px 4px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  resize: none;
+  word-break: keep-all;
+}
+
+.composer-input::placeholder {
+  color: var(--muted);
+  word-break: keep-all;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px 4px;
+}
+
+.send-button {
+  background: var(--accent);
+  color: #fff;
+}
+
+.send-button:hover,
+.send-button:focus-visible {
+  background: #185c37;
+  color: #fff;
+}
+
+.skill-menu {
+  position: absolute;
+  z-index: 4;
+  right: 0;
+  bottom: calc(100% + 4px);
+  left: 0;
+  max-height: min(280px, 48vh);
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  overflow: auto;
+}
+
+.skill-option {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 22px minmax(0, auto) minmax(80px, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.skill-option[data-skill-active="true"],
+.skill-option:hover {
+  background: var(--surface-alt);
+}
+
+.skill-option > svg {
+  color: var(--accent);
+}
+
+.skill-option-label {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  word-break: keep-all;
+}
+
+.skill-option-source {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.skill-option-description {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings {
+  max-width: 420px;
+  padding: 0 2px;
+}
+
+.settings-label {
+  margin-top: 7px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.settings-input {
+  width: 100%;
+  margin-top: 2px;
+  padding: 6px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.settings-action {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--surface-alt);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-action-primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.connection-status {
+  margin-top: 8px;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+@media (max-width: 360px) {
+  .skill-option {
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+
+  .skill-option-description {
+    display: none;
+  }
+
+  .skill-proposal {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .skill-proposal-actions {
+    justify-content: flex-end;
+  }
+}
+
+.undo {
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: 28px;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  padding: 0 2px;
+  overflow: hidden;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-decoration: underline;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

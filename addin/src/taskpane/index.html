@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>땡땡엑셀</title>
+    <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <nav class="tabs" aria-label="작업창 보기">
+      <div class="tab-list" role="tablist">
+        <button
+          class="tab tab-active"
+          id="tab-sheet"
+          type="button"
+          role="tab"
+          aria-selected="true"
+          aria-controls="pane-root"
+        >
+          시트
+        </button>
+        <button
+          class="tab"
+          id="tab-chat"
+          type="button"
+          role="tab"
+          aria-selected="false"
+          aria-controls="pane-root"
+        >
+          대화
+        </button>
+      </div>
+      <div id="linked-workbooks-root" hidden></div>
+      <div class="tab-utilities" id="tab-utilities">
+        <span class="visually-hidden" id="cell-address">땡땡엑셀</span>
+        <span
+          class="pane-badge"
+          id="status-badge"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          hidden
+        ></span>
+        <button
+          class="undo"
+          id="undo"
+          type="button"
+          aria-keyshortcuts="Control+Z Meta+Z Control+Y Control+Shift+Z Meta+Shift+Z"
+          hidden
+        >
+          되돌리기
+        </button>
+      </div>
+      <div
+        class="tab-context-action"
+        id="tab-context-action"
+        role="group"
+        aria-label="현재 보기 작업"
+        data-context-slot="stable"
+      >
+        <details class="keyboard-help" id="sheet-keyboard-help">
+          <summary id="sheet-keyboard-help-trigger"></summary>
+          <div class="keyboard-help-copy" id="sheet-keyboard-help-copy">
+            <p><kbd>왼쪽/오른쪽</kbd> 참조 이동</p>
+            <p><kbd>Enter</kbd> Excel 선택 이동 및 고정</p>
+            <p><kbd>Esc</kbd> 임시 선택 취소 / 원래 셀로 복귀</p>
+            <p><kbd>Delete/Backspace</kbd> 활성 참조 삭제</p>
+            <p><kbd>더블클릭</kbd> 참조 범위로 이동</p>
+            <p><kbd>Alt+클릭</kbd> 참조를 대화 맥락으로 첨부</p>
+          </div>
+        </details>
+      </div>
+      <div class="host-chrome-safe-area" aria-hidden="true"></div>
+    </nav>
+    <main
+      id="pane-root"
+      class="pane-body"
+      role="tabpanel"
+      aria-labelledby="tab-sheet"
+      aria-describedby="sheet-keyboard-help-copy"
+      aria-keyshortcuts="ArrowLeft ArrowRight Enter Escape Delete Backspace"
+    ></main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
