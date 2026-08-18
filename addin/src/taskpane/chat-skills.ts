@@ -180,6 +180,26 @@ export const resolveSkill = (
   )
 }
 
+/**
+ * The request with its slash command taken off.
+ *
+ * `/dcf-model 3년치 전망 만들어줘` selects the skill *and* used to be sent verbatim, so the
+ * model read `/dcf-model` as part of the instruction and answered about the command instead
+ * of doing the work. The skill arrives through the system prompt; the request should be
+ * only what the user actually asked for.
+ */
+export const stripSlashCommand = (
+  input: string,
+  skills: readonly ChatSkill[] = CHAT_SKILLS,
+): string => {
+  const trimmed = input.trimStart()
+  const command = trimmed.split(/\s/u)[0]?.toLocaleLowerCase()
+  if (command === undefined || !command.startsWith("/")) return input
+  if (!skills.some((skill) => skill.slashCommand === command)) return input
+  const rest = trimmed.slice(command.length).trim()
+  return rest === "" ? input.trim() : rest
+}
+
 export const resolvePromptSkill = (
   input: string,
   attached: ChatSkillId | null,

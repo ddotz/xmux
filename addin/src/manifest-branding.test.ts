@@ -14,7 +14,7 @@ describe("Excel manifest branding", () => {
   })
 
   it("changes the icon URLs when the brand artwork changes", () => {
-    expect(manifest).toContain("<Version>1.0.9.0</Version>")
+    expect(manifest).toContain("<Version>1.1.0.0</Version>")
     for (const size of [16, 32, 64, 80]) {
       expect(manifest).toContain(`/assets/icon-${size}.png?v=2`)
     }

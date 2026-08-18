@@ -20,7 +20,7 @@ import {
   skillFromDraft,
   upsertLocalSkill,
 } from "./chat-skill-store"
-import { CHAT_SKILLS, resolvePromptSkill } from "./chat-skills"
+import { CHAT_SKILLS, resolvePromptSkill, stripSlashCommand } from "./chat-skills"
 import { readWorkbookContext } from "./chat-workbook"
 
 export type ChattingDeps = {
@@ -138,12 +138,15 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     const attachment = state.selectionAttachment
     const selectedSkillId =
       resolvePromptSkill(question, state.selectedSkillId, state.skills)?.id ?? null
+    // The skill reaches the model through the system prompt, so the slash command that
+    // selected it is not part of the request.
+    const request = stripSlashCommand(question, state.skills)
     const asked: ChatTurn = { role: "user", text: question }
     set({ turns: [...previous, asked], pending: true, error: null, plan: null })
     try {
       const workbook = await describeWorkbook(attachment)
       const turns = [
-        ...conversation(question, workbook, selectedSkillId, state.skills, attachment, previous),
+        ...conversation(request, workbook, selectedSkillId, state.skills, attachment, previous),
       ]
 
       // The model used to get one fixed window around the selection and had to guess at

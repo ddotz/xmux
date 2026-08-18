@@ -504,3 +504,56 @@ describe("operating on the workbook", () => {
     expect(chatting.state().turns.at(-1)?.text).toContain("새 시트 1개, 표 1개(2행)")
   })
 })
+
+describe("running a skill", () => {
+  it("sends the request without the slash command that selected the skill", async () => {
+    // Given: /dcf-model selects a skill. The model reads the request, and a leftover
+    // command made it answer about the command instead of doing the work.
+    const chatting = create()
+    const asked = nextReply()
+
+    chatting.handlers.onSend("/dcf 3년치 전망 만들어줘")
+    await asked
+
+    const messages = vi.mocked(askModel).mock.calls[0]?.[1] ?? []
+    const request = messages.at(-1)
+    expect(request?.role).toBe("user")
+    expect(request?.content).toBe("3년치 전망 만들어줘")
+    expect(request?.content).not.toContain("/dcf")
+  })
+
+  it("still delivers the skill's own instructions through the system message", async () => {
+    const chatting = create()
+    const asked = nextReply()
+
+    chatting.handlers.onSend("/dcf 3년치 전망 만들어줘")
+    await asked
+
+    const messages = vi.mocked(askModel).mock.calls[0]?.[1] ?? []
+    expect(messages[0]?.content).toContain('"selectedSkillId":"dcf-model"')
+  })
+
+  it("keeps a bare slash command as the request when nothing follows it", async () => {
+    // Given: the user selected the skill and said nothing else. Sending an empty request
+    // would leave the model with no instruction at all.
+    const chatting = create()
+    const asked = nextReply()
+
+    chatting.handlers.onSend("/dcf")
+    await asked
+
+    const messages = vi.mocked(askModel).mock.calls[0]?.[1] ?? []
+    expect(messages.at(-1)?.content).toBe("/dcf")
+  })
+
+  it("leaves an ordinary question alone", async () => {
+    const chatting = create()
+    const asked = nextReply()
+
+    chatting.handlers.onSend("합계를 넣어줘")
+    await asked
+
+    const messages = vi.mocked(askModel).mock.calls[0]?.[1] ?? []
+    expect(messages.at(-1)?.content).toBe("합계를 넣어줘")
+  })
+})
