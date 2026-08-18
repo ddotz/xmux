@@ -86,6 +86,7 @@ function Start-LocalService {
         "--passphrase-file `"$PasswordPath`""
         "--port `"3927`""
         "--ready-file `"$ReadyPath`""
+        "--pid-file `"$ProcessIdPath`""
     ) -join " "
     $startedProcess = $null
     try {
@@ -95,11 +96,7 @@ function Start-LocalService {
             -WorkingDirectory $AppRoot `
             -WindowStyle Hidden `
             -PassThru
-        [IO.File]::WriteAllText(
-            $ProcessIdPath,
-            [string]$startedProcess.Id,
-            [Text.UTF8Encoding]::new($false)
-        )
+        # The server writes $ProcessIdPath itself, so both start paths agree on the owner.
         if (-not (Test-Path -LiteralPath $ReadyPath)) {
             $changeTypes =
                 [IO.WatcherChangeTypes]::Created -bor [IO.WatcherChangeTypes]::Changed

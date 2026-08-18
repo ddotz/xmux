@@ -68,6 +68,9 @@ try {
         -LiteralPath (Join-Path $PSScriptRoot "manage-windows-local.ps1") `
         -Destination (Join-Path $packageRoot "manage.ps1")
     Copy-Item `
+        -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") `
+        -Destination (Join-Path $packageRoot "start-hidden.vbs")
+    Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "uninstall-windows-local.ps1") `
         -Destination (Join-Path $packageRoot "uninstall.ps1")
     Copy-Item `

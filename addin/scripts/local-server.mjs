@@ -10,6 +10,7 @@ const valueFlags = new Set([
   "--key",
   "--passphrase-file",
   "--pfx",
+  "--pid-file",
   "--port",
   "--ready-file",
   "--root",
@@ -131,9 +132,13 @@ const server = createServer(tls, (request, response) => {
 })
 
 const readyFile = options.get("--ready-file")
+// The service is started both by the controller and, at logon, by a launcher that cannot
+// wait around to learn the process id. Writing it here means one owner of that fact.
+const pidFile = options.get("--pid-file")
 const close = () => {
   server.close(() => {
     if (readyFile !== undefined) rmSync(readyFile, { force: true })
+    if (pidFile !== undefined) rmSync(pidFile, { force: true })
     process.exit(0)
   })
 }
@@ -145,6 +150,7 @@ server.once("error", (error) => {
 server.listen(port, host, () => {
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("TCP address is unavailable")
+  if (pidFile !== undefined) writeFileSync(pidFile, String(process.pid), { mode: 0o600 })
   if (readyFile !== undefined) writeFileSync(readyFile, String(address.port), { mode: 0o600 })
   console.log(`LISTENING ${address.port}`)
 })

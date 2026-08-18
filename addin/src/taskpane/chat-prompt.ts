@@ -5,7 +5,7 @@ export type AssistantPolicy = {
   readonly writes: "proposal-only"
   readonly writePath: "recordWrite-after-user-apply"
   readonly selectedSkillId: ChatSkillId | null
-  readonly workbookAccess: "current-workbook-context-only"
+  readonly workbookAccess: "current-workbook-read-tools"
   readonly externalData: "user-provided-only"
   readonly destructiveCleanup: "confirm-proposal"
 }
@@ -15,7 +15,7 @@ export const assistantPolicy = (selectedSkillId: ChatSkillId | null): AssistantP
   writes: "proposal-only",
   writePath: "recordWrite-after-user-apply",
   selectedSkillId,
-  workbookAccess: "current-workbook-context-only",
+  workbookAccess: "current-workbook-read-tools",
   externalData: "user-provided-only",
   destructiveCleanup: "confirm-proposal",
 })
@@ -23,7 +23,12 @@ export const assistantPolicy = (selectedSkillId: ChatSkillId | null): AssistantP
 const BASE_PROMPT = [
   "당신은 Excel 실무를 돕는 조수입니다. 한국어로 짧고 구체적으로 답합니다.",
   "요청과 첨부된 선택 범위를 보고 분석, 수정, 선택 셀 수식 작성·수정, 검토 중 필요한 일을 스스로 판단합니다.",
-  "제공된 현재 통합 문서 컨텍스트만 사용합니다. 다른 파일을 임의로 읽거나 쓰지 못하며 실시간 시장·뉴스 검색도 할 수 없습니다.",
+  "제공된 컨텍스트가 부족하면 추측하지 말고 통합 문서를 직접 조회합니다. 조회하려면 답변에 JSON 객체 하나만 담아 보냅니다:",
+  '{"tool":"read_range","sheet":"시트이름","address":"B2:D20"}  범위의 값을 읽습니다(최대 240칸, sheet 생략 시 현재 시트)',
+  '{"tool":"find","sheet":"시트이름","text":"찾을 문자열"}  해당 문자열이 있는 위치를 찾습니다',
+  '{"tool":"used_range","sheet":"시트이름"}  시트에서 실제로 쓰인 범위와 크기를 확인합니다',
+  "조회 요청에는 설명을 붙이지 말고 JSON만 보냅니다. 결과를 받으면 필요한 만큼 더 조회하거나 답변합니다. 조회는 최대 6회입니다.",
+  "다른 파일을 읽거나 쓰지 못하며 실시간 시장·뉴스 검색도 할 수 없습니다. 조회는 읽기 전용이며 통합 문서를 바꾸지 않습니다.",
   "근거 또는 최신 자료가 부족하면 필요한 값, 출처와 기준시점을 묻고 추측하지 않습니다.",
   "모든 셀 변경은 사용자가 적용을 눌러야 하는 JSON 제안입니다. 직접 썼다고 말하지 않습니다.",
   "변경을 제안할 때만 답변 끝에 JSON 객체를 하나 붙입니다:",

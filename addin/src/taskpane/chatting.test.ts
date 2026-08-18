@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AiError, askModel, testConnection } from "../ai/client"
+import { DEFAULT_SETTINGS } from "../ai/settings"
 import { createHistory } from "../excel/history"
 import { readWorkbookContext } from "./chat-workbook"
 import { type Chatting, createChatting } from "./chatting"
@@ -231,5 +232,95 @@ describe("chat safety and connection errors", () => {
     await Promise.resolve()
     expect(chatting.state().error).toContain("write exploded")
     expect(chatting.state().turns.map((turn) => turn.text)).not.toContain("1건을 적용했습니다.")
+  })
+})
+
+describe("workbook lookups before answering", () => {
+  it("runs the tool the model asked for and feeds the result back", async () => {
+    // Given: a model that looks at a range once, then answers.
+    const looked: string[] = []
+    const context = {
+      workbook: {
+        worksheets: {
+          getActiveWorksheet: () => ({
+            isNullObject: false,
+            name: "Main",
+            getRange: (address: string) => {
+              looked.push(address)
+              return {
+                isNullObject: false,
+                address: `Main!${address}`,
+                values: [["대출채권", 1200]],
+                cellCount: 2,
+                worksheet: { name: "Main" },
+                load: () => {},
+              }
+            },
+            getUsedRangeOrNullObject: () => ({
+              isNullObject: true,
+              address: "",
+              values: [],
+              cellCount: 0,
+              worksheet: { name: "Main" },
+              load: () => {},
+            }),
+            load: () => {},
+          }),
+          getItemOrNullObject: () => ({
+            isNullObject: true,
+            name: "",
+            getRange: () => {
+              throw new Error("unused")
+            },
+            getUsedRangeOrNullObject: () => {
+              throw new Error("unused")
+            },
+            load: () => {},
+          }),
+        },
+        getSelectedRange: () => {
+          throw new Error("unused")
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('```json\n{"tool":"read_range","address":"A1:B1"}\n```')
+      .mockResolvedValueOnce("대출채권은 1200입니다.")
+
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("대출채권 얼마야?")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // Then: the range was really read, and the answer came after seeing it.
+    expect(looked).toEqual(["A1:B1"])
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
+    expect(JSON.stringify(second)).toContain("대출채권")
+    expect(chatting.state().turns.at(-1)?.text).toBe("대출채권은 1200입니다.")
+  })
+
+  it("answers straight away when the model asks for nothing", async () => {
+    vi.mocked(askModel).mockResolvedValue("B6에 =SUM(A1:A5)를 넣으면 됩니다.")
+
+    const chatting = createChatting({
+      redraw: () => {},
+      run: () => Promise.resolve(),
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("합계 어떻게 넣어?")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
   })
 })

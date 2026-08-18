@@ -189,6 +189,24 @@ describe("Windows local deployment lifecycle", () => {
     expect(manageScript).toContain("Start-Process")
   })
 
+  it("wins the logon race against Excel by not starting PowerShell first", () => {
+    // Given: Office asks for https://localhost:3927 as soon as Excel opens, and drops the
+    // add-in registration when nothing answers — the add-in disappears on every restart.
+    // When: the autostart command is inspected.
+    // Then: it hands straight to a launcher that starts in milliseconds.
+    expect(installScript).toContain('$autoStartCommand = "wscript.exe //B //Nologo')
+    expect(installScript).not.toMatch(/\$autoStartCommand\s*=\s*\n?\s*"powershell\.exe/)
+    expect(installScript).toContain("start-hidden.vbs")
+  })
+
+  it("has one writer for the service process id", () => {
+    // Given: the controller and the logon launcher both start the same server.
+    // When: ownership metadata is written.
+    // Then: the server writes it, so neither start path can disagree about the owner.
+    expect(manageScript).toContain('"--pid-file `"$ProcessIdPath`""')
+    expect(manageScript).not.toContain("[IO.File]::WriteAllText(\n            $ProcessIdPath")
+  })
+
   it("removes only the manifest path owned by this installation", () => {
     // Given: another installer could reuse the same manifest ID.
     // When: the uninstaller reaches the registry deletion boundary.

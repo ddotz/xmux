@@ -1,8 +1,10 @@
 import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
 import { type Plan, parsePlan, resolveEdits } from "../ai/plan"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
+import { readStep } from "../ai/tools"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
+import { type InspectContext, runTool } from "../excel/inspect"
 import type { ChatHandlers, ChatState, ChatTurn, SelectionAttachment } from "./chat"
 import { serializeWorkbookContext } from "./chat-context"
 import { systemPrompt } from "./chat-prompt"
@@ -29,6 +31,9 @@ export type Chatting = {
   /** Feed the latest Office selection after a selection-changed refresh. */
   readonly updateSelection: (selection: SelectionAttachment | null) => void
 }
+
+/** How many times the model may look at the workbook before it has to answer. */
+const MAX_TOOL_ROUNDS = 6
 
 const sheetOf = (address: string): string => {
   const cut = address.lastIndexOf("!")
@@ -102,10 +107,27 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     set({ turns: [...previous, asked], pending: true, error: null, plan: null })
     try {
       const workbook = await describeWorkbook(attachment)
-      const reply = await askModel(
-        state.settings,
-        conversation(question, workbook, selectedSkillId, state.skills, attachment, previous),
-      )
+      const turns = [
+        ...conversation(question, workbook, selectedSkillId, state.skills, attachment, previous),
+      ]
+
+      // The model used to get one fixed window around the selection and had to guess at
+      // everything else. It can now look before it answers: each round it either asks for
+      // part of the workbook and gets a real answer back, or it replies. Reads only — the
+      // edits it proposes still wait for 적용.
+      let reply = await askModel(state.settings, turns)
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        const step = readStep(reply)
+        if (step.kind === "answer") break
+        let observation = "조회하지 못했습니다."
+        await deps.run(async (context) => {
+          observation = await runTool(context as unknown as InspectContext, step.call)
+        })
+        turns.push({ role: "assistant", content: reply })
+        turns.push({ role: "user", content: `조회 결과:\n${observation}` })
+        reply = await askModel(state.settings, turns)
+      }
+
       const plan: Plan = parsePlan(reply)
       set({
         turns: [...state.turns, { role: "assistant", text: plan.say }],

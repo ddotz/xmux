@@ -27,6 +27,7 @@ $requiredFiles = @(
     (Join-Path $packageApp "local-server.mjs"),
     (Join-Path $packageRuntime "node.exe"),
     (Join-Path $PSScriptRoot "manage.ps1"),
+    (Join-Path $PSScriptRoot "start-hidden.vbs"),
     (Join-Path $PSScriptRoot "uninstall.ps1")
 )
 foreach ($file in $requiredFiles) {
@@ -85,6 +86,7 @@ Copy-Item -LiteralPath (Join-Path $packageApp "manifest.xml") -Destination $appR
 Copy-Item -LiteralPath (Join-Path $packageApp "local-server.mjs") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runtimeRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
 
 # Edge WebView2 renders the task pane, and Chromium's Windows verifier only accepts a Root
@@ -234,9 +236,12 @@ Remove-Item `
     -ErrorAction SilentlyContinue
 
 $managePath = Join-Path $InstallRoot "manage.ps1"
-$autoStartCommand =
-    "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass " +
-    "-File `"$managePath`" start -InstallRoot `"$InstallRoot`""
+# Logon start goes through wscript, not powershell. Starting the PowerShell engine cost a
+# second or two, and Excel used that window to ask for https://localhost:3927 before
+# anything was listening — the manifest failed to load and Office dropped the add-in
+# registration, which is why it vanished on every restart.
+$launcherPath = Join-Path $InstallRoot "start-hidden.vbs"
+$autoStartCommand = "wscript.exe //B //Nologo `"$launcherPath`""
 New-Item -Path $AutoStartRegistryPath -Force | Out-Null
 New-ItemProperty `
     -Path $AutoStartRegistryPath `
