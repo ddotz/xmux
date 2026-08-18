@@ -96,7 +96,7 @@ Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-tes
 cd addin && pnpm install
 pnpm dev                  # bare vite: HTTPS dev server on :3927, certs auto-trusted
 pnpm manifest:dev         # regenerate manifest.xml — `pnpm dev` does NOT do this
-pnpm test                 # vitest run — 43 test files
+pnpm test                 # vitest run — 47 test files
 pnpm typecheck            # tsc --noEmit
 pnpm check                # biome check .
 pnpm build                # typecheck + vite build → addin/dist/

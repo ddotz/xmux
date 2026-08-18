@@ -140,3 +140,30 @@ describe("streaming past the edge", () => {
     })
   })
 })
+
+describe("opening a lookup at the row it lands on", () => {
+  it("outlines the whole table but selects the cell the formula reads", () => {
+    // Given: a 99-row lookup table. Opening it at row 1 shows the one part of it nobody
+    // is asking about.
+    const viewport = createViewport(testDeps())
+
+    viewport.show(
+      "Sheet2",
+      { top: 1, left: 1, height: 99, width: 4 },
+      { area: { top: 37, left: 3, height: 1, width: 1 }, message: '"미수이자" → 37행' },
+    )
+
+    expect(viewport.state().reference).toEqual({ top: 1, left: 1, height: 99, width: 4 })
+    expect(viewport.state().selection).toEqual({ top: 37, left: 3, height: 1, width: 1 })
+    expect(viewport.state().message).toBe('"미수이자" → 37행')
+  })
+
+  it("opens at the top when there is nothing to focus", () => {
+    const viewport = createViewport(testDeps())
+
+    viewport.show("Sheet2", { top: 10, left: 1, height: 20, width: 4 })
+
+    expect(viewport.state().selection).toEqual({ top: 10, left: 1, height: 20, width: 4 })
+    expect(viewport.state().message).toBeNull()
+  })
+})

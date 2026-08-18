@@ -27,6 +27,7 @@ DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `
 |---|---|
 | Add a pane-wide state field | `../model.ts` `PaneState`, then `main.ts` `draw()` + `view.ts` `bodyFor` |
 | Change what a formula chip does | `view.ts` `formulaStrip` → `main.ts` `interactWithReference(index, intent)` |
+| Where a lookup table opens | `lookup-target.ts` (+ `formula/lookup.ts`, `excel/lookup.ts`) |
 | Grid selection / pan / edit behaviour | `viewport.ts` handlers; pointer plumbing in `grid-input.ts` |
 | Cell appearance, editor, focus outline | `sheet.ts` (`focusClasses`, `baseCellClass`, `editorNode`) |
 | Selection event storms / stale refreshes | `selection-refresh.ts` |

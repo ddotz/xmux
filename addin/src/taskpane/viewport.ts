@@ -28,8 +28,18 @@ export type ViewportDeps = {
 export type Viewport = {
   readonly state: () => ViewportState
   readonly handlers: ViewportHandlers
-  /** Open a reference: load its sheet, outline it, and select it. */
-  readonly show: (sheet: string, area: GridArea) => void
+  /**
+   * Open a reference: load its sheet, outline it, and select it.
+   *
+   * `focus` narrows the selection inside that outline — the row a lookup actually lands
+   * on — and is what the window is centred on. The outline still shows the whole range,
+   * because losing sight of the table is not the point of finding a row in it.
+   */
+  readonly show: (
+    sheet: string,
+    area: GridArea,
+    focus?: { readonly area: GridArea; readonly message: string } | null,
+  ) => void
   /** Drop a temporary grid pick and restore the opened reference outline. */
   readonly resetSelection: () => boolean
 }
@@ -240,11 +250,17 @@ export const createViewport = (deps: ViewportDeps): Viewport => {
       set({ selection: reference, editing: null, message: null })
       return true
     },
-    show: (sheet, area) => {
-      anchor = { row: area.top, column: area.left }
+    show: (sheet, area, focus = null) => {
+      const picked = focus?.area ?? area
+      anchor = { row: picked.top, column: picked.left }
       pointer = anchor
-      set({ reference: area, selection: area, editing: null, message: null })
-      load(sheet, clampOrigin(area.top - CONTEXT.rows, area.left - CONTEXT.columns))
+      set({
+        reference: area,
+        selection: picked,
+        editing: null,
+        message: focus?.message ?? null,
+      })
+      load(sheet, clampOrigin(picked.top - CONTEXT.rows, picked.left - CONTEXT.columns))
     },
   }
 }

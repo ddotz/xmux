@@ -9,6 +9,7 @@ import { createChatting } from "./chatting"
 import { createCommands, splitAddress } from "./commands"
 import { followEditor } from "./follow"
 import { createLinkedWorkbookControl } from "./linked-workbooks-control"
+import { lookupTarget } from "./lookup-target"
 import { findPaneNodes } from "./pane-elements"
 import { attachReferenceShortcuts } from "./reference-shortcuts"
 import { mirrorSelection } from "./selection"
@@ -182,7 +183,16 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
   show({ ...opened, activeIndex: index }, badge)
 
   void guarded(async () => {
-    const resolved = await Excel.run(async (context) => resolveReference(context, token, sheet))
+    // The lookup row is found in the same round trip that resolves the reference: it is
+    // one more read of one column, and two trips would show the table jumping.
+    const { resolved, target } = await Excel.run(async (context) => {
+      const range = await resolveReference(context, token, sheet)
+      if (range.kind !== "range" || intent === "chat") return { resolved: range, target: null }
+      return {
+        resolved: range,
+        target: await lookupTarget(context, opened, index, sheet, range),
+      }
+    })
     if (pane.kind !== "formula" || pane.address !== opened.address) return
     if (resolved.kind === "unavailable") show({ ...pane, activeIndex: index }, resolved.reason)
     else if (intent === "chat") {
@@ -194,7 +204,7 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
       tabs.select("chat")
     } else {
       if (intent === "jump") await commands.jumpToArea(resolved.sheet, resolved.area)
-      viewport.show(resolved.sheet, resolved.area)
+      viewport.show(resolved.sheet, resolved.area, target)
     }
   })
 }
