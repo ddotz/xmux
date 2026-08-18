@@ -1,6 +1,6 @@
 import { formatArea, type GridArea } from "../excel/address"
 import type { History } from "../excel/history"
-import { recordWrite, restore, snapshot } from "../excel/history"
+import { recordWrite, restore, restoreRanges, snapshot, snapshotRange } from "../excel/history"
 import { splitQualified } from "../excel/resolve"
 import { applyInsertion, referenceTo, removeReference } from "../formula/reference"
 import type { PaneState, ViewportState } from "../model"
@@ -154,10 +154,14 @@ export const createCommands = (deps: CommandDeps) => {
       const entry = deps.history.last()
       if (entry === null) return
       void deps.run(async (context) => {
+        // An entry may carry single cells, whole rectangles, or both. Capturing only the
+        // cells would leave a table write showing as undoable while nothing came back.
         const cells = await snapshot(context, entry.cells)
-        const undo = deps.history.take({ label: entry.label, cells })
+        const ranges = await snapshotRange(context, entry.ranges ?? [])
+        const undo = deps.history.take({ label: entry.label, cells, ranges })
         if (undo === null) return
         await restore(context, undo.cells)
+        await restoreRanges(context, undo.ranges ?? [])
         await deps.onRefresh()
         deps.onPane(deps.pane(), `${undo.label} 되돌림`, HISTORY_STATUS_DURATION_MS)
       })
@@ -169,9 +173,11 @@ export const createCommands = (deps: CommandDeps) => {
       if (entry === null) return
       void deps.run(async (context) => {
         const cells = await snapshot(context, entry.cells)
-        const redo = deps.history.takeRedo({ label: entry.label, cells })
+        const ranges = await snapshotRange(context, entry.ranges ?? [])
+        const redo = deps.history.takeRedo({ label: entry.label, cells, ranges })
         if (redo === null) return
         await restore(context, redo.cells)
+        await restoreRanges(context, redo.ranges ?? [])
         await deps.onRefresh()
         deps.onPane(deps.pane(), `${redo.label} 재실행`, HISTORY_STATUS_DURATION_MS)
       })

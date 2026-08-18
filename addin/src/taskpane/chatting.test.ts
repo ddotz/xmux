@@ -557,3 +557,101 @@ describe("running a skill", () => {
     expect(messages.at(-1)?.content).toBe("합계를 넣어줘")
   })
 })
+
+describe("operating without approval", () => {
+  it("creates the sheet and writes the table during the turn", async () => {
+    // Given: no approval step. The model's calls land as it makes them.
+    const added: string[] = []
+    const written: unknown[] = []
+    let missing = true
+    const range = (address: string) => {
+      const node = {
+        address,
+        format: {
+          fill: { color: "" },
+          font: { bold: false, italic: false, color: "" },
+          horizontalAlignment: "",
+          columnWidth: 0,
+          wrapText: false,
+          autofitColumns: () => {},
+          autofitRows: () => {},
+        },
+        load: () => {},
+        getResizedRange: () => range(`${address}#`),
+        insert: () => {},
+        delete: () => {},
+        clear: () => {},
+        sort: { apply: () => {} },
+      }
+      Object.defineProperty(node, "formulas", {
+        get: () => [[""]],
+        set: (value: unknown) => written.push(value),
+        configurable: true,
+      })
+      Object.defineProperty(node, "numberFormat", {
+        get: () => [[""]],
+        set: () => {},
+        configurable: true,
+      })
+      return node
+    }
+    const sheet = {
+      isNullObject: false,
+      name: "정리",
+      getRange: (address: string) => range(address),
+      load: () => {},
+    }
+    const context = {
+      workbook: {
+        worksheets: {
+          add: (name: string) => {
+            added.push(name)
+            missing = false
+          },
+          getActiveWorksheet: () => sheet,
+          getItem: () => sheet,
+          getItemOrNullObject: () => ({
+            ...sheet,
+            get isNullObject() {
+              return missing
+            },
+          }),
+        },
+        getSelectedRange: () => range("A1"),
+      },
+      sync: async () => {},
+    }
+
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"create_sheet","name":"정리"}')
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}',
+      )
+      .mockResolvedValueOnce("정리 시트에 표를 만들었습니다.")
+
+    const history = createHistory()
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history,
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("이 표 정리해서 새 시트에 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // Then: both calls ran, in order, with no approval in between.
+    expect(added).toEqual(["정리"])
+    expect(written).toEqual([
+      [
+        ["항목", "금액"],
+        ["대출채권", "1200"],
+      ],
+    ])
+    // And undo — the only safety net left — has something to give back.
+    expect(history.last()).not.toBeNull()
+    expect(chatting.state().turns.at(-1)?.text).toBe("정리 시트에 표를 만들었습니다.")
+  })
+})

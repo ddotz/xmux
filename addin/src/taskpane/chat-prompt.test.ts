@@ -7,7 +7,9 @@ describe("inferred chat policy", () => {
     expect(policy.inference).toEqual(
       expect.arrayContaining(["analysis", "edit", "selected-cell-formula", "review"]),
     )
-    expect(policy.writes).toBe("proposal-only")
+    // The assistant writes directly now; undo is what makes that reversible.
+    expect(policy.writes).toBe("direct")
+    expect(policy.writePath).toBe("recordWrite-undoable")
   })
 
   it("puts the selected skill id in machine-readable prompt policy", () => {

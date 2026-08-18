@@ -7,10 +7,11 @@ import {
   resolveEdits,
 } from "../ai/plan"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
-import { readStep } from "../ai/tools"
+import { isWrite, readStep } from "../ai/tools"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
 import { type InspectContext, runTool } from "../excel/inspect"
+import { type OperateContext, runWrite } from "../excel/operate"
 import type { ChatHandlers, ChatState, ChatTurn, SelectionAttachment } from "./chat"
 import { serializeWorkbookContext } from "./chat-context"
 import { systemPrompt } from "./chat-prompt"
@@ -39,7 +40,7 @@ export type Chatting = {
 }
 
 /** How many times the model may look at the workbook before it has to answer. */
-const MAX_TOOL_ROUNDS = 6
+const MAX_TOOL_ROUNDS = 12
 
 /**
  * How much conversation is carried forward.
@@ -159,8 +160,13 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         if (step.kind === "answer") break
         let observation = "조회하지 못했습니다."
         await deps.run(async (context) => {
-          observation = await runTool(context as unknown as InspectContext, step.call)
+          // A write lands as soon as the model asks for it. Undo is what makes that safe,
+          // so every change goes through the history rather than straight at the range.
+          observation = isWrite(step.call)
+            ? await runWrite(context as unknown as OperateContext, deps.history, step.call)
+            : await runTool(context as unknown as InspectContext, step.call)
         })
+        if (isWrite(step.call)) deps.redraw()
         turns.push({ role: "assistant", content: reply })
         turns.push({ role: "user", content: `조회 결과:\n${observation}` })
         reply = await askModel(state.settings, turns)

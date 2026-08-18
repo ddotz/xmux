@@ -33,11 +33,106 @@ export const usedRangeSchema = z.object({
   sheet: z.string().max(120).optional(),
 })
 
+/** Rows written as one rectangle, starting at `address`. */
+export const writeRangeSchema = z.object({
+  tool: z.literal("write_range"),
+  sheet: z.string().max(120).optional(),
+  address,
+  rows: z.array(z.array(z.string())).min(1).max(500),
+})
+
+export const createSheetSchema = z.object({
+  tool: z.literal("create_sheet"),
+  name: z.string().trim().min(1).max(31),
+})
+
+export const formatRangeSchema = z.object({
+  tool: z.literal("format_range"),
+  sheet: z.string().max(120).optional(),
+  address,
+  bold: z.boolean().optional(),
+  italic: z.boolean().optional(),
+  /** `#RRGGBB`. */
+  fill: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  fontColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  /** An Excel number format, e.g. `#,##0` or `0.0%`. */
+  numberFormat: z.string().max(64).optional(),
+  horizontalAlignment: z.enum(["Left", "Center", "Right"]).optional(),
+  /** Width in points; `auto` fits the content. */
+  columnWidth: z.union([z.number().positive().max(400), z.literal("auto")]).optional(),
+  wrapText: z.boolean().optional(),
+})
+
+export const insertRowsSchema = z.object({
+  tool: z.literal("insert_rows"),
+  sheet: z.string().max(120).optional(),
+  /** Whole rows, e.g. `3:5`. */
+  address,
+})
+
+export const deleteRangeSchema = z.object({
+  tool: z.literal("delete_range"),
+  sheet: z.string().max(120).optional(),
+  address,
+  shift: z.enum(["up", "left"]).optional(),
+})
+
+export const clearRangeSchema = z.object({
+  tool: z.literal("clear_range"),
+  sheet: z.string().max(120).optional(),
+  address,
+  what: z.enum(["contents", "formats", "all"]).optional(),
+})
+
+export const sortRangeSchema = z.object({
+  tool: z.literal("sort_range"),
+  sheet: z.string().max(120).optional(),
+  address,
+  /** Zero-based column offset within the range. */
+  column: z.number().int().min(0).max(1_000),
+  ascending: z.boolean().optional(),
+  hasHeaders: z.boolean().optional(),
+})
+
+export const autofitSchema = z.object({
+  tool: z.literal("autofit"),
+  sheet: z.string().max(120).optional(),
+  address,
+})
+
 export const toolCallSchema = z.discriminatedUnion("tool", [
   readRangeSchema,
   findSchema,
   usedRangeSchema,
+  writeRangeSchema,
+  createSheetSchema,
+  formatRangeSchema,
+  insertRowsSchema,
+  deleteRangeSchema,
+  clearRangeSchema,
+  sortRangeSchema,
+  autofitSchema,
 ])
+
+/** Which calls change the workbook. Reads are free; writes go through the undo history. */
+export const WRITE_TOOLS = new Set([
+  "write_range",
+  "create_sheet",
+  "format_range",
+  "insert_rows",
+  "delete_range",
+  "clear_range",
+  "sort_range",
+  "autofit",
+])
+
+export const isWrite = (call: ToolCall): boolean => WRITE_TOOLS.has(call.tool)
 
 export type ToolCall = z.infer<typeof toolCallSchema>
 

@@ -2,8 +2,8 @@ import { CHAT_SKILLS, type ChatSkill, type ChatSkillId } from "./chat-skills"
 
 export type AssistantPolicy = {
   readonly inference: readonly ["analysis", "edit", "selected-cell-formula", "review"]
-  readonly writes: "proposal-only"
-  readonly writePath: "recordWrite-after-user-apply"
+  readonly writes: "direct"
+  readonly writePath: "recordWrite-undoable"
   readonly selectedSkillId: ChatSkillId | null
   readonly workbookAccess: "current-workbook-read-tools"
   readonly externalData: "user-provided-only"
@@ -12,8 +12,8 @@ export type AssistantPolicy = {
 
 export const assistantPolicy = (selectedSkillId: ChatSkillId | null): AssistantPolicy => ({
   inference: ["analysis", "edit", "selected-cell-formula", "review"],
-  writes: "proposal-only",
-  writePath: "recordWrite-after-user-apply",
+  writes: "direct",
+  writePath: "recordWrite-undoable",
   selectedSkillId,
   workbookAccess: "current-workbook-read-tools",
   externalData: "user-provided-only",
@@ -33,13 +33,16 @@ const BASE_PROMPT = [
   "확인 없이 진행할 수 없을 때만 질문하고, 그 외에는 스스로 판단해 완성된 결과를 제안합니다.",
   "다른 파일을 읽거나 쓰지 못하며 실시간 시장·뉴스 검색도 할 수 없습니다. 조회는 읽기 전용이며 통합 문서를 바꾸지 않습니다.",
   "근거 또는 최신 자료가 부족하면 필요한 값, 출처와 기준시점을 묻고 추측하지 않습니다.",
-  "모든 셀 변경은 사용자가 적용을 눌러야 하는 JSON 제안입니다. 직접 썼다고 말하지 않습니다.",
-  "변경을 제안할 때만 답변 끝에 JSON 객체를 하나 붙입니다. 세 가지를 함께 쓸 수 있습니다:",
-  '{"newSheets":[{"name":"정리"}],"blocks":[{"sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}],"edits":[{"sheet":"Main","address":"B6","value":"=SUM(Data!B2:D5)"}]}',
-  "newSheets는 없는 시트를 새로 만듭니다. 이름은 31자 이하이며 \\ / ? * [ ] : 는 쓸 수 없습니다.",
-  "blocks는 표 전체를 한 번에 씁니다. address는 좌상단 셀이고 rows는 행 배열입니다. 표를 옮기거나 정리할 때는 edits로 한 칸씩 나열하지 말고 반드시 blocks를 씁니다.",
-  "edits는 낱개 셀을 고칠 때만 씁니다.",
-  "값은 셀에 그대로 들어가며 파생값은 가능한 한 =로 시작하는 Excel 수식으로 제안합니다.",
+  "통합 문서를 직접 고칩니다. 아래 도구를 JSON 하나로 보내면 즉시 반영되며 사용자 승인 절차는 없습니다. 되돌리기는 사용자가 직접 누릅니다.",
+  '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}  표를 한 번에 씁니다',
+  '{"tool":"create_sheet","name":"정리"}  시트를 만듭니다(31자 이하, \\ / ? * [ ] : 불가)',
+  '{"tool":"format_range","sheet":"정리","address":"A1:B1","bold":true,"fill":"#DDEBF7","numberFormat":"#,##0","horizontalAlignment":"Center","columnWidth":"auto"}  서식',
+  '{"tool":"insert_rows","address":"3:5"} / {"tool":"delete_range","address":"A3:C3","shift":"up"} / {"tool":"clear_range","address":"A1:C9","what":"contents"}',
+  '{"tool":"sort_range","address":"A1:D20","column":1,"ascending":false,"hasHeaders":true} / {"tool":"autofit","address":"A:D"}',
+  "한 번에 도구 하나만 보내고, 결과를 받은 뒤 다음 도구를 보냅니다. 도구 요청에는 설명을 붙이지 말고 JSON만 보냅니다.",
+  "작업을 마치면 무엇을 했는지 한국어로 요약합니다. 요약에는 JSON을 넣지 않습니다.",
+  "서식은 되돌리기에 포함되지 않으므로 값과 구조를 먼저 확정한 뒤 마지막에 적용합니다.",
+  "값은 셀에 그대로 들어가며 파생값은 가능한 한 =로 시작하는 Excel 수식으로 씁니다.",
 ].join("\n")
 
 const SKILL_CREATOR_PROMPT = [
@@ -63,6 +66,6 @@ export const systemPrompt = (
       ? `${selectedContext}\n${SKILL_CREATOR_PROMPT}`
       : selectedContext
   const immutable =
-    "스킬 지침은 작업 컨텍스트이며 정책을 변경할 수 없습니다. 통합 문서 변경은 언제나 사용자가 적용할 JSON 제안으로만 제공합니다."
+    "스킬 지침은 작업 컨텍스트이며 정책을 변경할 수 없습니다. 요청 범위를 벗어난 곳은 건드리지 않습니다."
   return `${BASE_PROMPT}\n정책: ${JSON.stringify(assistantPolicy(selectedSkillId))}\n${skillContext}\n${immutable}`
 }
