@@ -109,6 +109,30 @@ const CALL_PHRASES: Record<string, (args: readonly string[]) => string> = {
     `${range} 조건 ${criterion}에 맞는 ${target ?? range}의 평균 내기`,
   AVERAGEIFS: ([target, ...rest]) => `${conditions(rest)}에 맞는 ${target}의 평균 내기`,
   SUBTOTAL: ([, range]) => `${range}의 부분합 구하기`,
+  ABS: ([value]) => `${value}의 절댓값`,
+  ROUNDUP: ([value, digits]) => `${value}을 소수점 ${digits}자리로 올림하기`,
+  ROUNDDOWN: ([value, digits]) => `${value}을 소수점 ${digits}자리로 내림하기`,
+  AND: (args) => `${args.join(", ")}가 모두 참인지`,
+  OR: (args) => `${args.join(", ")} 중 하나라도 참인지`,
+  NOT: ([value]) => `${value}가 아닌지`,
+  // The money functions. A loan schedule is unreadable without them, and the fallback
+  // phrasing turned every row of one into "PMT(…) 계산하기".
+  PMT: ([rate, periods, present]) =>
+    `이자율 ${rate}, ${periods}회로 ${present}을 갚을 때의 회차 상환액`,
+  IPMT: ([rate, period]) => `이자율 ${rate}의 ${period}회차 이자`,
+  PPMT: ([rate, period]) => `이자율 ${rate}의 ${period}회차 원금`,
+  FV: ([rate, periods]) => `이자율 ${rate}로 ${periods}회 뒤의 미래가치`,
+  PV: ([rate, periods]) => `이자율 ${rate}로 ${periods}회짜리 현재가치`,
+  RATE: ([periods, payment]) => `${periods}회 ${payment} 상환의 이자율`,
+  NPER: ([rate, payment]) => `이자율 ${rate}, ${payment} 상환의 기간 수`,
+  NPV: ([rate, flows]) => `${flows}을 이자율 ${rate}로 할인한 순현재가치`,
+  IRR: ([flows]) => `${flows}의 내부수익률`,
+  XNPV: ([rate, flows, dates]) => `${flows}을 ${rate}로 할인한 순현재가치 (날짜 ${dates})`,
+  XIRR: ([flows, dates]) => `${flows}의 내부수익률 (날짜 ${dates})`,
+  TEXT: ([value, format]) => `${value}을 ${format} 모양의 글자로`,
+  EDATE: ([date, months]) => `${date}에서 ${months}개월 뒤 날짜`,
+  EOMONTH: ([date, months]) => `${date}에서 ${months}개월 뒤 달의 말일`,
+  YEARFRAC: ([from, to]) => `${from}부터 ${to}까지의 연수`,
 }
 
 /**

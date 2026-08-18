@@ -103,9 +103,45 @@ describe("describeSteps", () => {
     ])
   })
 
-  it("names an unknown function instead of guessing at it", () => {
-    expect(lines("=XIRR(Data!B2:D5,Main!A1)")).toEqual([
-      "① XIRR(Data!B2:D5(12칸), Main!A1(5)) 계산하기",
+  it("applies exponentiation before multiplication, the way Excel does", () => {
+    // Given: compound interest. Read left to right this becomes (B2*(1+C2))^D2 — a
+    // different number, explained with complete confidence.
+    const lookup = (at: number): ReferenceSummary | null =>
+      [cell("B2", "100"), cell("C2", "0.1"), cell("D2", "2")][at] ?? null
+
+    expect(lines("=B2*(1+C2)^D2", lookup)).toEqual([
+      "① 1 + C2(0.1) → 1.1",
+      "② ① ^ D2(2) → 1.21",
+      "③ B2(100) × ② → 121",
+    ])
+  })
+
+  it("reads a trailing percent as a hundredth instead of dropping it", () => {
+    // Given: `=100*5%+3`. The percent sign was not an operator the parser knew, so it read
+    // `100*5` and threw away everything after it.
+    expect(lines("=100*5%+3")).toEqual(["① 100 × 5% → 5", "② ① + 3 → 8"])
+  })
+
+  it("scales a reference by a percent too", () => {
+    const lookup = (at: number): ReferenceSummary | null => [cell("B2", "1200")][at] ?? null
+
+    expect(lines("=B2*10%", lookup)).toEqual(["① B2(1200) × 10% → 120"])
+  })
+
+  it("says what the money functions do rather than naming them", () => {
+    const lookup = (at: number): ReferenceSummary | null =>
+      [cell("B1", "0.06"), cell("B2", "3"), cell("B3", "100000")][at] ?? null
+
+    expect(lines("=PMT(B1/12,B2*12,-B3)", lookup)).toEqual([
+      "① B1(0.06) ÷ 12 → 0.01",
+      "② B2(3) × 12 → 36",
+      "③ 이자율 ①, ②회로 -B3(100000)을 갚을 때의 회차 상환액",
+    ])
+  })
+
+  it("names a function it has no phrase for instead of guessing at it", () => {
+    expect(lines("=IMSUB(Data!B2:D5,Main!A1)")).toEqual([
+      "① IMSUB(Data!B2:D5(12칸), Main!A1(5)) 계산하기",
     ])
   })
 

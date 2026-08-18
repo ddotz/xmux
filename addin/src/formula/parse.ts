@@ -59,7 +59,7 @@ const lex = (formula: string): readonly Token[] => {
       i += numeric[0].length
       continue
     }
-    const word = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(rest)
+    const word = /^[\p{L}_][\p{L}0-9_.]*/u.exec(rest)
     if (word !== null) {
       tokens.push({ kind: "name", text: word[0] })
       i += word[0].length
@@ -131,12 +131,29 @@ class Parser {
   }
 
   private term(): Node {
+    let left = this.power()
+    for (;;) {
+      const token = this.peek()
+      if (token?.kind !== "symbol" || !"*/".includes(token.text) || token.text === "") return left
+      this.position += 1
+      left = { kind: "binary", op: token.text, left, right: this.power() }
+    }
+  }
+
+  /**
+   * Exponentiation, which binds tighter than multiplication.
+   *
+   * `B2*(1+C2)^D2` is compound interest, and read left to right with `^` at the same level
+   * as `*` it becomes `(B2*(1+C2))^D2` — a different number, explained confidently and
+   * wrongly. Excel applies `^` first and, for repeated powers, works left to right.
+   */
+  private power(): Node {
     let left = this.factor()
     for (;;) {
       const token = this.peek()
-      if (token?.kind !== "symbol" || !"*/^".includes(token.text) || token.text === "") return left
+      if (token?.kind !== "symbol" || token.text !== "^") return left
       this.position += 1
-      left = { kind: "binary", op: token.text, left, right: this.factor() }
+      left = { kind: "binary", op: "^", left, right: this.factor() }
     }
   }
 
@@ -154,6 +171,27 @@ class Parser {
     return empty ? { kind: "unknown", text: "" } : this.expression()
   }
 
+  /**
+   * `5%` is five hundredths, and the parser used to read it as five and then stop.
+   *
+   * The `%` was not an operator it knew, so `=100*5%+3` parsed as `100*5` and everything
+   * after the percent sign was dropped — a wrong number and a truncated explanation. A
+   * literal folds into its own value; anything else is scaled explicitly.
+   */
+  private percent(node: Node): Node {
+    if (!this.eat("%")) return node
+    const scaled: Node =
+      node.kind === "number"
+        ? { kind: "number", text: `${node.text}%`, value: node.value / 100 }
+        : {
+            kind: "binary",
+            op: "*",
+            left: node,
+            right: { kind: "number", text: "0.01", value: 0.01 },
+          }
+    return this.percent(scaled)
+  }
+
   private factor(): Node {
     if (this.eat("-")) return { kind: "unary", operand: this.factor() }
     const token = this.peek()
@@ -162,9 +200,9 @@ class Parser {
 
     switch (token.kind) {
       case "ref":
-        return { kind: "ref", text: token.text, at: token.at }
+        return this.percent({ kind: "ref", text: token.text, at: token.at })
       case "number":
-        return { kind: "number", text: token.text, value: Number(token.text) }
+        return this.percent({ kind: "number", text: token.text, value: Number(token.text) })
       case "text":
         return { kind: "text", text: token.text }
       case "name": {
@@ -175,13 +213,13 @@ class Parser {
           while (this.eat(",") || this.eat(";"))
           this.eat(")")
         }
-        return { kind: "call", name: functionName(token.text), args }
+        return this.percent({ kind: "call", name: functionName(token.text), args })
       }
       case "symbol":
         if (token.text === "(") {
           const inner = this.expression()
           this.eat(")")
-          return inner
+          return this.percent(inner)
         }
         return { kind: "unknown", text: token.text }
     }

@@ -50,6 +50,8 @@ and any name followed by `(`. An out-of-bounds A1 shape (`ZZZ9`, `A1048577`) deg
   table name, so it's read as a reference body outright and never as an identifier.
 - Every branch of `readReferenceLike` must advance the cursor or reset it explicitly, otherwise
   `scanReferences` spins forever. Reset points are `cur.pos = start` / `start + 1`.
+- **Names take any Unicode letter; column letters take A-Z.** `a1.ts` `isLetter` (identifiers) and `isAlpha` (addresses) are deliberately different predicates. Collapsing them either makes `매출` invisible or reads `가1` as a cell.
+- Precedence, tightest first: unary minus, `%`, `^`, `*` `/`, `+` `-` `&`, comparisons. `^` has its own level in `parse.ts` (`power()`), because `B2*(1+C2)^D2` is compound interest and grouping it as `(B2*(1+C2))^D2` explains a different number with full confidence.
 - `describe.ts` output is user-facing Korean rendered straight into the pane (`taskpane/view.ts`);
   phrases live in `CALL_PHRASES`, numbers go through `toLocaleString("ko-KR")`.
 - `describe.ts` states a value only when Excel already told it one: SUM/AVERAGE/COUNT/COUNTA off a

@@ -76,11 +76,16 @@ private struct Scanner {
     }
 
     /// One side of a reference: `$B$2`, `B`, `2`. Returns nil when out of Excel's bounds.
+    ///
+    /// Column letters are A-Z and nothing else. `isLetter` is Unicode-wide, so `가1` used to
+    /// read as a cell in column 0 — the mirror of the bug the TypeScript scanner had, where
+    /// A-Z-only identifiers made a Korean name invisible. Names take any letter; addresses
+    /// take twenty-six.
     mutating func readAtom() -> (hasColumn: Bool, hasRow: Bool)? {
         let start = position
         if peek() == "$" { position += 1 }
         let letterStart = position
-        while let c = peek(), c.isLetter { position += 1 }
+        while let c = peek(), c.isASCII, c.isLetter { position += 1 }
         let letters = String(characters[letterStart..<position])
         if peek() == "$" { position += 1 }
         let digitStart = position

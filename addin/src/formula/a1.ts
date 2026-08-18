@@ -16,15 +16,26 @@ type Cursor = { readonly src: string; pos: number }
 type Atom = { readonly text: string; readonly column: number | null; readonly row: number | null }
 
 const isDigit = (c: string): boolean => c >= "0" && c <= "9"
+/** Column letters are A-Z and nothing else: `가1` is a name, not cell 가1. */
 const isAlpha = (c: string): boolean => /^[A-Za-z]$/.test(c)
-const isIdentStart = (c: string): boolean => isAlpha(c) || c === "_" || c === "\\"
-const isIdentPart = (c: string): boolean => isAlpha(c) || isDigit(c) || c === "_" || c === "."
+/**
+ * What may appear in a name.
+ *
+ * Excel takes any Unicode letter in a defined name, a table name or a sheet name, and in a
+ * Korean workbook most of them are Korean. Restricting this to A-Z did not make `매출` or
+ * `표1[@금액]` unresolvable — it made them invisible: the scanner walked past one character
+ * at a time and emitted no token at all, so the formula strip showed nothing to click and
+ * the explanation had nothing to explain.
+ */
+const isLetter = (c: string): boolean => /\p{L}/u.test(c)
+const isIdentStart = (c: string): boolean => isLetter(c) || c === "_" || c === "\\"
+const isIdentPart = (c: string): boolean => isLetter(c) || isDigit(c) || c === "_" || c === "."
 
 const columnNumber = (letters: string): number =>
   [...letters.toUpperCase()].reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - 64), 0)
 
 export type { Atom, Cursor }
-export { columnNumber, isAlpha, isDigit, isIdentPart, isIdentStart, MAX_COLUMN, MAX_ROW }
+export { columnNumber, isAlpha, isDigit, isIdentPart, isIdentStart, isLetter, MAX_COLUMN, MAX_ROW }
 
 /** Parse one side of a reference: `$B$2`, `B`, `2`. Returns null when out of bounds. */
 const readAtom = (cur: Cursor): Atom | null => {

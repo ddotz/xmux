@@ -140,3 +140,38 @@ describe("scanReferences", () => {
     expect(scanReferences("some text")).toEqual([])
   })
 })
+
+describe("names that are not written in English", () => {
+  it("reads a Korean defined name as a reference", () => {
+    // Given: `=매출*2`. Restricting identifiers to A-Z did not make this unresolvable, it
+    // made it invisible — the scanner walked past it a character at a time.
+    const [name, ...rest] = scanReferences("=매출*2")
+
+    expect(rest).toEqual([])
+    expect(name?.text).toBe("매출")
+    expect(name?.kind).toBe("name")
+    expect(name?.target).toEqual({ kind: "name", name: "매출" })
+  })
+
+  it("reads a Korean table's structured reference", () => {
+    // Given: the shape `add_table_column` writes into a table.
+    const [token] = scanReferences("=표1[@금액]*0.1")
+
+    expect(token?.text).toBe("표1[@금액]")
+    expect(token?.kind).toBe("structured")
+    expect(token?.target).toEqual({ kind: "table", table: "표1", itemSpec: "[@금액]" })
+  })
+
+  it("keeps column letters to A-Z, so a Korean name is never read as a cell", () => {
+    const [token] = scanReferences("=가1+1")
+
+    expect(token?.kind).toBe("name")
+  })
+
+  it("spans a Korean sheet name and its address", () => {
+    const [token] = scanReferences("=자본!B12")
+
+    expect(token?.text).toBe("자본!B12")
+    expect(token?.target).toEqual({ kind: "local", sheet: "자본", address: "B12" })
+  })
+})
