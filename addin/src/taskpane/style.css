@@ -6,7 +6,6 @@
   --surface: #fff;
   --surface-alt: #f5f5f5;
   --accent: #217346; /* Excel's green, used only where something is active */
-  --host-chrome-safe-area: 56px;
   --host-chrome-height: 56px;
   --tab-row-height: 33px;
   --pane-body-host-inset: calc(var(--host-chrome-height) - var(--tab-row-height));
@@ -528,13 +527,6 @@ body {
   justify-content: center;
 }
 
-.host-chrome-safe-area {
-  flex: 0 0 var(--host-chrome-safe-area);
-  width: var(--host-chrome-safe-area);
-  height: 1px;
-  pointer-events: none;
-}
-
 .keyboard-help {
   position: static;
   width: 32px;
@@ -573,7 +565,7 @@ body {
   position: absolute;
   z-index: 1;
   top: calc(100% + 1px);
-  right: var(--host-chrome-safe-area);
+  right: 0;
   width: min(260px, calc(100vw - 24px));
   padding: 7px 9px;
   border: 1px solid var(--line);

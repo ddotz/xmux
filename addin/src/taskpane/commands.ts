@@ -1,6 +1,7 @@
 import { formatArea, type GridArea } from "../excel/address"
 import type { History } from "../excel/history"
 import { recordWrite, restore, snapshot } from "../excel/history"
+import { splitQualified } from "../excel/resolve"
 import { applyInsertion, referenceTo, removeReference } from "../formula/reference"
 import type { PaneState, ViewportState } from "../model"
 
@@ -45,12 +46,18 @@ export type CommandDeps = {
 
 const HISTORY_STATUS_DURATION_MS = 5_000
 
-/** `Main!B2` → `["Main", "B2"]`. Excel always qualifies the addresses it hands back. */
+/**
+ * `Main!B2` → `["Main", "B2"]`. Excel always qualifies the addresses it hands back.
+ *
+ * A sheet whose name holds a space, an apostrophe, or anything else Excel considers unsafe
+ * comes back quoted — `'매출 현황'!B2` — and the quotes are Excel's syntax, not part of the
+ * name. Passing them straight to `worksheets.getItem` asked for a sheet that does not
+ * exist and threw `ItemNotFound`, which is why this only ever appeared in workbooks whose
+ * sheets are named like real workbooks' sheets are.
+ */
 export const splitAddress = (address: string): { sheet: string; local: string } => {
   const cut = address.lastIndexOf("!")
-  return cut < 0
-    ? { sheet: "", local: address }
-    : { sheet: address.slice(0, cut), local: address.slice(cut + 1) }
+  return cut < 0 ? { sheet: "", local: address } : splitQualified(address)
 }
 
 export const createCommands = (deps: CommandDeps) => {

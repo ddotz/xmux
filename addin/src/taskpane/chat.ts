@@ -23,6 +23,15 @@ export type ChatState = {
   readonly error: string | null
   readonly sheet: string
   readonly settings: AiSettings
+  /**
+   * What is typed into the settings form but not saved yet.
+   *
+   * The form is rebuilt from state on every redraw, so a connection test — which redraws
+   * twice, once pending and once with the result — used to rebuild it from the *saved*
+   * settings and throw the typed values away. The draft survives those redraws; only
+   * 저장 promotes it to `settings`.
+   */
+  readonly settingsDraft: AiSettings | null
   readonly settingsOpen: boolean
   readonly skills: readonly ChatSkill[]
   readonly selectedSkillId: ChatSkillId | null

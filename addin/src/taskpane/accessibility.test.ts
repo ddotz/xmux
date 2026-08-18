@@ -23,10 +23,9 @@ describe("task pane accessibility markup", () => {
     expect(utilities?.querySelector("#cell-address")).not.toBeNull()
     expect(utilities?.querySelector("#status-badge")).not.toBeNull()
     expect(utilities?.querySelector("#undo")).not.toBeNull()
-    const safeArea = pane.querySelector(".host-chrome-safe-area")
-    expect(context?.nextElementSibling).toBe(safeArea)
-    expect(nav?.lastElementChild).toBe(safeArea)
-    expect(safeArea?.getAttribute("aria-hidden")).toBe("true")
+    // The utilities sit flush against the right edge: no spacer trails them.
+    expect(pane.querySelector(".host-chrome-safe-area")).toBeNull()
+    expect(nav?.lastElementChild).toBe(context)
   })
 
   it("keeps pane content below the full host tile height", () => {

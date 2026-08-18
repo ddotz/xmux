@@ -26,6 +26,7 @@ const state = (overrides: Partial<ChatState> = {}): ChatState => ({
   error: null,
   sheet: "Main",
   settings: { ...DEFAULT_SETTINGS, apiKey: "sk-test" },
+  settingsDraft: null,
   settingsOpen: false,
   skills: CHAT_SKILLS,
   selectedSkillId: null,
@@ -244,5 +245,39 @@ describe("the compact chat screen", () => {
     expect(root.querySelectorAll(".settings-input")).toHaveLength(3)
     expect(root.textContent).not.toContain("sk-abcdefghijkl")
     expect(root.querySelector<HTMLInputElement>('[aria-label="API 키"]')?.value).toBe("")
+  })
+})
+
+describe("settings form drafts", () => {
+  it("shows what was typed, not what is stored, while a test is running", () => {
+    // Given: the user typed a new server and pressed 연결 확인, which redraws twice.
+    const root = mount(
+      state({
+        settingsOpen: true,
+        settings: { ...DEFAULT_SETTINGS, baseUrl: "https://saved.example/api" },
+        settingsDraft: { ...DEFAULT_SETTINGS, baseUrl: "https://typed.example/api" },
+        connectionPending: true,
+      }),
+    )
+
+    // When: the form is rebuilt from state.
+    const inputs = [...root.querySelectorAll<HTMLInputElement>(".settings-input")]
+
+    // Then: the typed value survived the redraw instead of rolling back.
+    expect(inputs.map((input) => input.value)).toContain("https://typed.example/api")
+    expect(inputs.map((input) => input.value)).not.toContain("https://saved.example/api")
+  })
+
+  it("falls back to the stored settings once there is no draft", () => {
+    const root = mount(
+      state({
+        settingsOpen: true,
+        settings: { ...DEFAULT_SETTINGS, baseUrl: "https://saved.example/api" },
+        settingsDraft: null,
+      }),
+    )
+
+    const inputs = [...root.querySelectorAll<HTMLInputElement>(".settings-input")]
+    expect(inputs.map((input) => input.value)).toContain("https://saved.example/api")
   })
 })

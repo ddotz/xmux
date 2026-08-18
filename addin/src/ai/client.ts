@@ -2,12 +2,13 @@ import type { AiSettings } from "./settings"
 import { endpointFor, redactKey, settingsProblem } from "./settings"
 
 /**
- * Talking to an OpenAI **completions** endpoint from the task pane.
+ * Talking to an OpenAI **chat completions** endpoint from the task pane.
  *
- * The target server (KDB AI) exposes the legacy `completions` route — a single prompt in,
- * a single text out — which is the same route findr's Rust client used. A chat is turns,
- * so the turns are flattened into one transcript prompt here rather than pretending the
- * server understands `messages`.
+ * The route was `completions` with a flattened transcript until the server answered
+ * `405 {"detail":"Method Not Allowed"}`: that path exists but takes no POST. The working
+ * reference is the same server's own client config — `api: openai-completions`, which posts
+ * to `<baseUrl>/chat/completions` with a `messages` array and reads
+ * `choices[0].message.content`. Turns are sent as turns; nothing is flattened.
  *
  * The call goes out of the pane itself, so the host must be declared in the manifest's
  * `<AppDomains>`, and the key never leaves this machine except to the server the user named.
@@ -27,28 +28,16 @@ export class AiError extends Error {
 
 const REQUEST_TIMEOUT_MS = 120_000
 
-/** What each speaker is called in the transcript the model reads. */
-const SPEAKER: Record<ChatMessage["role"], string> = {
-  system: "지시",
-  user: "사용자",
-  assistant: "조수",
-}
-
-/**
- * One prompt out of the whole conversation, ending on the assistant's cue so the model
- * continues as the assistant rather than inventing another user turn.
- */
-export const promptFrom = (messages: readonly ChatMessage[]): string =>
-  `${messages.map((message) => `${SPEAKER[message.role]}: ${message.content}`).join("\n\n")}\n\n${SPEAKER.assistant}:`
-
 const textOf = (body: unknown): string | null => {
   if (typeof body !== "object" || body === null) return null
   const choices = (body as { choices?: unknown }).choices
   if (!Array.isArray(choices)) return null
   const first: unknown = choices[0]
   if (typeof first !== "object" || first === null) return null
-  const text = (first as { text?: unknown }).text
-  return typeof text === "string" ? text : null
+  const message = (first as { message?: unknown }).message
+  if (typeof message !== "object" || message === null) return null
+  const content = (message as { content?: unknown }).content
+  return typeof content === "string" ? content : null
 }
 
 /** The server's own words, trimmed and with the key scrubbed out of them. */
@@ -69,7 +58,7 @@ export const askModel = async (
 
   let response: Response
   try {
-    response = await fetcher(endpointFor(settings, "completions"), {
+    response = await fetcher(endpointFor(settings, "chat/completions"), {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -77,7 +66,7 @@ export const askModel = async (
       },
       body: JSON.stringify({
         model: settings.model.trim(),
-        prompt: promptFrom(messages),
+        messages: messages.map((message) => ({ role: message.role, content: message.content })),
         temperature: settings.temperature,
         max_tokens: settings.maxTokens,
         stream: false,

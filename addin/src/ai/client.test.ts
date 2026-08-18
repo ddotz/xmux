@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest"
-import { AiError, askModel, promptFrom } from "./client"
+import { AiError, askModel } from "./client"
 import { DEFAULT_SETTINGS } from "./settings"
 
 /**
  * The request is faked at the wire, not at the SDK: these tests drive the same code the
- * pane runs, and assert what actually leaves the machine — the legacy completions shape
- * the KDB AI server speaks.
+ * pane runs, and assert what actually leaves the machine — the chat completions shape the
+ * KDB AI server speaks. The server answers 405 on the legacy `completions` route, so the
+ * route, the body, and the reply field are all part of the contract under test.
  */
 const SETTINGS = { ...DEFAULT_SETTINGS, apiKey: "sk-secret-123" }
 
@@ -18,27 +19,7 @@ const answering = (body: unknown, status = 200) => {
   return { calls, fetcher }
 }
 
-const reply = { choices: [{ text: "  네, B6에 넣겠습니다.  " }] }
-
-describe("promptFrom", () => {
-  it("flattens the conversation and ends on the assistant's cue", () => {
-    // Given: the shape a chat turn arrives in
-    const prompt = promptFrom([
-      { role: "system", content: "규칙" },
-      { role: "user", content: "합계 넣어줘" },
-      { role: "assistant", content: "어디에요?" },
-      { role: "user", content: "B6" },
-    ])
-
-    expect(prompt).toBe(
-      "지시: 규칙\n\n사용자: 합계 넣어줘\n\n조수: 어디에요?\n\n사용자: B6\n\n조수:",
-    )
-  })
-
-  it("still ends on the cue when there is only one turn", () => {
-    expect(promptFrom([{ role: "user", content: "안녕" }])).toBe("사용자: 안녕\n\n조수:")
-  })
-})
+const reply = { choices: [{ message: { role: "assistant", content: "  네, B6에 넣겠습니다.  " } }] }
 
 describe("askModel", () => {
   it("returns what the model said, without the padding around it", async () => {
@@ -49,12 +30,12 @@ describe("askModel", () => {
     )
   })
 
-  it("posts to the completions route of the configured server", async () => {
+  it("posts to the chat completions route of the configured server", async () => {
     const { calls, fetcher } = answering(reply)
 
     await askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)
 
-    expect(calls[0]?.url).toBe("https://ai.kdb.co.kr:32210/api/completions")
+    expect(calls[0]?.url).toBe("https://ai.kdb.co.kr:32210/api/chat/completions")
   })
 
   it("sends the key as a bearer token", async () => {
@@ -65,15 +46,25 @@ describe("askModel", () => {
     expect(new Headers(calls[0]?.init?.headers).get("Authorization")).toBe("Bearer sk-secret-123")
   })
 
-  it("sends one prompt, the configured model, and the limits — not a messages array", async () => {
+  it("sends the turns as turns, with the configured model and limits", async () => {
     const { calls, fetcher } = answering(reply)
 
-    await askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)
+    await askModel(
+      SETTINGS,
+      [
+        { role: "system", content: "규칙" },
+        { role: "user", content: "안녕" },
+      ],
+      fetcher,
+    )
 
     const sent: unknown = JSON.parse(String(calls[0]?.init?.body))
     expect(sent).toEqual({
       model: "qwen3.6_27b",
-      prompt: "사용자: 안녕\n\n조수:",
+      messages: [
+        { role: "system", content: "규칙" },
+        { role: "user", content: "안녕" },
+      ],
       temperature: SETTINGS.temperature,
       max_tokens: SETTINGS.maxTokens,
       stream: false,
@@ -111,7 +102,8 @@ describe("askModel", () => {
   })
 
   it("does not pretend an unreadable answer is an answer", async () => {
-    const { fetcher } = answering({ choices: [{ message: { content: "wrong shape" } }] })
+    // Given: the legacy completions shape this client no longer speaks.
+    const { fetcher } = answering({ choices: [{ text: "wrong shape" }] })
 
     await expect(askModel(SETTINGS, [], fetcher)).rejects.toThrow(AiError)
   })

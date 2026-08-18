@@ -1,4 +1,4 @@
-// A stand-in for the KDB AI server (OpenAI **completions**: one prompt in, one text out), used to exercise the 대화 tab end to end
+// A stand-in for the KDB AI server (OpenAI **chat completions**), used to exercise the 대화 tab end to end
 // without spending a real API key. It speaks exactly the one route the pane calls and
 // answers with a canned plan, so what is under test is the pane, the request, the
 // approval step and the Excel write — everything except the model itself.
@@ -26,6 +26,13 @@ const ANSWER = [
   "```",
 ].join("\n")
 
+/**
+ * The real server answers 405 on anything but this route. An earlier version of this fake
+ * accepted every path and answered in the legacy `completions` shape, so the pane's wrong
+ * route reached production unnoticed. It is strict on purpose now.
+ */
+const ROUTE = "/api/chat/completions"
+
 createServer(options, (request, response) => {
   const cors = {
     "Access-Control-Allow-Origin": "*",
@@ -38,6 +45,14 @@ createServer(options, (request, response) => {
     return
   }
 
+  const path = new URL(request.url ?? "/", "https://localhost").pathname
+  if (path !== ROUTE || request.method !== "POST") {
+    console.log(`${request.method} ${path} -> 405 (route is POST ${ROUTE})`)
+    response.writeHead(405, { ...cors, "Content-Type": "application/json" })
+    response.end(JSON.stringify({ detail: "Method Not Allowed" }))
+    return
+  }
+
   let body = ""
   request.on("data", (chunk) => {
     body += chunk
@@ -47,7 +62,12 @@ createServer(options, (request, response) => {
     console.log(`${request.method} ${request.url} auth=${request.headers.authorization ?? "none"}`)
     console.log(`body=${body.slice(0, 400)}`)
     response.writeHead(200, { ...cors, "Content-Type": "application/json" })
-    response.end(JSON.stringify({ choices: [{ text: ANSWER }], usage: { completion_tokens: 42 } }))
+    response.end(
+      JSON.stringify({
+        choices: [{ message: { role: "assistant", content: ANSWER } }],
+        usage: { completion_tokens: 42 },
+      }),
+    )
   })
 }).listen(port, () => {
   console.log(`fake model on https://localhost:${port}`)

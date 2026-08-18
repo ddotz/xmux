@@ -50,6 +50,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     error: null,
     sheet: "",
     settings: DEFAULT_SETTINGS,
+    settingsDraft: null,
     settingsOpen: false,
     skills: CHAT_SKILLS,
     selectedSkillId: null,
@@ -162,7 +163,13 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     onApply: apply,
     onDiscard: () => set({ plan: null }),
     onToggleSettings: () =>
-      set({ settingsOpen: !state.settingsOpen, error: null, connectionStatus: null }),
+      // Closing the form throws the unsaved draft away; reopening shows what is stored.
+      set({
+        settingsOpen: !state.settingsOpen,
+        settingsDraft: null,
+        error: null,
+        connectionStatus: null,
+      }),
     onSelectSkill: (selectedSkillId) => set({ selectedSkillId }),
     onSaveSkill: (skill) => {
       const savedId = skillFromDraft(skill).id
@@ -186,11 +193,23 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     onDetachSelection: () => set({ selectionAttachment: null }),
     onSaveSettings: (settings) => {
       saveSettings(localStorage, settings)
-      set({ settings, settingsOpen: false, error: null, connectionStatus: null })
+      set({
+        settings,
+        settingsDraft: null,
+        settingsOpen: false,
+        error: null,
+        connectionStatus: null,
+      })
     },
     onTestSettings: (settings) => {
       const check = async (): Promise<void> => {
-        set({ connectionPending: true, connectionStatus: null, error: null })
+        // The typed values have to outlive this redraw, but testing is not saving.
+        set({
+          settingsDraft: settings,
+          connectionPending: true,
+          connectionStatus: null,
+          error: null,
+        })
         try {
           await testConnection(settings)
           set({ connectionPending: false, connectionStatus: "연결에 성공했습니다.", error: null })

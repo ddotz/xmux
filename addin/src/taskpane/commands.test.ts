@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { createHistory } from "../excel/history"
 import { scanReferences } from "../formula/scanner"
 import type { PaneState, ViewportState } from "../model"
-import { createCommands } from "./commands"
+import { createCommands, splitAddress } from "./commands"
 
 const pane: PaneState = {
   kind: "formula",
@@ -221,5 +221,26 @@ describe("deleteReference", () => {
       message: "Main!B2 재실행",
       expiresAfterMs: 5_000,
     })
+  })
+})
+
+describe("splitAddress", () => {
+  it("keeps a plain sheet name as Excel gave it", () => {
+    expect(splitAddress("Main!B2")).toEqual({ sheet: "Main", local: "B2" })
+  })
+
+  it("unwraps the quotes Excel adds around a name with a space", () => {
+    // Given: Excel qualifies such a sheet as '매출 현황'!B2.
+    // When: the pane splits that address to look the sheet up.
+    // Then: the bare name goes to worksheets.getItem, which otherwise threw ItemNotFound.
+    expect(splitAddress("'매출 현황'!B2")).toEqual({ sheet: "매출 현황", local: "B2" })
+  })
+
+  it("unescapes a doubled apostrophe inside the name", () => {
+    expect(splitAddress("'John''s'!A1")).toEqual({ sheet: "John's", local: "A1" })
+  })
+
+  it("leaves an unqualified address alone", () => {
+    expect(splitAddress("B2")).toEqual({ sheet: "", local: "B2" })
   })
 })

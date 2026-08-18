@@ -30,7 +30,9 @@ const action = (content: string, primary: boolean, onClick: () => void): HTMLBut
 export const renderSettings = (state: ChatState, handlers: ChatHandlers): HTMLElement => {
   const form = document.createElement("div")
   form.className = "settings"
-  const { settings } = state
+  // What the user last typed wins over what is saved, so a connection test does not
+  // reset the form underneath them. 저장 is what makes a draft real.
+  const settings = state.settingsDraft ?? state.settings
   const key = field("API 키", "", settings.apiKey === "" ? "sk-…" : maskKey(settings.apiKey))
   key.type = "password"
   const base = field("서버 주소", settings.baseUrl, "https://ai.kdb.co.kr:32210/api")
