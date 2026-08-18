@@ -71,12 +71,18 @@ if ($null -eq $thumbprint) {
         $thumbprint = (Get-Content -LiteralPath $thumbprintPath -Raw).Trim()
     }
 }
-if ($null -ne $thumbprint) {
-    foreach ($store in @("My", "Root")) {
-        Remove-Item `
-            -LiteralPath "Cert:\CurrentUser\$store\$thumbprint" `
-            -Force `
-            -ErrorAction SilentlyContinue
+# The trusted entry is the CA, so leaving it behind would keep a private root installed
+# after uninstall. Both halves of the chain are owned by this installation.
+$ownedThumbprints = @($thumbprint, $ownership.CaCertificateThumbprint) |
+    Where-Object { $null -ne $_ -and $_ -ne "" }
+if ($ownedThumbprints.Count -gt 0) {
+    foreach ($ownedThumbprint in $ownedThumbprints) {
+        foreach ($store in @("My", "Root")) {
+            Remove-Item `
+                -LiteralPath "Cert:\CurrentUser\$store\$ownedThumbprint" `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
     }
 } else {
     Write-Warning "Certificate ownership metadata is missing; no certificates were removed."

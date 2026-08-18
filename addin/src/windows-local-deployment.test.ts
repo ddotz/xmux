@@ -210,6 +210,49 @@ describe("Windows local deployment lifecycle", () => {
     expect(uninstallScript).not.toContain("FriendlyName")
   })
 
+  it("trusts a CA rather than the server certificate itself", () => {
+    // Given: WebView2 renders the pane, and Chromium only treats a Root store entry as a
+    // trust anchor when it is a CA. Trusting a self-signed leaf leaves Office reporting
+    // that the content is not signed by a valid security certificate.
+    // When: the installer's trust boundary is inspected.
+    // Then: the imported certificate is the CA, and the served leaf is signed by it.
+    expect(installScript).toContain("2.5.29.19={text}CA=true&pathlength=0")
+    expect(installScript).toContain("-Signer $caCertificate")
+    const caExport = installScript.indexOf("Export-Certificate -Cert $caCertificate")
+    const rootImport = installScript.indexOf("Import-Certificate", caExport)
+    expect(caExport).toBeGreaterThanOrEqual(0)
+    expect(rootImport).toBeGreaterThan(caExport)
+    expect(installScript).not.toContain("Export-Certificate -Cert $certificate")
+  })
+
+  it("names every address the pane is reached by in the leaf's SAN", () => {
+    // Given: Chromium ignores the subject common name outright.
+    expect(installScript).toContain(
+      "2.5.29.17={text}DNS=localhost&IPAddress=127.0.0.1&IPAddress=::1",
+    )
+    expect(installScript).toContain("2.5.29.37={text}1.3.6.1.5.5.7.3.1")
+  })
+
+  it("fails the install when the CA does not become a trusted root", () => {
+    // Given: group policy can refuse a per-user root and a dismissed prompt is silent.
+    // When: the installer reaches its verification boundary.
+    // Then: it throws instead of leaving Excel with a certificate it will reject.
+    expect(installScript).toContain("X509Chain")
+    expect(installScript).toContain("$chain.Build($certificate)")
+    const trustCheck = installScript.indexOf(
+      'Cert:\\CurrentUser\\Root\\$($caCertificate.Thumbprint)")',
+    )
+    const serviceStart = installScript.indexOf("& $managePath start")
+    expect(trustCheck).toBeGreaterThanOrEqual(0)
+    expect(trustCheck).toBeLessThan(serviceStart)
+  })
+
+  it("removes the trusted CA as well as the server certificate", () => {
+    // Given: uninstalling must not leave a private root installed on the machine.
+    expect(uninstallScript).toContain("CaCertificateThumbprint")
+    expect(installScript).toContain("CaCertificateThumbprint")
+  })
+
   it("exports a PFX algorithm supported by the bundled Node runtime", () => {
     // Given: the certificate export command consumed by Node/OpenSSL.
     // When: its private-key encryption algorithm is inspected.

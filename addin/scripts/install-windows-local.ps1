@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 $AutoStartName = "DdotExcelLocalService"
 $ManifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 $CertificateName = "DdotExcel Local HTTPS"
+$CaCertificateName = "DdotExcel Local Development CA"
 $OwnershipRegistryPath = "HKCU:\Software\DdotExcel"
 $DeveloperRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
 $AutoStartRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -36,7 +37,6 @@ foreach ($file in $requiredFiles) {
 
 $ownership = Get-ItemProperty `
     -Path $OwnershipRegistryPath `
-    -Name "CertificateThumbprint" `
     -ErrorAction SilentlyContinue
 $ownedThumbprint = $ownership.CertificateThumbprint
 if ($null -eq $ownedThumbprint) {
@@ -45,6 +45,7 @@ if ($null -eq $ownedThumbprint) {
         $ownedThumbprint = (Get-Content -LiteralPath $legacyThumbprintPath -Raw).Trim()
     }
 }
+$ownedCaThumbprint = $ownership.CaCertificateThumbprint
 
 $ownedProcessId = 0
 $processIdPath = Join-Path $InstallRoot "service.pid"
@@ -86,32 +87,67 @@ Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runt
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
 
-$certificate = $null
-if ($null -ne $ownedThumbprint) {
-    $ownedCertificate = Get-Item `
-        -LiteralPath "Cert:\CurrentUser\My\$ownedThumbprint" `
+# Edge WebView2 renders the task pane, and Chromium's Windows verifier only accepts a Root
+# store entry as a trust anchor when it is a CA (basic constraints CA:TRUE). A self-signed
+# leaf placed in Root is not an anchor, so Office blocks the pane as "not signed by a valid
+# security certificate" even though the certificate is present and trusted by PowerShell.
+# Issue a local CA, trust the CA, and serve a leaf signed by it — the same shape Microsoft's
+# own office-addin-dev-certs uses.
+$caCertificate = $null
+if ($null -ne $ownedCaThumbprint) {
+    $ownedCaCertificate = Get-Item `
+        -LiteralPath "Cert:\CurrentUser\My\$ownedCaThumbprint" `
         -ErrorAction SilentlyContinue
-    if ($null -ne $ownedCertificate -and $ownedCertificate.NotAfter -gt (Get-Date).AddDays(30)) {
-        $certificate = $ownedCertificate
-    } else {
-        foreach ($store in @("My", "Root")) {
-            Remove-Item `
-                -LiteralPath "Cert:\CurrentUser\$store\$ownedThumbprint" `
-                -Force `
-                -ErrorAction SilentlyContinue
-        }
+    if ($null -ne $ownedCaCertificate -and
+        $ownedCaCertificate.NotAfter -gt (Get-Date).AddDays(30)) {
+        $caCertificate = $ownedCaCertificate
     }
 }
-if ($null -eq $certificate) {
-    $certificate = New-SelfSignedCertificate `
+
+# Any earlier install trusted a leaf; that entry can never satisfy WebView2, so drop it.
+foreach ($staleThumbprint in @($ownedThumbprint, $ownedCaThumbprint)) {
+    if ($null -eq $staleThumbprint) { continue }
+    if ($null -ne $caCertificate -and $staleThumbprint -eq $caCertificate.Thumbprint) { continue }
+    foreach ($store in @("My", "Root")) {
+        Remove-Item `
+            -LiteralPath "Cert:\CurrentUser\$store\$staleThumbprint" `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+}
+
+if ($null -eq $caCertificate) {
+    $caCertificate = New-SelfSignedCertificate `
         -CertStoreLocation "Cert:\CurrentUser\My" `
-        -DnsName "localhost" `
-        -FriendlyName $CertificateName `
+        -Subject "CN=$CaCertificateName" `
+        -FriendlyName $CaCertificateName `
         -KeyAlgorithm RSA `
         -KeyExportPolicy Exportable `
         -KeyLength 2048 `
+        -KeyUsage CertSign, CRLSign, DigitalSignature `
+        -TextExtension @("2.5.29.19={text}CA=true&pathlength=0") `
+        -Type Custom `
         -NotAfter (Get-Date).AddYears(5)
 }
+
+# The leaf carries the names the pane is reached by. Chromium ignores the subject common
+# name entirely, so every name has to appear in the subject alternative name extension.
+$certificate = New-SelfSignedCertificate `
+    -CertStoreLocation "Cert:\CurrentUser\My" `
+    -Subject "CN=localhost" `
+    -FriendlyName $CertificateName `
+    -Signer $caCertificate `
+    -KeyAlgorithm RSA `
+    -KeyExportPolicy Exportable `
+    -KeyLength 2048 `
+    -KeyUsage DigitalSignature, KeyEncipherment `
+    -TextExtension @(
+        "2.5.29.37={text}1.3.6.1.5.5.7.3.1",
+        "2.5.29.17={text}DNS=localhost&IPAddress=127.0.0.1&IPAddress=::1"
+    ) `
+    -Type Custom `
+    -NotAfter (Get-Date).AddDays(825)
+
 New-Item -Path $OwnershipRegistryPath -Force | Out-Null
 New-ItemProperty `
     -Path $OwnershipRegistryPath `
@@ -119,16 +155,35 @@ New-ItemProperty `
     -Value $certificate.Thumbprint `
     -Force |
     Out-Null
+New-ItemProperty `
+    -Path $OwnershipRegistryPath `
+    -Name "CaCertificateThumbprint" `
+    -Value $caCertificate.Thumbprint `
+    -Force |
+    Out-Null
 
 $trustedCertificate = Get-Item `
-    -LiteralPath "Cert:\CurrentUser\Root\$($certificate.Thumbprint)" `
+    -LiteralPath "Cert:\CurrentUser\Root\$($caCertificate.Thumbprint)" `
     -ErrorAction SilentlyContinue
 if ($null -eq $trustedCertificate) {
-    $publicPath = Join-Path $certificateRoot "localhost.cer"
-    Export-Certificate -Cert $certificate -FilePath $publicPath -Force | Out-Null
+    $publicPath = Join-Path $certificateRoot "ca.cer"
+    Export-Certificate -Cert $caCertificate -FilePath $publicPath -Force | Out-Null
     Import-Certificate -FilePath $publicPath -CertStoreLocation "Cert:\CurrentUser\Root" |
         Out-Null
     Remove-Item -LiteralPath $publicPath -Force
+}
+
+# Group policy can silently refuse a per-user root, and a dismissed trust prompt leaves the
+# store untouched. Failing here beats handing Excel a certificate it will reject.
+if (-not (Test-Path -LiteralPath "Cert:\CurrentUser\Root\$($caCertificate.Thumbprint)")) {
+    throw "The local CA could not be added to the current user's trusted roots. " +
+        "Accept the security prompt when it appears, or ask IT whether policy blocks it."
+}
+$chain = New-Object Security.Cryptography.X509Certificates.X509Chain
+$chain.ChainPolicy.RevocationMode = "NoCheck"
+if (-not $chain.Build($certificate)) {
+    $reasons = ($chain.ChainStatus | ForEach-Object { $_.StatusInformation.Trim() }) -join "; "
+    throw "The generated HTTPS certificate does not chain to a trusted root: $reasons"
 }
 
 $passwordBytes = New-Object byte[] 32
@@ -148,7 +203,7 @@ Export-PfxCertificate `
     -FilePath $pfxPath `
     -Password $password `
     -CryptoAlgorithmOption AES256_SHA256 `
-    -ChainOption EndEntityCertOnly `
+    -ChainOption BuildChain `
     -Force |
     Out-Null
 [IO.File]::WriteAllText($passwordPath, $passwordText, [Text.UTF8Encoding]::new($false))
