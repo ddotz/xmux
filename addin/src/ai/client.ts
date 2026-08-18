@@ -28,6 +28,60 @@ export class AiError extends Error {
 
 const REQUEST_TIMEOUT_MS = 120_000
 
+/**
+ * The message shape this server will accept.
+ *
+ * It validates structure, not just content — a system message that is not first comes back
+ * as `System message must be at the beginning`, and the same strictness applies to the
+ * exchange itself: it has to read as one side speaking after the other. The pane produces
+ * violations in ordinary use. A turn the server refused leaves a question with no answer,
+ * so the next question follows it as a second user message. Applying a proposal appends
+ * "적용했습니다" after the answer that proposed it, which is two assistant messages in a
+ * row. Both look like a broken conversation to the server, and the user sees a chat that
+ * worked once and then stopped.
+ *
+ * So the transcript is normalised on the way out: one system message first, no empty
+ * content, and consecutive turns from the same side merged into one. Nothing is dropped —
+ * what was said still gets said, in a shape the server reads.
+ */
+export const conversationFor = (messages: readonly ChatMessage[]): readonly ChatMessage[] => {
+  const spoken = messages.filter((message) => message.content.trim() !== "")
+  const system = spoken.filter((message) => message.role === "system").map((m) => m.content)
+  const exchange = spoken.filter((message) => message.role !== "system")
+
+  // An exchange opening on the assistant — the compaction summary — is context for the
+  // instructions, not a turn the user replied to.
+  const leading: string[] = []
+  while (exchange[0]?.role === "assistant") {
+    const first = exchange.shift()
+    if (first !== undefined) leading.push(first.content)
+  }
+
+  const head =
+    system.length === 0 && leading.length === 0
+      ? []
+      : [
+          {
+            role: "system" as const,
+            content: [...system, ...leading].join("\n\n"),
+          },
+        ]
+
+  const merged: ChatMessage[] = []
+  for (const message of exchange) {
+    const last = merged.at(-1)
+    if (last !== undefined && last.role === message.role) {
+      merged[merged.length - 1] = {
+        role: last.role,
+        content: `${last.content}\n\n${message.content}`,
+      }
+      continue
+    }
+    merged.push(message)
+  }
+  return [...head, ...merged]
+}
+
 const textOf = (body: unknown): string | null => {
   if (typeof body !== "object" || body === null) return null
   const choices = (body as { choices?: unknown }).choices
@@ -66,7 +120,10 @@ export const askModel = async (
       },
       body: JSON.stringify({
         model: settings.model.trim(),
-        messages: messages.map((message) => ({ role: message.role, content: message.content })),
+        messages: conversationFor(messages).map((message) => ({
+          role: message.role,
+          content: message.content,
+        })),
         temperature: settings.temperature,
         max_tokens: settings.maxTokens,
         stream: false,

@@ -8,7 +8,7 @@ Five pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-
 
 | File | Exports | Role |
 |---|---|---|
-| `client.ts` | 5 | `askModel`, `testConnection`, `promptFrom`, `AiError`, `ChatMessage` |
+| `client.ts` | 5 | `askModel`, `testConnection`, `conversationFor`, `AiError`, `ChatMessage` |
 | `tool-schemas.ts` | 40+ | one zod schema per operation, `toolCallSchema`, `WRITE_TOOLS`, `isWrite`, `ToolCall` |
 | `tools.ts` | 7 | `readSteps`, `describeCall`, `renderGrid`, and the budgets (`MAX_CALLS_PER_REPLY` 8, `MAX_TOOL_ROUNDS` 16, `MAX_TOOL_CELLS` 500) |
 | `plan.ts` | 6 | `parsePlan`, `describeEdit`, `resolveEdits`, `Plan`, `ProposedEdit`, `ProposedSkill` |
@@ -18,10 +18,11 @@ Every function takes its dependency as an argument: `fetcher: typeof fetch = fet
 
 ## REQUEST PATH
 
-- **Legacy `completions`, not `chat/completions`.** The KDB server speaks one prompt in, one text out. `promptFrom` flattens the turns into a Korean transcript (`지시:` / `사용자:` / `조수:`) and ends on `조수:` so the model continues as the assistant.
-- URL: `endpointFor(settings, "completions")` = trimmed `baseUrl` with trailing slashes stripped, `+ "/completions"`.
+- **`chat/completions` with a `messages` array.** The flattened-transcript `completions` route answered `405 Method Not Allowed`; the server's own client config says `api: openai-completions`, which posts turns as turns and reads `choices[0].message.content`.
+- URL: `endpointFor(settings, "chat/completions")` = trimmed `baseUrl` with trailing slashes stripped.
+- **The server validates message *structure*, and the pane produces violations in normal use.** A refused turn leaves a question with no answer, so the next question is a second consecutive `user`; applying a proposal appends 적용했습니다 after the answer that proposed it, which is two consecutive `assistant`. `conversationFor` normalises on the way out: one system message first (a leading assistant turn — the compaction summary — folds into it), empty content dropped, consecutive same-role turns merged. Nothing is lost; the shape is what changes.
 - Headers: `Content-Type: application/json` and `Authorization: Bearer ${settings.apiKey.trim()}`. Body: `model`, `prompt`, `temperature`, `max_tokens`, `stream: false`. Timeout `AbortSignal.timeout(120_000)`.
-- Reply read by `textOf`: `choices[0].text` only. A chat-shaped `choices[0].message.content` is rejected as `AiError("AI 응답을 이해하지 못했습니다.")`.
+- Reply read by `textOf`: `choices[0].message.content` only. Anything else is `AiError("AI 응답을 이해하지 못했습니다.")`.
 - `settingsProblem` runs before the fetch, so a missing key never becomes a 401 round trip.
 - `testConnection` is `askModel` with `temperature: 0, maxTokens: 1` and one throwaway turn.
 - `parsePlan` takes the last fenced ```` ```json ```` block, else the first `{` to last `}`. Bad JSON or a failed `planSchema.safeParse` degrades to `{ say: reply.trim(), edits: [] }`: prose survives, the block is dropped, nothing throws.
@@ -40,7 +41,7 @@ Every function takes its dependency as an argument: `fetcher: typeof fetch = fet
 
 ## TESTS
 
-- `client.test.ts` fakes at the wire: a hand-rolled `fetcher` recording `{url, init}` and returning a real `Response`. Asserts the flattened prompt, the `completions` URL, the bearer header, and that a 400 body containing `sk-secret-123` comes back as `[REDACTED]`.
+- `client.test.ts` fakes at the wire: a hand-rolled `fetcher` recording `{url, init}` and returning a real `Response`. Asserts the `chat/completions` URL, the bearer header, the normalised message shape that actually goes out, and that a 400 body containing `sk-secret-123` comes back as `[REDACTED]`.
 - `chatting.test.ts` mocks one level higher: `vi.mock("../ai/client")` over `askModel`/`testConnection`, keeping `parsePlan` real.
 - `settings.test.ts` passes a fake `{getItem, setItem}` object, no jsdom storage.
-- `probes/fake_model.mjs` (HTTPS, reuses the office-addin dev certs, default port 3100) serves the one `completions` route with a canned prose + JSON plan, for manual end-to-end runs through the approval step and the real Excel write.
+- `probes/fake_model.mjs` (HTTPS, reuses the office-addin dev certs, default port 3100) serves `/api/chat/completions` with a canned prose + JSON plan, for manual end-to-end runs through the approval step and the real Excel write.

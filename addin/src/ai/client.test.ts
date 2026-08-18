@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { AiError, askModel } from "./client"
+import { AiError, askModel, type ChatMessage, conversationFor } from "./client"
 import { DEFAULT_SETTINGS } from "./settings"
 
 /**
@@ -106,5 +106,101 @@ describe("askModel", () => {
     const { fetcher } = answering({ choices: [{ text: "wrong shape" }] })
 
     await expect(askModel(SETTINGS, [], fetcher)).rejects.toThrow(AiError)
+  })
+})
+
+describe("the shape the server will accept", () => {
+  const shape = (messages: readonly ChatMessage[]): string[] =>
+    conversationFor(messages).map((message) => `${message.role}: ${message.content}`)
+
+  it("merges a second question asked after a turn the server refused", () => {
+    // Given: a failed turn leaves a question with no answer, so the next question follows
+    // it as a second user message. That is a broken exchange to a strict server, and the
+    // symptom is a chat that worked once and then stopped.
+    expect(
+      shape([
+        { role: "system", content: "규칙" },
+        { role: "user", content: "합계 넣어줘" },
+        { role: "user", content: "다시 해줘" },
+      ]),
+    ).toEqual(["system: 규칙", "user: 합계 넣어줘\n\n다시 해줘"])
+  })
+
+  it("merges the note the pane adds after applying a proposal", () => {
+    // Given: 적용했습니다 lands right after the answer that proposed it.
+    expect(
+      shape([
+        { role: "system", content: "규칙" },
+        { role: "user", content: "합계 넣어줘" },
+        { role: "assistant", content: "넣겠습니다." },
+        { role: "assistant", content: "셀 1건을 적용했습니다." },
+        { role: "user", content: "다시 해줘" },
+      ]),
+    ).toEqual([
+      "system: 규칙",
+      "user: 합계 넣어줘",
+      "assistant: 넣겠습니다.\n\n셀 1건을 적용했습니다.",
+      "user: 다시 해줘",
+    ])
+  })
+
+  it("keeps the compaction summary as context rather than opening on the assistant", () => {
+    expect(
+      shape([
+        { role: "system", content: "규칙" },
+        { role: "assistant", content: '(앞선 대화에서 사용자가 요청한 것: "표 만들어줘")' },
+        { role: "user", content: "이어서 해줘" },
+      ]),
+    ).toEqual([
+      'system: 규칙\n\n(앞선 대화에서 사용자가 요청한 것: "표 만들어줘")',
+      "user: 이어서 해줘",
+    ])
+  })
+
+  it("drops empty turns instead of sending blank content", () => {
+    expect(
+      shape([
+        { role: "system", content: "규칙" },
+        { role: "user", content: "질문" },
+        { role: "assistant", content: "   " },
+        { role: "user", content: "또 질문" },
+      ]),
+    ).toEqual(["system: 규칙", "user: 질문\n\n또 질문"])
+  })
+
+  it("sends one system message even when the caller built two", () => {
+    expect(
+      shape([
+        { role: "system", content: "규칙" },
+        { role: "system", content: "컨텍스트" },
+        { role: "user", content: "질문" },
+      ]),
+    ).toEqual(["system: 규칙\n\n컨텍스트", "user: 질문"])
+  })
+
+  it("goes out on the wire in that shape, not as the caller wrote it", async () => {
+    const calls: { url: string; init: RequestInit | undefined }[] = []
+    const fetcher = (async (url: string, init?: RequestInit) => {
+      calls.push({ url, init })
+      return new Response(JSON.stringify({ choices: [{ message: { content: "네" } }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    }) as unknown as typeof fetch
+
+    await askModel(
+      { ...DEFAULT_SETTINGS, apiKey: "sk-test" },
+      [
+        { role: "system", content: "규칙" },
+        { role: "user", content: "하나" },
+        { role: "user", content: "둘" },
+      ],
+      fetcher,
+    )
+
+    const body = JSON.parse(String(calls[0]?.init?.body ?? "{}")) as {
+      messages: { role: string; content: string }[]
+    }
+    expect(body.messages.map((message) => message.role)).toEqual(["system", "user"])
   })
 })

@@ -91,7 +91,17 @@ export const readSteps = (reply: string): ModelStep => {
   try {
     parsed = JSON.parse(block)
   } catch {
-    return { kind: "answer" }
+    // Broken JSON that was plainly meant to be a call is usually a reply that ran out of
+    // room mid-table. Telling the model that is worth a round; treating it as the answer
+    // wastes the turn and shows the user nothing.
+    return /"tool"\s*:/.test(block)
+      ? {
+          kind: "calls",
+          calls: [],
+          rejected:
+            "JSON이 완결되지 않아 실행하지 못했습니다. 길이 제한에 걸린 것 같습니다. 한 번에 더 적은 행·더 적은 호출로 나눠 보내세요.",
+        }
+      : { kind: "answer" }
   }
   const candidates = Array.isArray(parsed) ? parsed.slice(0, MAX_CALLS_PER_REPLY) : [parsed]
   const calls: ToolCall[] = []

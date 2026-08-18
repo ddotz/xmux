@@ -66,9 +66,19 @@ describe("readSteps", () => {
     expect(readSteps("B6에 합계를 넣으면 됩니다.").kind).toBe("answer")
   })
 
-  it("does not stall the conversation on broken JSON", () => {
-    // Given: a half-written block. The loop must move on rather than hang.
-    expect(readSteps('```json\n{"tool":"read_range",\n```').kind).toBe("answer")
+  it("asks for a shorter reply when the JSON was cut off mid-call", () => {
+    // Given: a half-written block, which is what a reply that ran out of room looks like.
+    // Treating it as the answer wastes the turn; the model can simply send less.
+    const step = readSteps('```json\n{"tool":"read_range",\n```')
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([])
+    expect(step.rejected).toContain("길이 제한")
+  })
+
+  it("still treats broken JSON that was never a call as the answer", () => {
+    expect(readSteps('```json\n{"say": "거의\n```').kind).toBe("answer")
   })
 
   it("runs nothing from a malformed call, and says why so the model can fix it", () => {

@@ -57,6 +57,9 @@ const OBSERVATION_PREFIX = "실행 결과:"
 const UNRUNNABLE_CALL =
   "작업 지시를 실행하지 못했습니다. 무엇을 어느 범위에 적용할지 조금 더 구체적으로 다시 말씀해 주세요."
 
+/** Shown when the model finished its work but said nothing about it. */
+const SILENT_ANSWER = "요청하신 작업을 마쳤습니다."
+
 /** Shown when the model has spent its rounds and still will not answer in words. */
 const OUT_OF_ROUNDS =
   "도구 사용 한도에 도달해 작업을 멈췄습니다. 지금까지 반영된 변경은 되돌리기로 취소할 수 있습니다."
@@ -93,14 +96,35 @@ export const trimObservations = (messages: readonly ChatMessage[]): readonly Cha
 const MAX_CARRIED_TURNS = 20
 const KEPT_AFTER_COMPACTION = 10
 
-/** Fold the oldest turns into a note so the thread keeps its gist but not its bulk. */
+/** How much of each folded request is worth keeping. */
+const REMEMBERED_REQUESTS = 8
+const REMEMBERED_REQUEST_CHARS = 60
+
+/**
+ * Fold the oldest turns into a note so the thread keeps its gist but not its bulk.
+ *
+ * The note used to carry counts — "이전 대화 24개, 사용자 요청 12건" — which is the one
+ * thing nobody needs to remember. What matters later is what was asked for, so the requests
+ * themselves are kept, shortened, and the answers are what gets dropped.
+ */
 export const compactTurns = (turns: readonly ChatTurn[]): readonly ChatTurn[] => {
   if (turns.length <= MAX_CARRIED_TURNS) return turns
   const dropped = turns.slice(0, turns.length - KEPT_AFTER_COMPACTION)
-  const asked = dropped.filter((turn) => turn.role === "user").length
+  const asked = dropped
+    .filter((turn) => turn.role === "user")
+    .map((turn) =>
+      turn.text.length > REMEMBERED_REQUEST_CHARS
+        ? `${turn.text.slice(0, REMEMBERED_REQUEST_CHARS)}…`
+        : turn.text,
+    )
+  const kept = asked.slice(-REMEMBERED_REQUESTS)
+  const earlier = asked.length - kept.length
   const summary: ChatTurn = {
     role: "assistant",
-    text: `(이전 대화 ${dropped.length}개를 정리했습니다. 사용자 요청 ${asked}건이 있었습니다.)`,
+    text:
+      kept.length === 0
+        ? `(이전 대화 ${dropped.length}개를 정리했습니다.)`
+        : `(앞선 대화에서 사용자가 요청한 것: ${kept.map((request) => `"${request}"`).join(", ")}${earlier > 0 ? ` 외 ${earlier}건` : ""})`,
   }
   return [summary, ...turns.slice(turns.length - KEPT_AFTER_COMPACTION)]
 }
@@ -118,6 +142,14 @@ const selectionKey = (selection: SelectionAttachment): string =>
 
 export const createChatting = (deps: ChattingDeps): Chatting => {
   let latestSelectionKey: string | null = null
+  /**
+   * Which thread the answer in flight belongs to.
+   *
+   * `/new` has to work while the model is still thinking — it is the way out of a turn
+   * that is taking too long. Without a generation the abandoned turn still finishes and
+   * writes its answer into the thread that replaced it.
+   */
+  let generation = 0
   let state: ChatState = {
     turns: [],
     plan: null,
@@ -190,6 +222,12 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
   }
 
   const ask = async (question: string): Promise<void> => {
+    generation += 1
+    const mine = generation
+    /** Ignore everything an abandoned turn has to say. */
+    const commit = (next: Partial<ChatState>): void => {
+      if (mine === generation) set(next)
+    }
     const previous = compactTurns(state.turns)
     const attachment = state.selectionAttachment
     const selectedSkillId =
@@ -198,7 +236,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     // selected it is not part of the request.
     const request = stripSlashCommand(question, state.skills)
     const asked: ChatTurn = { role: "user", text: question }
-    set({ turns: [...previous, asked], pending: true, error: null, plan: null, activity: [] })
+    commit({ turns: [...previous, asked], pending: true, error: null, plan: null, activity: [] })
     try {
       const workbook = await describeWorkbook(attachment)
       const turns = [
@@ -209,7 +247,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // round it sends one tool call or a batch of them, every call runs against the real
       // sheet as it arrives, and the results go back so it can continue — until it answers.
       const runCall = async (call: ToolCall): Promise<string> => {
-        set({ activity: [...state.activity, describeCall(call)] })
+        commit({ activity: [...state.activity, describeCall(call)] })
         let observation = "실행하지 못했습니다."
         try {
           await deps.run(async (context) => {
@@ -266,9 +304,12 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       }
 
       const plan: Plan = parsePlan(reply)
-      // Whatever happened above, a tool call is not something the user should be reading.
-      const said = containsToolCall(plan.say) ? UNRUNNABLE_CALL : plan.say
-      set({
+      // Whatever happened above, a tool call is not something the user should be reading —
+      // and neither is an empty bubble, which is what a reply of pure JSON used to leave
+      // behind once its calls had run.
+      const answer = containsToolCall(plan.say) ? UNRUNNABLE_CALL : plan.say
+      const said = answer.trim() === "" ? SILENT_ANSWER : answer
+      commit({
         turns: [...state.turns, { role: "assistant", text: said }],
         plan: planTouchesWorkbook(plan) || plan.skill !== undefined ? plan : null,
         pending: false,
@@ -276,7 +317,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       })
     } catch (error) {
       if (error instanceof AiError) {
-        set({
+        commit({
           pending: false,
           error: error.message,
           settingsOpen: state.settings.apiKey === "",
@@ -354,11 +395,24 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
   const handlers: ChatHandlers = {
     onSend: (question) => {
-      // A fresh thread is a command, not a question: nothing is sent to the server.
+      // A fresh thread is a command, not a question: nothing is sent to the server. It
+      // works mid-answer too, which is what makes it a way out of a slow turn.
       if (question.trim() === "/new") {
-        set({ turns: [], plan: null, error: null, connectionStatus: null })
+        generation += 1
+        set({
+          turns: [],
+          plan: null,
+          error: null,
+          connectionStatus: null,
+          pending: false,
+          activity: [],
+        })
         return
       }
+      // The composer disables itself while a turn is in flight; this is the same rule
+      // where it is enforced, because two turns running at once interleave their writes
+      // to the same thread and the transcript comes apart.
+      if (state.pending) return
       const anchor = deps.anchor()
       set({ sheet: anchor === null ? state.sheet : sheetOf(anchor.address) })
       void ask(question)

@@ -431,9 +431,75 @@ describe("thread management", () => {
     const compacted = compactTurns(turns)
 
     expect(compacted.length).toBeLessThan(turns.length)
-    expect(compacted[0]?.text).toContain("이전 대화")
+    // What was asked for survives the fold; the answers are what gets dropped.
+    expect(compacted[0]?.text).toContain("턴 18")
+    expect(compacted[0]?.text).toContain("외 2건")
+    expect(compacted[0]?.text).not.toContain("턴 19")
     // The newest turns survive untouched.
     expect(compacted.at(-1)?.text).toBe("턴 29")
+  })
+})
+
+describe("one thread at a time", () => {
+  it("ignores a second question while an answer is still in flight", async () => {
+    // Given: two turns running at once write to the same thread and interleave.
+    let release = (): void => {}
+    vi.mocked(askModel).mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          release = () => resolve("됐습니다.")
+        }),
+    )
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+
+    chatting.handlers.onSend("첫 질문")
+    await vi.waitFor(() => expect(vi.mocked(askModel)).toHaveBeenCalled())
+    chatting.handlers.onSend("두 번째 질문")
+
+    expect(chatting.state().turns.map((turn) => turn.text)).toEqual(["첫 질문"])
+    release()
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+  })
+
+  it("starts a fresh thread mid-answer, and the abandoned turn stays out of it", async () => {
+    // Given: /new is the way out of a turn that is taking too long. The answer that was
+    // still coming must not land in the thread that replaced it.
+    let release = (): void => {}
+    vi.mocked(askModel).mockImplementation(
+      () =>
+        new Promise<string>((resolve) => {
+          release = () => resolve("늦은 답변")
+        }),
+    )
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+
+    chatting.handlers.onSend("느린 질문")
+    await vi.waitFor(() => expect(vi.mocked(askModel)).toHaveBeenCalled())
+    chatting.handlers.onSend("/new")
+
+    expect(chatting.state().turns).toEqual([])
+    expect(chatting.state().pending).toBe(false)
+
+    release()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(chatting.state().turns).toEqual([])
+  })
+
+  it("says something rather than showing an empty bubble", async () => {
+    // Given: a reply that was all JSON. Once its calls have run there is nothing left to
+    // render, and the turn used to end with a blank message.
+    vi.mocked(askModel).mockResolvedValue("   ")
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+
+    chatting.handlers.onSend("정리해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toBe("요청하신 작업을 마쳤습니다.")
   })
 })
 
