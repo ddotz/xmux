@@ -12,6 +12,16 @@ import { z } from "zod"
 
 const address = z.string().min(1).max(64).describe("A1-style range, e.g. B2:D20")
 
+/**
+ * A cell value as the model writes it.
+ *
+ * Asked to lay out a table of figures a model sends `114666`, not `"114666"`, because that
+ * is what the number is. Insisting on strings did not make it send strings — it made the
+ * whole call fail validation, and a rejected call used to be printed to the user as if the
+ * JSON were the answer. Excel reads `"114666"` back as a number either way.
+ */
+const cellValue = z.union([z.string(), z.number(), z.boolean()]).transform(String)
+
 export const readRangeSchema = z.object({
   tool: z.literal("read_range"),
   sheet: z.string().max(120).optional().describe("Sheet name; omitted means the selected sheet"),
@@ -41,7 +51,7 @@ export const writeRangeSchema = z.object({
   tool: z.literal("write_range"),
   sheet: z.string().max(120).optional(),
   address,
-  rows: z.array(z.array(z.string())).min(1).max(500),
+  rows: z.array(z.array(cellValue)).min(1).max(500),
 })
 
 export const createSheetSchema = z.object({
@@ -283,7 +293,7 @@ export const filterRangeSchema = z.object({
   address,
   /** 1-based column within the range the criteria apply to. */
   column: z.number().int().min(1).max(1_000),
-  values: z.array(z.string().max(200)).max(100).optional(),
+  values: z.array(cellValue).max(100).optional(),
   /** A comparison Excel understands, e.g. `>100` or `*서울*`. */
   criterion: z.string().max(200).optional(),
   /** Keep the highest N rows by that column. */
@@ -312,7 +322,7 @@ export const dataValidationSchema = z.object({
   sheet: z.string().max(120).optional(),
   address,
   /** The choices. An empty list clears the rule. */
-  values: z.array(z.string().max(120)).max(100),
+  values: z.array(cellValue).max(100),
 })
 
 /** A workbook-level name, so a formula can say 매출 instead of Data!B2:D5. */

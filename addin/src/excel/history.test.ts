@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest"
-import { createHistory, recordWrite, restore, type UndoEntry } from "./history"
+import {
+  createHistory,
+  recordWrite,
+  restore,
+  restoreLayouts,
+  snapshotLayout,
+  type UndoContext,
+  type UndoEntry,
+} from "./history"
 
 /**
  * The undo stack itself is plain state, so it is testable without Excel; the reading and
@@ -160,5 +168,66 @@ describe("the pane's undo history", () => {
 
     expect(formulas.get("Main!B2")).toBe("=OLD")
     expect(syncCount).toBe(3)
+  })
+})
+
+describe("layout snapshots", () => {
+  it("reads every width across a range and writes them back", async () => {
+    // Given: the user's column widths, which nothing else in the history covers.
+    const applied: string[] = []
+    const line = (label: string, size: number) => ({
+      format: {
+        get columnWidth() {
+          return size
+        },
+        set columnWidth(value: number) {
+          applied.push(`${label}=${value}`)
+        },
+        get rowHeight() {
+          return size
+        },
+        set rowHeight(value: number) {
+          applied.push(`${label}h=${value}`)
+        },
+      },
+      load: () => {},
+    })
+    const context = {
+      workbook: {
+        worksheets: {
+          getItem: () => ({
+            getRange: () => ({
+              columnCount: 3,
+              rowCount: 9,
+              formulas: [[""]],
+              load: () => {},
+              getColumn: (index: number) => line(`C${index}`, 10 + index),
+              getRow: (index: number) => line(`R${index}`, 20 + index),
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    } as unknown as UndoContext
+
+    const held = await snapshotLayout(context, [{ sheet: "Main", address: "A:C", axis: "columns" }])
+    expect(held[0]?.sizes).toEqual([10, 11, 12])
+
+    await restoreLayouts(context, held)
+    expect(applied).toEqual(["C0=10", "C1=11", "C2=12"])
+  })
+
+  it("carries a layout-only entry rather than dropping it as empty", () => {
+    // Given: an autofit changes no cell. Dropping the entry would leave the widths gone
+    // with the undo button showing nothing to press.
+    const history = createHistory()
+
+    history.push({
+      label: "Main!A:C 크기 맞춤",
+      cells: [],
+      layouts: [{ sheet: "Main", address: "A:C", axis: "columns", sizes: [8.43] }],
+    })
+
+    expect(history.last()?.label).toBe("Main!A:C 크기 맞춤")
   })
 })

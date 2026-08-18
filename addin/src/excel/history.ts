@@ -20,6 +20,25 @@ export type UndoEntry = {
   readonly cells: readonly CellSnapshot[]
   /** Whole rectangles, for the assistant's table-sized writes. */
   readonly ranges?: readonly RangeSnapshot[]
+  /** Column widths and row heights, which are the user's layout and not the pane's. */
+  readonly layouts?: readonly LayoutSnapshot[]
+}
+
+/**
+ * How wide the columns were before something resized them.
+ *
+ * A width is a decision the person made about their own sheet, and until now the assistant
+ * could change it with no way back: formatting sat outside the history, so an unasked-for
+ * autofit was permanent. Widths are cheap to record — one number per column — so there is
+ * no reason for them to be the one thing 되돌리기 cannot return.
+ */
+export type LayoutSnapshot = {
+  readonly sheet: string
+  /** Whole columns (`A:E`) or whole rows (`3:7`), matching what was resized. */
+  readonly address: string
+  readonly axis: "columns" | "rows"
+  /** One size per column or row, in points, in address order. */
+  readonly sizes: readonly number[]
 }
 
 export type History = {
@@ -43,7 +62,13 @@ export const createHistory = (): History => {
     push: (entry) => {
       // An entry may hold single cells, whole rectangles, or both. Dropping on empty
       // `cells` alone would have thrown away every table write the assistant makes.
-      if (entry.cells.length === 0 && (entry.ranges?.length ?? 0) === 0) return
+      if (
+        entry.cells.length === 0 &&
+        (entry.ranges?.length ?? 0) === 0 &&
+        (entry.layouts?.length ?? 0) === 0
+      ) {
+        return
+      }
       entries.push(entry)
       redoEntries.length = 0
       if (entries.length > LIMIT) entries.shift()
@@ -76,6 +101,15 @@ export type RangeSnapshot = {
 type UndoRange = {
   load: (properties: string) => void
   formulas: unknown[][]
+  readonly getColumn?: (index: number) => UndoSized
+  readonly getRow?: (index: number) => UndoSized
+  readonly columnCount?: number
+  readonly rowCount?: number
+}
+
+type UndoSized = {
+  readonly format: { columnWidth: number; rowHeight: number }
+  readonly load: (properties: string) => void
 }
 
 export type UndoContext = {
@@ -136,6 +170,60 @@ export const snapshotRange = async (
     ),
   }))
 }
+
+/** Every column width (or row height) across a range, one number each. */
+export const snapshotLayout = async (
+  context: UndoContext,
+  targets: readonly { sheet: string; address: string; axis: "columns" | "rows" }[],
+): Promise<readonly LayoutSnapshot[]> => {
+  const ranges = targets.map((target) => {
+    const range = context.workbook.worksheets.getItem(target.sheet).getRange(target.address)
+    range.load("columnCount, rowCount")
+    return range
+  })
+  await context.sync()
+
+  const sized = ranges.map((range, index) => {
+    const target = targets[index]
+    const count = (target?.axis === "columns" ? range.columnCount : range.rowCount) ?? 0
+    return Array.from({ length: Math.min(count, MAX_SIZED) }, (_, at) => {
+      const line = target?.axis === "columns" ? range.getColumn?.(at) : range.getRow?.(at)
+      line?.load(target?.axis === "columns" ? "format/columnWidth" : "format/rowHeight")
+      return line ?? null
+    })
+  })
+  await context.sync()
+
+  return targets.map((target, index) => ({
+    sheet: target.sheet,
+    address: target.address,
+    axis: target.axis,
+    sizes: (sized[index] ?? []).map((line) =>
+      target.axis === "columns" ? (line?.format.columnWidth ?? 0) : (line?.format.rowHeight ?? 0),
+    ),
+  }))
+}
+
+/** Put the widths back, one column at a time, exactly as they were. */
+export const restoreLayouts = async (
+  context: UndoContext,
+  layouts: readonly LayoutSnapshot[],
+): Promise<void> => {
+  for (const held of layouts) {
+    const range = context.workbook.worksheets.getItem(held.sheet).getRange(held.address)
+    held.sizes.forEach((size, at) => {
+      if (size <= 0) return
+      const line = held.axis === "columns" ? range.getColumn?.(at) : range.getRow?.(at)
+      if (line === undefined) return
+      if (held.axis === "columns") line.format.columnWidth = size
+      else line.format.rowHeight = size
+    })
+  }
+  await context.sync()
+}
+
+/** A resize wide enough to be a whole-sheet operation is not worth recording line by line. */
+const MAX_SIZED = 64
 
 /** Put a rectangle back exactly as it was. */
 export const restoreRanges = async (

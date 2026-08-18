@@ -1,3 +1,4 @@
+import type { ZodError } from "zod"
 import type { ToolCall } from "./tool-schemas"
 import { toolCallSchema } from "./tool-schemas"
 
@@ -9,9 +10,18 @@ import { toolCallSchema } from "./tool-schemas"
  * and how a grid of cells is handed back without flooding the conversation.
  */
 
-/** The model's step: a batch of tool calls to run in order, or the final answer. */
+/**
+ * The model's step: a batch of tool calls to run in order, or the final answer.
+ *
+ * `rejected` carries what could not be run and why. It is not the same as an answer: a call
+ * this side refuses is a message back to the model, never text for the user to read.
+ */
 export type ModelStep =
-  | { readonly kind: "calls"; readonly calls: readonly ToolCall[] }
+  | {
+      readonly kind: "calls"
+      readonly calls: readonly ToolCall[]
+      readonly rejected: string | null
+    }
   | { readonly kind: "answer" }
 
 /**
@@ -61,6 +71,19 @@ const lastJsonBlock = (reply: string): string | null => {
  * An array runs as far as it validates: the calls before the first broken element still
  * execute, so one malformed trailing call does not throw away the work in front of it.
  */
+/** Anything carrying a `tool` key was meant to be run, however badly it was written. */
+const isAttemptedCall = (candidate: unknown): candidate is { readonly tool: unknown } =>
+  typeof candidate === "object" && candidate !== null && "tool" in candidate
+
+/** What went wrong, in enough detail for the model to write the call again correctly. */
+const rejection = (candidate: { readonly tool: unknown }, error: ZodError): string => {
+  const issues = error.issues
+    .slice(0, 3)
+    .map((issue) => `${issue.path.join(".") || "(최상위)"} — ${issue.message}`)
+  const more = error.issues.length > 3 ? ` 외 ${error.issues.length - 3}건` : ""
+  return `${String(candidate.tool)} 호출은 형식이 맞지 않아 실행하지 못했습니다: ${issues.join(", ")}${more}. 고쳐서 다시 보내세요.`
+}
+
 export const readSteps = (reply: string): ModelStep => {
   const block = lastJsonBlock(reply)
   if (block === null) return { kind: "answer" }
@@ -72,12 +95,32 @@ export const readSteps = (reply: string): ModelStep => {
   }
   const candidates = Array.isArray(parsed) ? parsed.slice(0, MAX_CALLS_PER_REPLY) : [parsed]
   const calls: ToolCall[] = []
+  let rejected: string | null = null
   for (const candidate of candidates) {
     const call = toolCallSchema.safeParse(candidate)
-    if (!call.success) break
-    calls.push(call.data)
+    if (call.success) {
+      calls.push(call.data)
+      continue
+    }
+    // A plan (`{"edits":[…]}`) is not a failed tool call, it is the other reply shape.
+    if (isAttemptedCall(candidate)) rejected = rejection(candidate, call.error)
+    break
   }
-  return calls.length === 0 ? { kind: "answer" } : { kind: "calls", calls }
+  return calls.length === 0 && rejected === null
+    ? { kind: "answer" }
+    : { kind: "calls", calls, rejected }
+}
+
+/**
+ * Does this reply carry a tool call the loop could not run?
+ *
+ * The last line of defence for what reaches the screen. A call this side could not parse is
+ * a conversation between the model and the pane; printing it as the assistant's answer is
+ * how the user ends up reading raw JSON.
+ */
+export const containsToolCall = (reply: string): boolean => {
+  const block = lastJsonBlock(reply)
+  return block !== null && /"tool"\s*:/.test(block)
 }
 
 const place = (sheet: string | undefined, address: string): string =>

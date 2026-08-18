@@ -14,6 +14,25 @@ const workbook = () => {
   const performed: string[] = []
   let existingSheet = true
 
+  // One column or row, with the width Excel would report for it.
+  const sized = (label: string, size: number) => ({
+    format: {
+      get columnWidth() {
+        return size
+      },
+      set columnWidth(value: number) {
+        performed.push(`width ${label} ${value}`)
+      },
+      get rowHeight() {
+        return size
+      },
+      set rowHeight(value: number) {
+        performed.push(`height ${label} ${value}`)
+      },
+    },
+    load: () => {},
+  })
+
   const makeRange = (address: string) => {
     const range = {
       address,
@@ -36,6 +55,8 @@ const workbook = () => {
         const resized = makeRange(`${address}:resized(${rows},${columns})`)
         return resized
       },
+      getColumn: (index: number) => sized(`${address}#col${index}`, 8.43 + index),
+      getRow: (index: number) => sized(`${address}#row${index}`, 15 + index),
       insert: (shift: string) => performed.push(`insert ${address} ${shift}`),
       copyFrom: (
         source: { address: string },
@@ -269,6 +290,45 @@ describe("runWrite", () => {
 
     expect(book.performed).toEqual(["insert C:D Right"])
     expect(answer).toContain("열을 삽입했습니다")
+  })
+
+  it("records the column widths before an autofit, so undo can put them back", async () => {
+    // Given: the user's own layout. Formatting sits outside the history, which made an
+    // unasked-for autofit permanent — the one thing 되돌리기 could not return.
+    const book = workbook()
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, { tool: "autofit", address: "A:C" })
+
+    const entry = history.last()
+    expect(entry?.layouts?.[0]?.axis).toBe("columns")
+    expect(entry?.layouts?.[0]?.sizes).toEqual([8.43, 9.43, 10.43])
+    expect(answer).toContain("되돌리기로 원래 너비가 복구됩니다")
+  })
+
+  it("records widths set through format_range too", async () => {
+    const book = workbook()
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "format_range",
+      address: "A:C",
+      columnWidth: 20,
+    })
+
+    expect(history.last()?.layouts?.[0]?.sizes).toEqual([8.43, 9.43, 10.43])
+    expect(answer).toContain("열 너비·행 높이는 되돌리기로 복구되고")
+  })
+
+  it("leaves the history alone for formatting that changes no size", async () => {
+    // Given: colour and bold, which the history still does not cover. An entry with
+    // nothing to restore would put a misleading label on the undo button.
+    const book = workbook()
+    const history = createHistory()
+
+    await runWrite(book.context, history, { tool: "format_range", address: "A1:B1", bold: true })
+
+    expect(history.last()).toBeNull()
   })
 
   it("tells the model what went wrong instead of ending the turn", async () => {

@@ -40,6 +40,7 @@ Tests: 11 files. `sheets.ts` and `summarise.ts` have none of their own; summaris
 - Span results are clamped to `SPAN_LIMIT` = 200 rows x 40 columns.
 - A scan (`find_errors`, `find_hardcoded`, `list_links`) loads every cell's formula, so it is capped at 20,000 cells — far below a read's 500-cell answer cap, because the answer is a handful of addresses rather than the data.
 - `column_stats` goes through `workbook.functions`, the same host-side trick `summarise.ts` uses: seven numbers per column come back, no cells do.
+- Column widths and row heights **are** in the history (`snapshotLayout`/`restoreLayouts`, one number per line, capped at 64). Colour, font and number format still are not. An unrequested autofit used to be the one change nothing could take back.
 - Only `remove_duplicates` destroys cell content among the data tools, so it is the only one that snapshots into the history; the rest say `되돌리기에 포함되지 않습니다` in their own reply rather than implying undo covers a filter or a pivot.
 - `copy_range`/`move_range` resize the destination anchor to the source's `rowCount`/`columnCount` before snapshotting, so undo holds the rectangle the paste actually covers; a move snapshots both ends in one entry.
 - History cap `LIMIT = 20`, oldest dropped. Empty-cell entries (`cells.length === 0`) never enter. Any `push` clears redo. `restore` is a write that is deliberately **not** re-recorded.

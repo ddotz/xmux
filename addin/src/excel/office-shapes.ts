@@ -26,6 +26,8 @@ export type OperateRange = {
   rowHidden: boolean
   columnHidden: boolean
   readonly load: (properties: string) => void
+  readonly getColumn: (index: number) => OperateRange
+  readonly getRow: (index: number) => OperateRange
   readonly getResizedRange: (rows: number, columns: number) => OperateRange
   readonly insert: (shift: string) => void
   readonly delete: (shift: string) => void

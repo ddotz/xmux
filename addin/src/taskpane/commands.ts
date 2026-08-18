@@ -1,6 +1,14 @@
 import { formatArea, type GridArea } from "../excel/address"
 import type { History } from "../excel/history"
-import { recordWrite, restore, restoreRanges, snapshot, snapshotRange } from "../excel/history"
+import {
+  recordWrite,
+  restore,
+  restoreLayouts,
+  restoreRanges,
+  snapshot,
+  snapshotLayout,
+  snapshotRange,
+} from "../excel/history"
 import { splitQualified } from "../excel/resolve"
 import { applyInsertion, referenceTo, removeReference } from "../formula/reference"
 import type { PaneState, ViewportState } from "../model"
@@ -158,10 +166,12 @@ export const createCommands = (deps: CommandDeps) => {
         // cells would leave a table write showing as undoable while nothing came back.
         const cells = await snapshot(context, entry.cells)
         const ranges = await snapshotRange(context, entry.ranges ?? [])
-        const undo = deps.history.take({ label: entry.label, cells, ranges })
+        const layouts = await snapshotLayout(context, entry.layouts ?? [])
+        const undo = deps.history.take({ label: entry.label, cells, ranges, layouts })
         if (undo === null) return
         await restore(context, undo.cells)
         await restoreRanges(context, undo.ranges ?? [])
+        await restoreLayouts(context, undo.layouts ?? [])
         await deps.onRefresh()
         deps.onPane(deps.pane(), `${undo.label} 되돌림`, HISTORY_STATUS_DURATION_MS)
       })
@@ -174,10 +184,12 @@ export const createCommands = (deps: CommandDeps) => {
       void deps.run(async (context) => {
         const cells = await snapshot(context, entry.cells)
         const ranges = await snapshotRange(context, entry.ranges ?? [])
-        const redo = deps.history.takeRedo({ label: entry.label, cells, ranges })
+        const layouts = await snapshotLayout(context, entry.layouts ?? [])
+        const redo = deps.history.takeRedo({ label: entry.label, cells, ranges, layouts })
         if (redo === null) return
         await restore(context, redo.cells)
         await restoreRanges(context, redo.ranges ?? [])
+        await restoreLayouts(context, redo.layouts ?? [])
         await deps.onRefresh()
         deps.onPane(deps.pane(), `${redo.label} 재실행`, HISTORY_STATUS_DURATION_MS)
       })

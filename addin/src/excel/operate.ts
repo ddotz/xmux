@@ -1,7 +1,7 @@
 import { isWrite, type ToolCall } from "../ai/tool-schemas"
 import { runDataTool } from "./data-tools"
 import type { History } from "./history"
-import { snapshotRange } from "./history"
+import { snapshotLayout, snapshotRange } from "./history"
 import type { OperateContext, OperateSheet } from "./office-shapes"
 
 /**
@@ -168,6 +168,27 @@ export const runWrite = async (
       { sheet: sheet.name, address: call.address },
     ])
 
+    // Column widths and row heights are the user's layout, not the pane's output, so they
+    // are recorded before they change — the one part of formatting undo can put back.
+    const resizes =
+      (call.tool === "format_range" &&
+        (call.columnWidth !== undefined || call.rowHeight !== undefined)) ||
+      call.tool === "autofit"
+    const layouts = resizes
+      ? await snapshotLayout(context as never, [
+          {
+            sheet: sheet.name,
+            address: call.address,
+            axis:
+              call.tool === "format_range" &&
+              call.rowHeight !== undefined &&
+              call.columnWidth === undefined
+                ? "rows"
+                : "columns",
+          },
+        ])
+      : []
+
     if (call.tool === "format_range") {
       if (call.bold !== undefined) target.format.font.bold = call.bold
       if (call.italic !== undefined) target.format.font.italic = call.italic
@@ -182,9 +203,14 @@ export const runWrite = async (
       if (call.rowHeight === "auto") target.format.autofitRows()
       else if (call.rowHeight !== undefined) target.format.rowHeight = call.rowHeight
       await context.sync()
-      // Formatting is not part of the cell history, which holds formulas; say so plainly
-      // rather than implying undo will take the colour back off.
-      return `${sheet.name}!${call.address} 서식을 바꿨습니다. (서식은 되돌리기에 포함되지 않습니다)`
+      if (layouts.length > 0) {
+        history.push({ label: `${sheet.name}!${call.address} 크기`, cells: [], layouts })
+      }
+      // Colour and font sit outside the history; widths no longer do. Say which is which
+      // rather than implying undo covers all of it.
+      return resizes
+        ? `${sheet.name}!${call.address} 서식을 바꿨습니다. (열 너비·행 높이는 되돌리기로 복구되고, 색과 글꼴은 복구되지 않습니다)`
+        : `${sheet.name}!${call.address} 서식을 바꿨습니다. (서식은 되돌리기에 포함되지 않습니다)`
     }
 
     if (call.tool === "insert_rows") {
@@ -310,7 +336,8 @@ export const runWrite = async (
     target.format.autofitColumns()
     target.format.autofitRows()
     await context.sync()
-    return `${sheet.name}!${call.address} 너비를 맞췄습니다.`
+    history.push({ label: `${sheet.name}!${call.address} 크기 맞춤`, cells: [], layouts })
+    return `${sheet.name}!${call.address} 너비를 맞췄습니다. (되돌리기로 원래 너비가 복구됩니다)`
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return `작업을 수행하지 못했습니다: ${detail}`

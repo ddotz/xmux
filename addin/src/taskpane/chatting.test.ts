@@ -812,6 +812,41 @@ describe("working through a batch of tool calls", () => {
     expect(observation).toContain("[2] 정리!A1 표 입력 (1행)")
   })
 
+  it("never puts a tool call on screen, and tells the model how to fix it", async () => {
+    // Given: the second turn of a real session. The model re-sent the table as bare
+    // numbers, the call was refused, and the JSON was printed as if it were the answer.
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('[{"tool":"delete_sheet","sheet":"정리"}]')
+      .mockResolvedValueOnce("시트 이름을 name으로 다시 보냅니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트 지워줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // Then: the rejection went back to the model, not to the user.
+    const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
+    expect(second.at(-1)?.content).toContain("delete_sheet")
+    expect(second.at(-1)?.content).toContain("형식이 맞지 않아")
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).not.toContain('"tool"')
+  })
+
+  it("keeps a reply that is only a broken tool call off the screen", async () => {
+    // Given: the model never recovers and its last word is still JSON.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue('{"tool":"write_range","address":"B2"}')
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("표 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // Then: it spends its rounds being told to fix the call, and stops in words.
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).not.toContain('"tool"')
+    expect(said).toContain("멈췄습니다")
+  })
+
   it("says it stopped instead of printing raw JSON when the rounds run out", async () => {
     // Given: a model that never stops asking for tools. The turn has to end in words.
     const book = workbook()

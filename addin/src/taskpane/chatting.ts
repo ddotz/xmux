@@ -8,7 +8,7 @@ import {
 } from "../ai/plan"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
 import { isWrite, type ToolCall } from "../ai/tool-schemas"
-import { describeCall, MAX_TOOL_ROUNDS, readSteps } from "../ai/tools"
+import { containsToolCall, describeCall, MAX_TOOL_ROUNDS, readSteps } from "../ai/tools"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
 import { runTool } from "../excel/inspect"
@@ -52,6 +52,10 @@ export type Chatting = {
 const KEPT_OBSERVATIONS = 6
 const TRIMMED_OBSERVATION_CHARS = 200
 const OBSERVATION_PREFIX = "실행 결과:"
+
+/** Shown when a reply's tool call could not be run and the JSON would otherwise be read. */
+const UNRUNNABLE_CALL =
+  "작업 지시를 실행하지 못했습니다. 무엇을 어느 범위에 적용할지 조금 더 구체적으로 다시 말씀해 주세요."
 
 /** Shown when the model has spent its rounds and still will not answer in words. */
 const OUT_OF_ROUNDS =
@@ -232,11 +236,14 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         for (const [index, call] of step.calls.entries()) {
           const observation = await runCall(call)
           observations.push(
-            step.calls.length === 1
+            step.calls.length === 1 && step.rejected === null
               ? observation
               : `[${index + 1}] ${describeCall(call)}\n${observation}`,
           )
         }
+        // A call this side refused goes back to the model to be rewritten. It is not an
+        // answer, and it never reaches the screen.
+        if (step.rejected !== null) observations.push(step.rejected)
         turns.push({ role: "assistant", content: reply })
         turns.push({ role: "user", content: `실행 결과:\n${observations.join("\n\n")}` })
         reply = await askModel(state.settings, trimObservations(turns))
@@ -259,8 +266,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       }
 
       const plan: Plan = parsePlan(reply)
+      // Whatever happened above, a tool call is not something the user should be reading.
+      const said = containsToolCall(plan.say) ? UNRUNNABLE_CALL : plan.say
       set({
-        turns: [...state.turns, { role: "assistant", text: plan.say }],
+        turns: [...state.turns, { role: "assistant", text: said }],
         plan: planTouchesWorkbook(plan) || plan.skill !== undefined ? plan : null,
         pending: false,
         activity: [],

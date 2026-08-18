@@ -71,8 +71,37 @@ describe("readSteps", () => {
     expect(readSteps('```json\n{"tool":"read_range",\n```').kind).toBe("answer")
   })
 
-  it("rejects a tool it does not have", () => {
-    expect(readSteps('{"tool":"delete_sheet","sheet":"Main"}').kind).toBe("answer")
+  it("runs nothing from a malformed call, and says why so the model can fix it", () => {
+    // Given: `delete_sheet` takes `name`, not `sheet`. Nothing may run — but this is a
+    // message back to the model, not an answer to print at the user.
+    const step = readSteps('{"tool":"delete_sheet","sheet":"Main"}')
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([])
+    expect(step.rejected).toContain("delete_sheet")
+    expect(step.rejected).toContain("name")
+  })
+
+  it("takes a table of bare numbers, which is how a model writes figures", () => {
+    // Given: the reply that used to be printed to the user as raw JSON. `rows` insisted on
+    // strings; the model sent numbers, the call was refused, and the JSON became the answer.
+    const step = readSteps(
+      '[{"tool":"write_range","sheet":"DSD 정리","address":"B2","rows":[[114666,-3517,0]]},' +
+        '{"tool":"format_range","sheet":"DSD 정리","address":"B2:E8","numberFormat":"#,##0"}]',
+    )
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.rejected).toBeNull()
+    expect(step.calls).toHaveLength(2)
+    const [write] = step.calls
+    expect(write?.tool === "write_range" ? write.rows : null).toEqual([["114666", "-3517", "0"]])
+  })
+
+  it("keeps a plan an answer rather than calling it a broken tool call", () => {
+    // Given: the other reply shape. It carries no `tool` key, so it is not a failed call.
+    expect(readSteps('{"edits":[{"address":"B6","value":"=SUM(A1:A5)"}]}').kind).toBe("answer")
   })
 })
 
