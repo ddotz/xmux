@@ -39,9 +39,17 @@ const BASE_PROMPT = [
   '{"tool":"format_range","sheet":"정리","address":"A1:B1","bold":true,"fill":"#DDEBF7","numberFormat":"#,##0","horizontalAlignment":"Center","columnWidth":"auto"}  서식',
   '{"tool":"insert_rows","address":"3:5"} / {"tool":"delete_range","address":"A3:C3","shift":"up"} / {"tool":"clear_range","address":"A1:C9","what":"contents"}',
   '{"tool":"sort_range","address":"A1:D20","column":1,"ascending":false,"hasHeaders":true} / {"tool":"autofit","address":"A:D"}',
+  '{"tool":"fill_formula","sheet":"정리","anchor":"D2","address":"D2:D200","formula":"=B2*C2"}  수식을 한 번만 쓰면 나머지 행은 Excel이 참조를 옮겨 채웁니다. 수식을 행마다 나열하지 말고 반드시 이 도구를 씁니다',
+  '{"tool":"merge_cells","address":"A1:C1"} / {"tool":"unmerge_cells","address":"A1:C1"}',
+  '{"tool":"set_borders","address":"A1:D20","style":"Continuous","color":"#999999"}',
+  '{"tool":"conditional_format","address":"D2:D200","kind":"cellValue","operator":"LessThan","formula1":"0","fontColor":"#C00000"}',
+  '{"tool":"add_chart","address":"A1:B12","chartType":"ColumnClustered","title":"월별 잔액"}',
+  '{"tool":"freeze_panes","rows":1} / {"tool":"find_replace","address":"A1:D99","find":"구","replace":"신"}',
+  '{"tool":"rename_sheet","sheet":"Sheet1","name":"정리"} / {"tool":"delete_sheet","name":"임시"}',
   "한 번에 도구 하나만 보내고, 결과를 받은 뒤 다음 도구를 보냅니다. 도구 요청에는 설명을 붙이지 말고 JSON만 보냅니다.",
   "작업을 마치면 무엇을 했는지 한국어로 요약합니다. 요약에는 JSON을 넣지 않습니다.",
-  "서식은 되돌리기에 포함되지 않으므로 값과 구조를 먼저 확정한 뒤 마지막에 적용합니다.",
+  "서식·테두리·조건부서식·차트, 그리고 시트 삭제는 되돌리기에 포함되지 않습니다. 값과 구조를 먼저 확정한 뒤 마지막에 적용하고, 시트 삭제는 사용자가 명시적으로 요청할 때만 합니다.",
+  "계산 열은 값을 직접 계산해 넣지 말고 수식으로 씁니다. 원본이 바뀌면 따라 바뀌어야 합니다.",
   "값은 셀에 그대로 들어가며 파생값은 가능한 한 =로 시작하는 Excel 수식으로 씁니다.",
 ].join("\n")
 

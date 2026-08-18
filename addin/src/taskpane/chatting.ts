@@ -99,12 +99,26 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     deps.redraw()
   }
 
+  /**
+   * What the model is told about the workbook before it starts.
+   *
+   * With nothing attached this used to return `{}` — no sheet list, no selection, nothing —
+   * so a question asked without first picking a range left the model with no workbook to
+   * reason about and it had nothing to say. `readWorkbookContext` already falls back to
+   * whatever is selected in Excel and always lists the sheets, which is enough for the model
+   * to find its own way from there.
+   */
   const describeWorkbook = async (attachment: SelectionAttachment | null): Promise<string> => {
-    if (attachment === null) return "{}"
     let description = "{}"
-    await deps.run(async (context) => {
-      description = serializeWorkbookContext(await readWorkbookContext(context, attachment))
-    })
+    try {
+      await deps.run(async (context) => {
+        description = serializeWorkbookContext(await readWorkbookContext(context, attachment))
+      })
+    } catch {
+      // A workbook with no selection at all is still worth answering in; the read tools
+      // remain available and the model can ask for what it needs.
+      description = "{}"
+    }
     return description
   }
 

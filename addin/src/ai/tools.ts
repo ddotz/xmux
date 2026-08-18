@@ -106,6 +106,125 @@ export const autofitSchema = z.object({
   address,
 })
 
+/**
+ * One formula written at the anchor and filled across the rest of the range.
+ *
+ * Writing a column of formulas as literal text meant the model had to emit `=B2*C2`,
+ * `=B3*C3`, … by hand — hundreds of near-identical lines that ran the reply out of room and
+ * got the row numbers wrong in the middle. Excel already knows how to shift a relative
+ * reference down a column, so the anchor is written once and Excel fills the rest.
+ */
+export const fillFormulaSchema = z.object({
+  tool: z.literal("fill_formula"),
+  sheet: z.string().max(120).optional(),
+  /** Where the formula is written, e.g. `D2`. */
+  anchor: z.string().min(1).max(64),
+  /** The whole column or block it fills, anchor included, e.g. `D2:D200`. */
+  address,
+  formula: z.string().min(1).max(500),
+})
+
+export const mergeCellsSchema = z.object({
+  tool: z.literal("merge_cells"),
+  sheet: z.string().max(120).optional(),
+  address,
+  across: z.boolean().optional(),
+})
+
+export const unmergeCellsSchema = z.object({
+  tool: z.literal("unmerge_cells"),
+  sheet: z.string().max(120).optional(),
+  address,
+})
+
+export const bordersSchema = z.object({
+  tool: z.literal("set_borders"),
+  sheet: z.string().max(120).optional(),
+  address,
+  style: z.enum(["Continuous", "Dash", "Dot", "Double", "None"]).optional(),
+  color: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  /** Which edges; omitted means the box and everything inside it. */
+  edges: z
+    .array(
+      z.enum([
+        "EdgeTop",
+        "EdgeBottom",
+        "EdgeLeft",
+        "EdgeRight",
+        "InsideVertical",
+        "InsideHorizontal",
+      ]),
+    )
+    .optional(),
+})
+
+export const conditionalFormatSchema = z.object({
+  tool: z.literal("conditional_format"),
+  sheet: z.string().max(120).optional(),
+  address,
+  kind: z.enum(["cellValue", "colorScale", "dataBar"]),
+  /** For `cellValue`. */
+  operator: z
+    .enum([
+      "GreaterThan",
+      "LessThan",
+      "EqualTo",
+      "Between",
+      "GreaterThanOrEqual",
+      "LessThanOrEqual",
+    ])
+    .optional(),
+  formula1: z.string().max(200).optional(),
+  formula2: z.string().max(200).optional(),
+  fill: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+  fontColor: z
+    .string()
+    .regex(/^#[0-9a-fA-F]{6}$/)
+    .optional(),
+})
+
+export const addChartSchema = z.object({
+  tool: z.literal("add_chart"),
+  sheet: z.string().max(120).optional(),
+  /** The data the chart reads. */
+  address,
+  chartType: z.enum(["ColumnClustered", "Line", "Pie", "BarClustered", "XYScatter", "Area"]),
+  title: z.string().max(120).optional(),
+})
+
+export const freezePanesSchema = z.object({
+  tool: z.literal("freeze_panes"),
+  sheet: z.string().max(120).optional(),
+  rows: z.number().int().min(0).max(100).optional(),
+  columns: z.number().int().min(0).max(100).optional(),
+})
+
+export const findReplaceSchema = z.object({
+  tool: z.literal("find_replace"),
+  sheet: z.string().max(120).optional(),
+  address,
+  find: z.string().min(1).max(200),
+  replace: z.string().max(200),
+  matchCase: z.boolean().optional(),
+})
+
+export const renameSheetSchema = z.object({
+  tool: z.literal("rename_sheet"),
+  sheet: z.string().max(120).optional(),
+  name: z.string().trim().min(1).max(31),
+})
+
+export const deleteSheetSchema = z.object({
+  tool: z.literal("delete_sheet"),
+  name: z.string().trim().min(1).max(120),
+})
+
 export const toolCallSchema = z.discriminatedUnion("tool", [
   readRangeSchema,
   findSchema,
@@ -118,6 +237,16 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
   clearRangeSchema,
   sortRangeSchema,
   autofitSchema,
+  fillFormulaSchema,
+  mergeCellsSchema,
+  unmergeCellsSchema,
+  bordersSchema,
+  conditionalFormatSchema,
+  addChartSchema,
+  freezePanesSchema,
+  findReplaceSchema,
+  renameSheetSchema,
+  deleteSheetSchema,
 ])
 
 /** Which calls change the workbook. Reads are free; writes go through the undo history. */
@@ -130,6 +259,16 @@ export const WRITE_TOOLS = new Set([
   "clear_range",
   "sort_range",
   "autofit",
+  "fill_formula",
+  "merge_cells",
+  "unmerge_cells",
+  "set_borders",
+  "conditional_format",
+  "add_chart",
+  "freeze_panes",
+  "find_replace",
+  "rename_sheet",
+  "delete_sheet",
 ])
 
 export const isWrite = (call: ToolCall): boolean => WRITE_TOOLS.has(call.tool)

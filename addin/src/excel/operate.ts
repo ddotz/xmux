@@ -35,13 +35,34 @@ type OperateRange = {
   readonly sort: {
     apply: (fields: readonly unknown[], matchCase: boolean, hasHeaders: boolean) => void
   }
+  readonly merge: (across?: boolean) => void
+  readonly unmerge: () => void
+  readonly autoFill: (destination: OperateRange, type: string) => void
+  readonly conditionalFormats: {
+    add: (type: string) => {
+      cellValue: { format: { fill: { color: string }; font: { color: string } }; rule: unknown }
+      colorScale: { criteria: unknown }
+      dataBar: Record<string, unknown>
+    }
+  }
+  readonly getBorder: (index: string) => { style: string; color: string }
+  readonly replaceAll: (find: string, replace: string, criteria: unknown) => void
 }
 
 type OperateSheet = {
   readonly isNullObject: boolean
-  readonly name: string
+  name: string
   readonly getRange: (address: string) => OperateRange
   readonly load: (properties: string) => void
+  readonly freezePanes: {
+    freezeRows: (count: number) => void
+    freezeColumns: (count: number) => void
+    freeze: (range: OperateRange) => void
+  }
+  readonly charts: {
+    add: (type: string, source: OperateRange, seriesBy?: string) => { title: { text: string } }
+  }
+  readonly delete: () => void
 }
 
 export type OperateContext = {
@@ -98,6 +119,35 @@ export const runWrite = async (
     if (call.tool === "read_range" || call.tool === "find" || call.tool === "used_range") {
       return "쓰기 작업이 아닙니다."
     }
+    if (call.tool === "delete_sheet") {
+      const doomed = context.workbook.worksheets.getItemOrNullObject(call.name)
+      doomed.load("isNullObject")
+      await context.sync()
+      if (doomed.isNullObject) return `${call.name} 시트가 없습니다.`
+      doomed.delete()
+      await context.sync()
+      // Deleting a sheet cannot be undone through the cell history; say so plainly.
+      return `${call.name} 시트를 삭제했습니다. (되돌리기로 복구되지 않습니다)`
+    }
+
+    if (call.tool === "rename_sheet") {
+      const named = await sheetFor(context, call.sheet)
+      if (named === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+      const before = named.name
+      named.name = call.name
+      await context.sync()
+      return `${before} 시트 이름을 ${call.name}으로 바꿨습니다.`
+    }
+
+    if (call.tool === "freeze_panes") {
+      const frozen = await sheetFor(context, call.sheet)
+      if (frozen === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+      if (call.rows !== undefined) frozen.freezePanes.freezeRows(call.rows)
+      if (call.columns !== undefined) frozen.freezePanes.freezeColumns(call.columns)
+      await context.sync()
+      return `${frozen.name} 틀을 고정했습니다. (행 ${call.rows ?? 0}, 열 ${call.columns ?? 0})`
+    }
+
     const sheet = await sheetFor(context, call.sheet)
     if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
     const target = sheet.getRange(call.address)
@@ -169,6 +219,86 @@ export const runWrite = async (
       await context.sync()
       history.push({ label: `${sheet.name}!${call.address} 정렬`, cells: [], ranges: held })
       return `${sheet.name}!${call.address}을 ${call.column}열 기준으로 정렬했습니다.`
+    }
+
+    if (call.tool === "fill_formula") {
+      // Excel shifts the relative references itself, so the model writes the formula once.
+      const anchor = sheet.getRange(call.anchor)
+      anchor.formulas = [[call.formula]]
+      await context.sync()
+      anchor.autoFill(target, "FillDefault")
+      await context.sync()
+      history.push({ label: `${sheet.name}!${call.address} 수식 채우기`, cells: [], ranges: held })
+      return `${sheet.name}!${call.address}에 ${call.formula}을 채웠습니다.`
+    }
+
+    if (call.tool === "merge_cells") {
+      target.merge(call.across ?? false)
+      await context.sync()
+      history.push({ label: `${sheet.name}!${call.address} 병합`, cells: [], ranges: held })
+      return `${sheet.name}!${call.address}을 병합했습니다.`
+    }
+
+    if (call.tool === "unmerge_cells") {
+      target.unmerge()
+      await context.sync()
+      return `${sheet.name}!${call.address} 병합을 해제했습니다.`
+    }
+
+    if (call.tool === "set_borders") {
+      const edges = call.edges ?? [
+        "EdgeTop",
+        "EdgeBottom",
+        "EdgeLeft",
+        "EdgeRight",
+        "InsideVertical",
+        "InsideHorizontal",
+      ]
+      for (const edge of edges) {
+        const border = target.getBorder(edge)
+        border.style = call.style ?? "Continuous"
+        if (call.color !== undefined) border.color = call.color
+      }
+      await context.sync()
+      return `${sheet.name}!${call.address}에 테두리를 넣었습니다. (되돌리기에 포함되지 않습니다)`
+    }
+
+    if (call.tool === "conditional_format") {
+      const added = target.conditionalFormats.add(
+        call.kind === "colorScale"
+          ? "ColorScale"
+          : call.kind === "dataBar"
+            ? "DataBar"
+            : "CellValue",
+      )
+      if (call.kind === "cellValue") {
+        if (call.fill !== undefined) added.cellValue.format.fill.color = call.fill
+        if (call.fontColor !== undefined) added.cellValue.format.font.color = call.fontColor
+        added.cellValue.rule = {
+          formula1: call.formula1 ?? "0",
+          ...(call.formula2 === undefined ? {} : { formula2: call.formula2 }),
+          operator: call.operator ?? "GreaterThan",
+        }
+      }
+      await context.sync()
+      return `${sheet.name}!${call.address}에 조건부 서식을 넣었습니다. (되돌리기에 포함되지 않습니다)`
+    }
+
+    if (call.tool === "add_chart") {
+      const chart = sheet.charts.add(call.chartType, target, "Auto")
+      if (call.title !== undefined) chart.title.text = call.title
+      await context.sync()
+      return `${sheet.name}에 ${call.chartType} 차트를 넣었습니다. (되돌리기에 포함되지 않습니다)`
+    }
+
+    if (call.tool === "find_replace") {
+      target.replaceAll(call.find, call.replace, {
+        completeMatch: false,
+        matchCase: call.matchCase ?? false,
+      })
+      await context.sync()
+      history.push({ label: `${sheet.name}!${call.address} 바꾸기`, cells: [], ranges: held })
+      return `${sheet.name}!${call.address}에서 "${call.find}"을 "${call.replace}"로 바꿨습니다.`
     }
 
     target.format.autofitColumns()

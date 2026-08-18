@@ -655,3 +655,49 @@ describe("operating without approval", () => {
     expect(chatting.state().turns.at(-1)?.text).toBe("정리 시트에 표를 만들었습니다.")
   })
 })
+
+describe("asking without picking a range first", () => {
+  it("still describes the workbook to the model", async () => {
+    // Given: nothing attached. This used to send `{}` — no sheets, no selection — so the
+    // model had no workbook to reason about and answered nothing.
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work({} as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    const asked = nextReply()
+
+    chatting.handlers.onSend("이 파일 뭐가 들어있어?")
+    await asked
+
+    // Then: the live selection and sheet list were read and sent.
+    expect(vi.mocked(readWorkbookContext)).toHaveBeenCalled()
+    const messages = vi.mocked(askModel).mock.calls[0]?.[1] ?? []
+    expect(messages[0]?.content).toContain("Data!B2:D5")
+    expect(messages[0]?.content).not.toContain("현재 통합 문서:\n{}")
+  })
+
+  it("still answers when the workbook cannot be read at all", async () => {
+    // Given: no selection to fall back on. The read tools are still available, so the turn
+    // has to reach the model rather than dying on the way.
+    vi.mocked(readWorkbookContext).mockRejectedValue(new Error("no selection"))
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work({} as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    const asked = nextReply()
+
+    chatting.handlers.onSend("시트 목록 알려줘")
+    await asked
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+    expect(chatting.state().error).toBeNull()
+  })
+})
