@@ -324,3 +324,72 @@ describe("workbook lookups before answering", () => {
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
   })
 })
+
+describe("message order the server accepts", () => {
+  it("sends exactly one system message, first", async () => {
+    // Given: the server rejects anything else with
+    // `System message must be at the beginning` — two consecutive system turns put the
+    // second at index 1, which is not the beginning.
+    const chatting = create()
+    const asked = nextReply()
+
+    chatting.handlers.onSend("합계 넣어줘")
+    await asked
+
+    const messages = vi.mocked(askModel).mock.calls[0]?.[1] ?? []
+    expect(messages.filter((message) => message.role === "system")).toHaveLength(1)
+    expect(messages[0]?.role).toBe("system")
+  })
+
+  it("keeps that shape through a workbook lookup round", async () => {
+    // Given: the tool loop appends turns before asking again.
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"used_range"}')
+      .mockResolvedValueOnce("비어 있습니다.")
+
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work({
+          workbook: {
+            worksheets: {
+              getActiveWorksheet: () => ({
+                isNullObject: false,
+                name: "Main",
+                getRange: () => {
+                  throw new Error("unused")
+                },
+                getUsedRangeOrNullObject: () => ({
+                  isNullObject: true,
+                  address: "",
+                  values: [],
+                  cellCount: 0,
+                  worksheet: { name: "Main" },
+                  load: () => {},
+                }),
+                load: () => {},
+              }),
+              getItemOrNullObject: () => {
+                throw new Error("unused")
+              },
+            },
+            getSelectedRange: () => {
+              throw new Error("unused")
+            },
+          },
+          sync: async () => {},
+        } as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("뭐가 들어있어?")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
+    expect(second.filter((message) => message.role === "system")).toHaveLength(1)
+    expect(second[0]?.role).toBe("system")
+    expect(second.length).toBeGreaterThan(2)
+  })
+})

@@ -61,6 +61,25 @@ createServer(options, (request, response) => {
     // Printed so the test can confirm the pane really sent the key and the workbook context.
     console.log(`${request.method} ${request.url} auth=${request.headers.authorization ?? "none"}`)
     console.log(`body=${body.slice(0, 400)}`)
+
+    // The real server refuses a system message anywhere but first, and refuses more than
+    // one. Answering 200 regardless is what let that reach production once already.
+    let messages = []
+    try {
+      messages = JSON.parse(body).messages ?? []
+    } catch {
+      messages = []
+    }
+    const misplaced = messages.some((message, index) => message.role === "system" && index !== 0)
+    if (misplaced) {
+      console.log("-> 400 (system message must be at the beginning)")
+      response.writeHead(400, { ...cors, "Content-Type": "application/json" })
+      response.end(
+        JSON.stringify({ detail: "400: System message must be at the beginning." }),
+      )
+      return
+    }
+
     response.writeHead(200, { ...cors, "Content-Type": "application/json" })
     response.end(
       JSON.stringify({

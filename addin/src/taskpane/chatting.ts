@@ -90,9 +90,15 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       attachment === null
         ? workbook
         : `{"workbookContext":${workbook},"selectionAttachment":${JSON.stringify(attachment)}}`
+    // One system message, first, and only there. Sending the instructions and the workbook
+    // context as two consecutive system turns put the second one at index 1, which the
+    // server rejects outright: `System message must be at the beginning`. The connection
+    // test never saw it because it sends a single user turn and no system message at all.
     return [
-      { role: "system", content: systemPrompt(selectedSkillId, skills) },
-      { role: "system", content: context },
+      {
+        role: "system",
+        content: `${systemPrompt(selectedSkillId, skills)}\n\n현재 통합 문서:\n${context}`,
+      },
       ...previous.map((turn): ChatMessage => ({ role: turn.role, content: turn.text })),
       { role: "user", content: question },
     ]
