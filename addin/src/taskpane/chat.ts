@@ -1,4 +1,4 @@
-import { describeEdit, type Plan, type ProposedSkill } from "../ai/plan"
+import { describeBlock, describeEdit, type Plan, type ProposedSkill } from "../ai/plan"
 import type { AiSettings } from "../ai/settings"
 import { renderComposer, renderPlan } from "./chat-controls"
 import { renderSettings } from "./chat-settings"
@@ -62,8 +62,12 @@ const text = (tag: string, className: string, content: string): HTMLElement => {
   node.textContent = content
   return node
 }
-const describePlan = (plan: Plan, sheet: string): readonly string[] =>
-  plan.edits.map((edit) => describeEdit(edit, sheet))
+/** Every part of the plan, so the user approves the whole thing and not just its cells. */
+const describePlan = (plan: Plan, sheet: string): readonly string[] => [
+  ...plan.newSheets.map((added) => `새 시트: ${added.name}`),
+  ...plan.blocks.map((block) => describeBlock(block, sheet)),
+  ...plan.edits.map((edit) => describeEdit(edit, sheet)),
+]
 
 /**
  * The log is rebuilt on every redraw, so the browser has nothing to restore and starts at

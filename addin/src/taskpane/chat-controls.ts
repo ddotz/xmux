@@ -1,4 +1,4 @@
-import type { Plan } from "../ai/plan"
+import { describeApplied, type Plan, planTouchesWorkbook } from "../ai/plan"
 import { quoteSheetName } from "../formula/reference"
 import type { ChatHandlers, ChatState, SelectionAttachment } from "./chat"
 import { createIcon, iconButton } from "./chat-icons"
@@ -160,9 +160,12 @@ export const renderPlan = (
   handlers: ChatHandlers,
   describe: (plan: Plan, sheet: string) => readonly string[],
 ): HTMLElement | null => {
-  if (plan === null || plan.edits.length === 0) return null
+  // A plan that creates a sheet and writes a table has no single-cell edits at all. Gating
+  // on edits alone meant those proposals rendered nothing: the model had answered, the plan
+  // had parsed, and the user had no button to approve it — the request simply did nothing.
+  if (plan === null || !planTouchesWorkbook(plan)) return null
   const block = element("div", "plan")
-  block.append(text("div", "plan-title", `제안된 변경 ${plan.edits.length}건`))
+  block.append(text("div", "plan-title", `제안된 변경: ${describeApplied(plan)}`))
   const list = element("ul", "plan-list")
   for (const item of describe(plan, sheet)) list.append(text("li", "plan-item payload", item))
   const actions = element("div", "plan-actions")

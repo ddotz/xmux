@@ -214,8 +214,12 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
                 ...row,
                 ...Array.from({ length: width - row.length }, () => ""),
               ])
-              const sheetName = block.sheet ?? fallback
-              if (sheetName === "") continue
+              // A plan that creates one sheet and writes one table usually names the sheet
+              // once, in newSheets. Falling back to the mirrored sheet — which may be "" —
+              // dropped that table without a word.
+              const sheetName =
+                block.sheet ?? (plan.newSheets.length === 1 ? plan.newSheets[0]?.name : fallback)
+              if (sheetName === undefined || sheetName === "") continue
               const target = context.workbook.worksheets
                 .getItem(sheetName)
                 .getRange(block.address)
