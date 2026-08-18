@@ -124,8 +124,30 @@ export type OperateContext = {
     readonly names: {
       add: (name: string, reference: OperateRange) => void
     }
+    readonly tables: {
+      getItemOrNullObject: (name: string) => OperateTable
+    }
+    readonly application: {
+      calculationMode: string
+      calculate: (type: string) => void
+      readonly load: (properties: string) => void
+    }
   }
   readonly sync: () => Promise<void>
+}
+
+export type OperateTable = {
+  readonly isNullObject: boolean
+  readonly name: string
+  readonly load: (properties: string) => void
+  readonly columns: {
+    add: (index?: number, values?: unknown, name?: string) => OperateTableColumn
+  }
+  readonly getDataBodyRange: () => OperateRange
+}
+
+export type OperateTableColumn = {
+  readonly getDataBodyRange: () => OperateRange
 }
 
 /**
@@ -152,6 +174,14 @@ export type InspectSheet = {
   readonly getRange: (address: string) => InspectRange
   readonly getUsedRangeOrNullObject: () => InspectRange
   readonly load: (properties: string) => void
+  readonly tables: {
+    readonly load: (properties: string) => void
+    readonly items: readonly {
+      readonly name: string
+      readonly showHeaders: boolean
+      readonly getRange: () => InspectRange
+    }[]
+  }
 }
 
 /** A host-side calculation: the number crosses the boundary, the cells never do. */

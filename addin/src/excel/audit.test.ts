@@ -53,6 +53,7 @@ const workbook = (used = LEDGER) => {
     },
     getUsedRangeOrNullObject: () => range(used.address),
     load: () => {},
+    tables: { load: () => {}, items: [] },
   }
 
   const result = (value: unknown) => ({ value, load: () => {} })

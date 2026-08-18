@@ -85,8 +85,11 @@ export const runWrite = async (
       return `${frozen.name} 틀을 고정했습니다. (행 ${call.rows ?? 0}, 열 ${call.columns ?? 0})`
     }
 
-    const sheet = await sheetFor(context, call.sheet)
-    if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+    // Two writes are workbook-level rather than sheet-level (`recalculate`,
+    // `add_table_column`); they carry no sheet name and do not use the one resolved here.
+    const named = "sheet" in call ? call.sheet : undefined
+    const sheet = await sheetFor(context, named)
+    if (sheet === null) return `시트를 찾을 수 없습니다: ${named ?? ""}`
 
     // Filters, tables, validation, names, pivots, visibility, sheet copies and protection
     // are Excel's own operations rather than cell edits; `data-tools.ts` runs them and

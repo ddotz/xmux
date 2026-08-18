@@ -2,6 +2,7 @@ import type { ToolCall } from "../ai/tool-schemas"
 import { MAX_TOOL_CELLS, renderGrid } from "../ai/tools"
 import { runAuditTool } from "./audit"
 import type { InspectContext, InspectSheet } from "./office-shapes"
+import { runReasoningTool } from "./reasoning"
 
 /**
  * Answering the model's questions about the workbook.
@@ -50,6 +51,25 @@ const listSheetNames = async (context: InspectContext): Promise<string> => {
   await context.sync()
   const names = context.workbook.worksheets.items.map((sheet) => sheet.name)
   return `시트 ${names.length}개: ${names.join(", ")}`
+}
+
+/** The tables on a sheet, so the model can work with one that already exists. */
+const listTables = async (context: InspectContext, sheet: InspectSheet): Promise<string> => {
+  sheet.tables.load("items/name, items/showHeaders")
+  await context.sync()
+  const tables = sheet.tables.items
+  if (tables.length === 0) return `${sheet.name}에 표가 없습니다.`
+  const ranges = tables.map((table) => {
+    const range = table.getRange()
+    range.load("address")
+    return range
+  })
+  await context.sync()
+  const lines = tables.map(
+    (table, at) =>
+      `${table.name}: ${ranges[at]?.address ?? ""}${table.showHeaders ? "" : " (머리글 없음)"}`,
+  )
+  return `${sheet.name}의 표 ${tables.length}개:\n${lines.join("\n")}`
 }
 
 const usedRange = async (context: InspectContext, call: ToolCall): Promise<string> => {
@@ -111,8 +131,11 @@ export const runTool = async (context: InspectContext, call: ToolCall): Promise<
     const named = "sheet" in call ? call.sheet : undefined
     const sheet = await sheetFor(context, named)
     if (sheet === null) return `시트를 찾을 수 없습니다: ${named ?? ""}`
+    if (call.tool === "list_tables") return await listTables(context, sheet)
     const audited = await runAuditTool(context, sheet, call)
-    return audited ?? (await find(context, sheet, call))
+    if (audited !== null) return audited
+    const reasoned = await runReasoningTool(context, sheet, call)
+    return reasoned ?? (await find(context, sheet, call))
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return `요청을 처리하지 못했습니다: ${detail}`

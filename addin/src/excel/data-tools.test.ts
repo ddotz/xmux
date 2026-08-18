@@ -132,9 +132,37 @@ const workbook = () => {
     },
   }
 
+  const tableBody = { address: "매출[세금]", rowCount: 3, formulas: [[""]], load: () => {} }
+  Object.defineProperty(tableBody, "formulas", {
+    get: () => [[""]],
+    set: (value: unknown) => performed.push(`tableFormulas ${JSON.stringify(value)}`),
+    configurable: true,
+  })
   const context = {
     workbook: {
       names: { add: (name: string) => performed.push(`name ${name}`) },
+      tables: {
+        getItemOrNullObject: (name: string) => ({
+          isNullObject: name !== "매출",
+          name,
+          load: () => {},
+          columns: {
+            add: (_index?: number, _values?: unknown, columnName?: string) => {
+              performed.push(`addColumn ${name} ${columnName}`)
+              return { getDataBodyRange: () => tableBody }
+            },
+          },
+          getDataBodyRange: () => tableBody,
+        }),
+      },
+      application: {
+        calculationMode: "Manual",
+        calculate: (type: string) => performed.push(`calculate ${type}`),
+        load: () => {},
+        set calculationModeSetter(value: string) {
+          performed.push(`mode ${value}`)
+        },
+      },
       worksheets: {
         getActiveWorksheet: () => sheet,
         getItem: () => sheet,
@@ -383,6 +411,50 @@ describe("runDataTool", () => {
       "titleRows $1:$2",
     ])
     expect(answer).toContain("인쇄 설정")
+  })
+
+  it("adds a calculated column to an existing table", async () => {
+    // Given: a table people keep adding columns to by hand. A structured reference keeps
+    // working as the table grows.
+    const book = workbook()
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "add_table_column",
+      table: "매출",
+      name: "세금",
+      formula: "=[@금액]*0.1",
+    })
+
+    expect(book.performed).toContain("addColumn 매출 세금")
+    expect(book.performed).toContain(
+      'tableFormulas [["=[@금액]*0.1"],["=[@금액]*0.1"],["=[@금액]*0.1"]]',
+    )
+    expect(answer).toContain("세금 열을 넣었습니다")
+  })
+
+  it("names the table it could not find rather than throwing", async () => {
+    const book = workbook()
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "add_table_column",
+      table: "없는표",
+      name: "세금",
+    })
+
+    expect(answer).toContain("표를 찾을 수 없습니다")
+  })
+
+  it("recalculates and reports that the workbook was on manual", async () => {
+    // Given: the first thing to rule out when numbers look wrong — stale results.
+    const book = workbook()
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "recalculate",
+    })
+
+    expect(book.performed).toContain("calculate Full")
+    expect(answer).toContain("Manual")
+    expect(answer).toContain("오래된 상태")
   })
 
   it("builds a pivot with its fields in the right places", async () => {

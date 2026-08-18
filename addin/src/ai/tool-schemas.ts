@@ -446,6 +446,67 @@ export const printLayoutSchema = z.object({
   centerHorizontally: z.boolean().optional(),
 })
 
+/**
+ * One cell, read back: its formula, what each reference in it holds, and the calculation
+ * in numbered steps. The first thing to reach for when a number looks wrong.
+ */
+export const explainCellSchema = z.object({
+  tool: z.literal("explain_cell"),
+  sheet: z.string().max(120).optional(),
+  /** One cell, e.g. `B10`. */
+  address: z.string().min(1).max(64),
+})
+
+/** A stated total against the sum of its parts, with the difference stated plainly. */
+export const checkSumSchema = z.object({
+  tool: z.literal("check_sum"),
+  sheet: z.string().max(120).optional(),
+  /** The cell holding the total, e.g. `B10`. */
+  total: z.string().min(1).max(64),
+  /** The range it claims to add up, e.g. `B2:B9`. */
+  address,
+  /** Anything smaller than this counts as agreement; defaults to 0.5. */
+  tolerance: z.number().min(0).max(1_000_000).optional(),
+})
+
+/** Which formulas on the sheet would move if this cell did. */
+export const findDependentsSchema = z.object({
+  tool: z.literal("find_dependents"),
+  sheet: z.string().max(120).optional(),
+  address: z.string().min(1).max(64),
+})
+
+/** The tables on a sheet, so an existing table can be worked with by name. */
+export const listTablesSchema = z.object({
+  tool: z.literal("list_tables"),
+  sheet: z.string().max(120).optional(),
+})
+
+/** A new calculated column on an existing table, formula and all. */
+export const addTableColumnSchema = z.object({
+  tool: z.literal("add_table_column"),
+  /** The table's name, as `list_tables` reports it. */
+  table: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
+  /**
+   * The formula for the column body, written for its first row. Structured references
+   * (`=[@금액]*0.1`) keep working as the table grows.
+   */
+  formula: z.string().max(500).optional(),
+})
+
+/**
+ * Recalculate, and say what the calculation mode was.
+ *
+ * A workbook left on manual calculation shows stale numbers that look like arithmetic
+ * mistakes. It is the first thing to rule out when the figures do not agree.
+ */
+export const recalculateSchema = z.object({
+  tool: z.literal("recalculate"),
+  /** Also put the workbook back on automatic calculation. */
+  setAutomatic: z.boolean().optional(),
+})
+
 export const toolCallSchema = z.discriminatedUnion("tool", [
   readRangeSchema,
   findSchema,
@@ -489,6 +550,12 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
   listNamesSchema,
   columnStatsSchema,
   printLayoutSchema,
+  explainCellSchema,
+  checkSumSchema,
+  findDependentsSchema,
+  listTablesSchema,
+  addTableColumnSchema,
+  recalculateSchema,
 ])
 
 /**
@@ -533,6 +600,8 @@ const WRITE_TOOL_NAMES = [
   "protect_sheet",
   "add_pivot",
   "set_print_layout",
+  "add_table_column",
+  "recalculate",
 ] as const satisfies readonly ToolCall["tool"][]
 
 export const WRITE_TOOLS: ReadonlySet<string> = new Set(WRITE_TOOL_NAMES)

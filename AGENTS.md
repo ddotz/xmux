@@ -32,6 +32,7 @@ xmux/
 |------|----------|-------|
 | Formula text → reference tokens | `addin/src/formula/scanner.ts` | parses, never evaluates |
 | Workbook checks (오류·하드코딩·외부참조·열 통계) | `addin/src/excel/audit.ts` | read-only; a scan is capped at 20k cells |
+| "이 숫자 왜 이래" (수식 해설·합계 검증·영향 범위) | `addin/src/excel/reasoning.ts` | reuses `formula/describe` + `excel/summaries` |
 | Finance desk rules the model must follow | `addin/src/taskpane/chat-prompt.ts` | 표시 형식, 원본 보존, 식별정보 |
 | Reference → real Excel range | `addin/src/excel/resolve.ts` | names, tables, cross-sheet |
 | What the pane renders | `addin/src/taskpane/view.ts`, `sheet.ts` | pure; no Excel I/O |
@@ -54,7 +55,7 @@ xmux/
 | AI settings store | module | `ai/settings.ts` | 10 | 10 exports; key lives in web storage only |
 | skill library | module | `taskpane/chat-skills.ts` | 8 | built-in + locally saved skills |
 | `scanReferences` | function | `formula/scanner.ts` | 8 | 268 LOC; the entry to all formula work |
-| assistant tool schemas | module | `ai/tool-schemas.ts` | 5 | 42 zod-validated operations; `isWrite` is a type guard splitting read from write |
+| assistant tool schemas | module | `ai/tool-schemas.ts` | 5 | 48 zod-validated operations; `isWrite` is a type guard splitting read from write |
 | selection refresh | module | `taskpane/selection-refresh.ts` | 3 | 14 exports — highest export count in repo |
 
 Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-test TS.
@@ -95,7 +96,7 @@ Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-tes
 cd addin && pnpm install
 pnpm dev                  # bare vite: HTTPS dev server on :3927, certs auto-trusted
 pnpm manifest:dev         # regenerate manifest.xml — `pnpm dev` does NOT do this
-pnpm test                 # vitest run — 42 test files
+pnpm test                 # vitest run — 43 test files
 pnpm typecheck            # tsc --noEmit
 pnpm check                # biome check .
 pnpm build                # typecheck + vite build → addin/dist/

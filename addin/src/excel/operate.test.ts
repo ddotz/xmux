@@ -82,6 +82,12 @@ const workbook = () => {
       names: {
         add: (name: string) => performed.push(`name ${name}`),
       },
+      tables: { getItemOrNullObject: () => ({ isNullObject: true }) as never },
+      application: {
+        calculationMode: "Automatic",
+        calculate: (type: string) => performed.push(`calculate ${type}`),
+        load: () => {},
+      },
       worksheets: {
         getActiveWorksheet: () => sheet as never,
         getItem: () => sheet as never,
@@ -271,6 +277,8 @@ describe("runWrite", () => {
       ...book.context,
       workbook: {
         names: book.context.workbook.names,
+        tables: book.context.workbook.tables,
+        application: book.context.workbook.application,
         worksheets: {
           ...book.context.workbook.worksheets,
           getItem: () => {

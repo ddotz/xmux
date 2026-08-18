@@ -35,6 +35,7 @@ const sheet = (overrides: Partial<InspectSheet> = {}, cell = range()): InspectSh
   getRange: () => cell,
   getUsedRangeOrNullObject: () => cell,
   load: () => {},
+  tables: { load: () => {}, items: [] },
   ...overrides,
 })
 
@@ -123,6 +124,21 @@ describe("runTool", () => {
     const answer = await runTool(context(sheet()), { tool: "find", text: "없는값" })
 
     expect(answer).toContain("찾지 못했습니다")
+  })
+
+  it("lists the tables on a sheet so an existing one can be worked with", async () => {
+    const table = sheet({
+      tables: {
+        load: () => {},
+        items: [
+          { name: "매출", showHeaders: true, getRange: () => range({ address: "Main!A1:D20" }) },
+        ],
+      },
+    })
+
+    const answer = await runTool(context(table), { tool: "list_tables" })
+
+    expect(answer).toContain("매출: Main!A1:D20")
   })
 
   it("reports the used range with its size", async () => {

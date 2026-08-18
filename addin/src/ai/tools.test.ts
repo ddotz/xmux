@@ -133,6 +133,36 @@ describe("the tool surface", () => {
     for (const call of written.calls) expect(isWrite(call)).toBe(true)
   })
 
+  it("accepts the questions asked when a number looks wrong", () => {
+    const calls = [
+      '{"tool":"explain_cell","address":"D10"}',
+      '{"tool":"check_sum","total":"B20","address":"B2:B19","tolerance":1}',
+      '{"tool":"find_dependents","address":"B5"}',
+      '{"tool":"list_tables"}',
+      '{"tool":"add_table_column","table":"매출","name":"세금","formula":"=[@금액]*0.1"}',
+      '{"tool":"recalculate","setAutomatic":true}',
+    ]
+
+    for (const call of calls) expect(readSteps(call).kind).toBe("calls")
+  })
+
+  it("keeps the diagnosis tools on the read side and the fixes on the write side", () => {
+    // Given: asking why a number is wrong must never change the workbook.
+    const asked = readSteps(
+      '[{"tool":"explain_cell","address":"D10"},{"tool":"check_sum","total":"B20","address":"B2:B19"},{"tool":"find_dependents","address":"B5"},{"tool":"list_tables"}]',
+    )
+    expect(asked.kind).toBe("calls")
+    if (asked.kind !== "calls") return
+    for (const call of asked.calls) expect(isWrite(call)).toBe(false)
+
+    const fixes = readSteps(
+      '[{"tool":"recalculate"},{"tool":"add_table_column","table":"매출","name":"세금"}]',
+    )
+    expect(fixes.kind).toBe("calls")
+    if (fixes.kind !== "calls") return
+    for (const call of fixes.calls) expect(isWrite(call)).toBe(true)
+  })
+
   it("names a pivot by where it lands, not by the table it read", () => {
     expect(
       describeCall({

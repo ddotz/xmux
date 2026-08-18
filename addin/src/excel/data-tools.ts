@@ -146,6 +146,40 @@ export const runDataTool = async (
     return `${sheet.name}!${call.address} ${what}을 ${call.hidden ? "숨겼습니다" : "다시 보이게 했습니다"}. ${NOT_UNDOABLE}`
   }
 
+  if (call.tool === "recalculate") {
+    // A workbook left on manual calculation shows stale numbers that read as arithmetic
+    // mistakes. Saying what the mode *was* is half the answer.
+    const application = context.workbook.application
+    application.load("calculationMode")
+    await context.sync()
+    const before = application.calculationMode
+    if (call.setAutomatic === true) application.calculationMode = "Automatic"
+    application.calculate("Full")
+    await context.sync()
+    return before === "Automatic"
+      ? "전체 재계산했습니다. 계산 모드는 자동이었습니다."
+      : `전체 재계산했습니다. 계산 모드가 ${before}이라 값이 오래된 상태였습니다.${call.setAutomatic === true ? " 자동으로 되돌렸습니다." : " 자동으로 바꾸려면 setAutomatic을 켜세요."}`
+  }
+
+  if (call.tool === "add_table_column") {
+    const table = context.workbook.tables.getItemOrNullObject(call.table)
+    table.load("isNullObject, name")
+    await context.sync()
+    if (table.isNullObject) return `표를 찾을 수 없습니다: ${call.table}`
+
+    const column = table.columns.add(undefined, undefined, call.name)
+    const body = column.getDataBodyRange()
+    body.load("address, rowCount")
+    await context.sync()
+    if (call.formula !== undefined && call.formula !== "") {
+      // One formula per row: a table column takes a rectangle, and structured references
+      // (`=[@금액]*0.1`) keep meaning the same thing on every row.
+      body.formulas = Array.from({ length: body.rowCount }, () => [call.formula])
+      await context.sync()
+    }
+    return `${table.name} 표에 ${call.name} 열을 넣었습니다. (${body.address})`
+  }
+
   if (call.tool === "set_print_layout") {
     // A report that prints across nine pages with the header only on the first one is the
     // thing people fix by hand every month. Excel has settings for all of it.

@@ -170,6 +170,18 @@ export const describeCall = (call: ToolCall): string => {
       return `${place(call.sheet, call.address ?? "사용 범위")} 열 통계`
     case "set_print_layout":
       return `${call.sheet ?? "현재 시트"} 인쇄 설정`
+    case "explain_cell":
+      return `${place(call.sheet, call.address)} 계산 근거 확인`
+    case "check_sum":
+      return `${place(call.sheet, call.total)} 합계 검증`
+    case "find_dependents":
+      return `${place(call.sheet, call.address)} 참조하는 수식 찾기`
+    case "list_tables":
+      return `${call.sheet ?? "현재 시트"} 표 목록`
+    case "add_table_column":
+      return `${call.table} 표에 ${call.name} 열 추가`
+    case "recalculate":
+      return "전체 재계산"
   }
 }
 
