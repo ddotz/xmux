@@ -1,5 +1,7 @@
 import type { ToolCall } from "../ai/tool-schemas"
 import { MAX_TOOL_CELLS, renderGrid } from "../ai/tools"
+import { runAuditTool } from "./audit"
+import type { InspectContext, InspectSheet } from "./office-shapes"
 
 /**
  * Answering the model's questions about the workbook.
@@ -8,37 +10,6 @@ import { MAX_TOOL_CELLS, renderGrid } from "../ai/tools"
  * that path stays behind the user's 적용 button. An unbounded read is refused rather than
  * truncated silently, so the model is told when it asked for too much and can narrow.
  */
-
-export type InspectContext = {
-  readonly workbook: {
-    readonly worksheets: {
-      readonly getItemOrNullObject: (name: string) => InspectSheet
-      readonly getActiveWorksheet: () => InspectSheet
-      readonly load: (properties: string) => void
-      readonly items: readonly { readonly name: string }[]
-    }
-    readonly getSelectedRange: () => InspectRange
-  }
-  readonly sync: () => Promise<void>
-}
-
-export type InspectSheet = {
-  readonly isNullObject: boolean
-  readonly name: string
-  readonly getRange: (address: string) => InspectRange
-  readonly getUsedRangeOrNullObject: () => InspectRange
-  readonly load: (properties: string) => void
-}
-
-export type InspectRange = {
-  readonly isNullObject: boolean
-  readonly address: string
-  readonly values: readonly (readonly unknown[])[]
-  readonly formulas: readonly (readonly unknown[])[]
-  readonly cellCount: number
-  readonly worksheet: { readonly name: string }
-  readonly load: (properties: string) => void
-}
 
 /** The sheet the call names, or the active one when it names none. */
 const sheetFor = async (
@@ -94,11 +65,12 @@ const usedRange = async (context: InspectContext, call: ToolCall): Promise<strin
 }
 
 /** Where a piece of text sits, so the model can ask for that neighborhood next. */
-const find = async (context: InspectContext, call: ToolCall): Promise<string> => {
+const find = async (
+  context: InspectContext,
+  sheet: InspectSheet,
+  call: ToolCall,
+): Promise<string> => {
   if (call.tool !== "find") throw new Error("find expected")
-  const sheet = await sheetFor(context, call.sheet)
-  if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
-
   const used = sheet.getUsedRangeOrNullObject()
   used.load("isNullObject, address, values, cellCount")
   await context.sync()
@@ -134,7 +106,13 @@ export const runTool = async (context: InspectContext, call: ToolCall): Promise<
     if (call.tool === "read_range") return await readRange(context, call)
     if (call.tool === "used_range") return await usedRange(context, call)
     if (call.tool === "list_sheets") return await listSheetNames(context)
-    return await find(context, call)
+
+    // What is left all works against one sheet: the audit and profiling calls, and `find`.
+    const named = "sheet" in call ? call.sheet : undefined
+    const sheet = await sheetFor(context, named)
+    if (sheet === null) return `시트를 찾을 수 없습니다: ${named ?? ""}`
+    const audited = await runAuditTool(context, sheet, call)
+    return audited ?? (await find(context, sheet, call))
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return `요청을 처리하지 못했습니다: ${detail}`

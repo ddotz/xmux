@@ -101,6 +101,14 @@ export type OperateSheet = {
     protect: () => void
     unprotect: () => void
   }
+  readonly pageLayout: {
+    orientation: string
+    paperSize: string
+    printGridlines: boolean
+    centerHorizontally: boolean
+    zoom: { horizontalFitToPages?: number; verticalFitToPages?: number }
+    setPrintTitleRows: (rows: string) => void
+  }
   readonly delete: () => void
 }
 
@@ -116,6 +124,73 @@ export type OperateContext = {
     readonly names: {
       add: (name: string, reference: OperateRange) => void
     }
+  }
+  readonly sync: () => Promise<void>
+}
+
+/**
+ * The reading side. `values` is what the sheet shows, `formulas` is what is written in it,
+ * and `valueTypes` is the only way to tell an error cell from a cell holding the text
+ * "#REF!" — which is the difference between an audit finding and a false alarm.
+ */
+export type InspectRange = {
+  readonly isNullObject: boolean
+  readonly address: string
+  readonly values: readonly (readonly unknown[])[]
+  readonly formulas: readonly (readonly unknown[])[]
+  readonly valueTypes: readonly (readonly string[])[]
+  readonly cellCount: number
+  readonly rowCount: number
+  readonly columnCount: number
+  readonly worksheet: { readonly name: string }
+  readonly load: (properties: string) => void
+}
+
+export type InspectSheet = {
+  readonly isNullObject: boolean
+  readonly name: string
+  readonly getRange: (address: string) => InspectRange
+  readonly getUsedRangeOrNullObject: () => InspectRange
+  readonly load: (properties: string) => void
+}
+
+/** A host-side calculation: the number crosses the boundary, the cells never do. */
+export type InspectFunctionResult = {
+  readonly value: unknown
+  readonly load: (properties: string) => void
+}
+
+export type InspectContext = {
+  readonly workbook: {
+    readonly worksheets: {
+      readonly getItemOrNullObject: (name: string) => InspectSheet
+      readonly getActiveWorksheet: () => InspectSheet
+      readonly load: (properties: string) => void
+      readonly items: readonly { readonly name: string }[]
+    }
+    readonly names: {
+      readonly load: (properties: string) => void
+      readonly items: readonly {
+        readonly name: string
+        readonly formula: unknown
+        readonly scope: string
+      }[]
+    }
+    /**
+     * Excel's own functions, run inside Excel. A column of 200,000 numbers costs one
+     * number coming back, not 200,000 — which is the only way a bank's table can be
+     * summarised at all without blowing the conversation apart.
+     */
+    readonly functions: {
+      sum: (range: InspectRange) => InspectFunctionResult
+      average: (range: InspectRange) => InspectFunctionResult
+      min: (range: InspectRange) => InspectFunctionResult
+      max: (range: InspectRange) => InspectFunctionResult
+      count: (range: InspectRange) => InspectFunctionResult
+      countA: (range: InspectRange) => InspectFunctionResult
+      countBlank: (range: InspectRange) => InspectFunctionResult
+    }
+    readonly getSelectedRange: () => InspectRange
   }
   readonly sync: () => Promise<void>
 }

@@ -146,6 +146,25 @@ export const runDataTool = async (
     return `${sheet.name}!${call.address} ${what}을 ${call.hidden ? "숨겼습니다" : "다시 보이게 했습니다"}. ${NOT_UNDOABLE}`
   }
 
+  if (call.tool === "set_print_layout") {
+    // A report that prints across nine pages with the header only on the first one is the
+    // thing people fix by hand every month. Excel has settings for all of it.
+    const layout = sheet.pageLayout
+    if (call.orientation !== undefined) layout.orientation = call.orientation
+    if (call.paperSize !== undefined) layout.paperSize = call.paperSize
+    if (call.printGridlines !== undefined) layout.printGridlines = call.printGridlines
+    if (call.centerHorizontally !== undefined) layout.centerHorizontally = call.centerHorizontally
+    if (call.fitToPagesWide !== undefined || call.fitToPagesTall !== undefined) {
+      layout.zoom = {
+        ...(call.fitToPagesWide === undefined ? {} : { horizontalFitToPages: call.fitToPagesWide }),
+        ...(call.fitToPagesTall === undefined ? {} : { verticalFitToPages: call.fitToPagesTall }),
+      }
+    }
+    if (call.titleRows !== undefined) layout.setPrintTitleRows(call.titleRows)
+    await context.sync()
+    return `${sheet.name}의 인쇄 설정을 바꿨습니다. ${NOT_UNDOABLE}`
+  }
+
   if (call.tool === "add_pivot") {
     const source = sheet.getRange(call.address)
     const destinationSheet =

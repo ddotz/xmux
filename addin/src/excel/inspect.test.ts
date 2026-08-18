@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
-import type { InspectContext, InspectRange, InspectSheet } from "./inspect"
 import { runTool } from "./inspect"
+import type { InspectContext, InspectRange, InspectSheet } from "./office-shapes"
 
 /**
  * Excel is handed in, never reached for — the same way every other module under `excel/`
@@ -17,7 +17,13 @@ const range = (overrides: Partial<InspectRange> = {}): InspectRange => ({
     ["항목", "금액"],
     ["대출채권", "=B1*2"],
   ],
+  valueTypes: [
+    ["String", "String"],
+    ["String", "Double"],
+  ],
   cellCount: 4,
+  rowCount: 2,
+  columnCount: 2,
   worksheet: { name: "Main" },
   load: () => {},
   ...overrides,
@@ -43,6 +49,16 @@ const context = (
       getItemOrNullObject: () => named ?? sheet({ isNullObject: true }),
       load: () => {},
       items: names.map((name) => ({ name })),
+    },
+    names: { load: () => {}, items: [] },
+    functions: {
+      sum: () => ({ value: 0, load: () => {} }),
+      average: () => ({ value: 0, load: () => {} }),
+      min: () => ({ value: 0, load: () => {} }),
+      max: () => ({ value: 0, load: () => {} }),
+      count: () => ({ value: 0, load: () => {} }),
+      countA: () => ({ value: 0, load: () => {} }),
+      countBlank: () => ({ value: 0, load: () => {} }),
     },
     getSelectedRange: () => range(),
   },

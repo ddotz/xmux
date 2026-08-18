@@ -158,6 +158,18 @@ export const describeCall = (call: ToolCall): string => {
       return `${call.sheet ?? "현재 시트"} ${call.protect ? "보호" : "보호 해제"}`
     case "add_pivot":
       return `${place(call.targetSheet, call.target)} 피벗 만들기`
+    case "find_errors":
+      return `${place(call.sheet, call.address ?? "사용 범위")} 오류 셀 찾기`
+    case "find_hardcoded":
+      return `${place(call.sheet, call.address ?? "사용 범위")} 하드코딩 점검`
+    case "list_links":
+      return `${place(call.sheet, call.address ?? "사용 범위")} 외부 참조 확인`
+    case "list_names":
+      return "정의된 이름 확인"
+    case "column_stats":
+      return `${place(call.sheet, call.address ?? "사용 범위")} 열 통계`
+    case "set_print_layout":
+      return `${call.sheet ?? "현재 시트"} 인쇄 설정`
   }
 }
 

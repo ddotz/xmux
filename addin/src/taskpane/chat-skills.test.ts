@@ -8,9 +8,12 @@ describe("chat skill registry", () => {
       "audit-xls",
       "clean-data-xls",
       "comps-analysis",
+      "credit-review",
       "dcf-model",
       "lbo-model",
+      "loan-schedule",
       "morning",
+      "reconcile",
       "skill-creator",
     ])
     expect(CHAT_SKILLS.every((skill) => skill.slashCommand.startsWith("/"))).toBe(true)
@@ -32,6 +35,9 @@ describe("chat skill registry", () => {
     ["범주 값을 표준화해줘", "clean-data-xls"],
     ["할인현금흐름으로 기업가치를 평가해줘", "dcf-model"],
     ["현금흐름 할인 방식으로 가치를 계산해줘", "dcf-model"],
+    ["이 회사 여신 심사용으로 재무 지표 좀 뽑아줘", "credit-review"],
+    ["3년 만기 원리금균등 상환표 만들어줘", "loan-schedule"],
+    ["두 표 대사해서 차이 나는 건만 뽑아줘", "reconcile"],
   ])("routes Korean skill language: %s", (request, expectedId) => {
     expect(resolveSkill(request)?.id).toBe(expectedId)
   })

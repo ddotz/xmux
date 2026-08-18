@@ -107,6 +107,29 @@ const workbook = () => {
       protect: () => performed.push("protect"),
       unprotect: () => performed.push("unprotect"),
     },
+    pageLayout: {
+      set orientation(value: string) {
+        performed.push(`orientation ${value}`)
+      },
+      get orientation() {
+        return ""
+      },
+      set paperSize(value: string) {
+        performed.push(`paperSize ${value}`)
+      },
+      get paperSize() {
+        return ""
+      },
+      printGridlines: false,
+      centerHorizontally: false,
+      set zoom(value: { horizontalFitToPages?: number; verticalFitToPages?: number }) {
+        performed.push(`zoom ${JSON.stringify(value)}`)
+      },
+      get zoom() {
+        return {}
+      },
+      setPrintTitleRows: (rows: string) => performed.push(`titleRows ${rows}`),
+    },
   }
 
   const context = {
@@ -338,6 +361,28 @@ describe("runDataTool", () => {
 
     expect(book.performed).toEqual(["protect", "unprotect"])
     expect(locked).toContain("보호했습니다")
+  })
+
+  it("sets up the page the way a printed report needs it", async () => {
+    // Given: a report that would otherwise come out across nine pages with the header row
+    // only on the first one.
+    const book = workbook()
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "set_print_layout",
+      orientation: "Landscape",
+      paperSize: "A4",
+      fitToPagesWide: 1,
+      titleRows: "$1:$2",
+    })
+
+    expect(book.performed).toEqual([
+      "orientation Landscape",
+      "paperSize A4",
+      'zoom {"horizontalFitToPages":1}',
+      "titleRows $1:$2",
+    ])
+    expect(answer).toContain("인쇄 설정")
   })
 
   it("builds a pivot with its fields in the right places", async () => {

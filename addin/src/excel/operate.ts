@@ -56,16 +56,6 @@ export const runWrite = async (
       return `${call.name} 시트를 만들었습니다.`
     }
 
-    // Reads are answered elsewhere; `create_sheet` is the one write without a range and
-    // returned above. What remains all carries an address.
-    if (
-      call.tool === "read_range" ||
-      call.tool === "find" ||
-      call.tool === "used_range" ||
-      call.tool === "list_sheets"
-    ) {
-      return "쓰기 작업이 아닙니다."
-    }
     if (call.tool === "delete_sheet") {
       const doomed = context.workbook.worksheets.getItemOrNullObject(call.name)
       doomed.load("isNullObject")

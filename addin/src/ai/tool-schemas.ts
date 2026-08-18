@@ -388,6 +388,64 @@ export const addPivotSchema = z.object({
     .max(8),
 })
 
+/** Cells Excel is holding an error in: `#REF!`, `#DIV/0!`, `#N/A`, and the rest. */
+export const findErrorsSchema = z.object({
+  tool: z.literal("find_errors"),
+  sheet: z.string().max(120).optional(),
+  /** Omitted means the whole used range. */
+  address: z.string().min(1).max(64).optional(),
+})
+
+/** Numbers typed into a column that is otherwise calculated — the audit finding. */
+export const findHardcodedSchema = z.object({
+  tool: z.literal("find_hardcoded"),
+  sheet: z.string().max(120).optional(),
+  address: z.string().min(1).max(64).optional(),
+})
+
+/** Formulas reaching into another workbook, which is what breaks when a file is sent on. */
+export const listLinksSchema = z.object({
+  tool: z.literal("list_links"),
+  sheet: z.string().max(120).optional(),
+  address: z.string().min(1).max(64).optional(),
+})
+
+export const listNamesSchema = z.object({
+  tool: z.literal("list_names"),
+})
+
+/**
+ * Per-column totals computed inside Excel, for a table far too big to read.
+ *
+ * A ledger of 200,000 rows cannot be read back — and does not need to be. This answers
+ * count, blanks, sum, average, min and max per column without a single cell crossing over.
+ */
+export const columnStatsSchema = z.object({
+  tool: z.literal("column_stats"),
+  sheet: z.string().max(120).optional(),
+  /** Omitted means the whole used range. */
+  address: z.string().min(1).max(64).optional(),
+  /** 1-based columns within that range; omitted means every column, up to twelve. */
+  columns: z.array(z.number().int().min(1).max(1_000)).max(12).optional(),
+  /** Defaults to true: the first row is treated as headers and left out of the numbers. */
+  hasHeaders: z.boolean().optional(),
+})
+
+/** How the sheet prints: the part of a report nobody notices until it comes out wrong. */
+export const printLayoutSchema = z.object({
+  tool: z.literal("set_print_layout"),
+  sheet: z.string().max(120).optional(),
+  orientation: z.enum(["Portrait", "Landscape"]).optional(),
+  paperSize: z.enum(["A4", "A3", "Letter", "Legal"]).optional(),
+  /** Squeeze the sheet onto this many pages across; 1 is the usual answer. */
+  fitToPagesWide: z.number().int().min(1).max(20).optional(),
+  fitToPagesTall: z.number().int().min(1).max(50).optional(),
+  /** Rows repeated at the top of every page, e.g. `$1:$2`. */
+  titleRows: z.string().max(32).optional(),
+  printGridlines: z.boolean().optional(),
+  centerHorizontally: z.boolean().optional(),
+})
+
 export const toolCallSchema = z.discriminatedUnion("tool", [
   readRangeSchema,
   findSchema,
@@ -425,10 +483,21 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
   copySheetSchema,
   protectSheetSchema,
   addPivotSchema,
+  findErrorsSchema,
+  findHardcodedSchema,
+  listLinksSchema,
+  listNamesSchema,
+  columnStatsSchema,
+  printLayoutSchema,
 ])
 
-/** Which calls change the workbook. Reads are free; writes go through the undo history. */
-export const WRITE_TOOLS = new Set([
+/**
+ * Which calls change the workbook. Reads are free; writes go through the undo history.
+ *
+ * `satisfies` is doing real work here: a name that is not a tool stops the build, rather
+ * than quietly leaving a write to be answered as if it were a question about the sheet.
+ */
+const WRITE_TOOL_NAMES = [
   "write_range",
   "create_sheet",
   "format_range",
@@ -463,8 +532,14 @@ export const WRITE_TOOLS = new Set([
   "copy_sheet",
   "protect_sheet",
   "add_pivot",
-])
+  "set_print_layout",
+] as const satisfies readonly ToolCall["tool"][]
 
-export const isWrite = (call: ToolCall): boolean => WRITE_TOOLS.has(call.tool)
+export const WRITE_TOOLS: ReadonlySet<string> = new Set(WRITE_TOOL_NAMES)
 
 export type ToolCall = z.infer<typeof toolCallSchema>
+
+/** A call that operates on the workbook, as opposed to one that asks it something. */
+export type WriteToolCall = Extract<ToolCall, { tool: (typeof WRITE_TOOL_NAMES)[number] }>
+
+export const isWrite = (call: ToolCall): call is WriteToolCall => WRITE_TOOLS.has(call.tool)

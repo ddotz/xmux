@@ -3,9 +3,12 @@ export type BuiltinChatSkillId =
   | "audit-xls"
   | "clean-data-xls"
   | "comps-analysis"
+  | "credit-review"
   | "dcf-model"
   | "lbo-model"
+  | "loan-schedule"
   | "morning"
+  | "reconcile"
   | "skill-creator"
 
 export type LocalChatSkillId = `local:${string}`
@@ -95,6 +98,26 @@ export const CHAT_SKILLS: readonly ChatSkill[] = [
     contextProfile: modelProfile,
   },
   {
+    id: "credit-review",
+    source: "builtin",
+    slashCommand: "/credit",
+    label: "여신 심사 분석",
+    shortDescription: "재무제표에서 안정성·수익성·상환능력 지표를 뽑습니다.",
+    triggerPhrases: [
+      "여신",
+      "신용분석",
+      "심사",
+      "재무분석",
+      "부채비율",
+      "이자보상배율",
+      "상환능력",
+      "credit review",
+    ],
+    guidance:
+      "먼저 재무제표의 기간, 단위, 계정 위치를 조회해 확인한다. 3개년 비교표를 만들고 부채비율, 유동비율, 차입금의존도, 이자보상배율, 영업이익률, ROA, EBITDA와 차입금 대비 배수를 셀 참조 수식으로 계산한다. 각 지표는 계산식이 보이도록 두고 판단 근거와 한계를 함께 적는다. 신용등급이나 승인 여부를 단정하지 않는다.",
+    contextProfile: modelProfile,
+  },
+  {
     id: "dcf-model",
     source: "builtin",
     slashCommand: "/dcf",
@@ -125,6 +148,26 @@ export const CHAT_SKILLS: readonly ChatSkill[] = [
     contextProfile: modelProfile,
   },
   {
+    id: "loan-schedule",
+    source: "builtin",
+    slashCommand: "/loan",
+    label: "상환 스케줄",
+    shortDescription: "원리금균등·원금균등 상환표를 수식으로 만듭니다.",
+    triggerPhrases: [
+      "상환",
+      "원리금",
+      "원금균등",
+      "거치",
+      "대출 스케줄",
+      "amortization",
+      "상환표",
+      "이자 계산",
+    ],
+    guidance:
+      "원금, 연이자율, 기간, 상환 주기, 거치기간, 기산일을 먼저 확인하고 하나라도 모르면 묻는다. 가정은 셀에 따로 적고 스케줄은 그 셀을 참조하는 수식으로만 만든다. 원리금균등은 PMT, 이자는 잔액×주기이자율, 원금은 상환액에서 이자를 뺀 값으로 쓰고 마지막 회차에서 잔액이 정확히 0이 되는지 확인한다. 금액은 표시 형식으로만 단위를 맞춘다.",
+    contextProfile: modelProfile,
+  },
+  {
     id: "morning",
     source: "builtin",
     slashCommand: "/morning",
@@ -141,6 +184,26 @@ export const CHAT_SKILLS: readonly ChatSkill[] = [
     guidance:
       "2분 내 읽을 핵심 의견, 주요 전개, 오늘 일정, 아이디어와 위험으로 압축한다. 실시간 뉴스나 시세를 조회할 수 없으므로 현재 자료가 없으면 출처와 기준시점을 요청한다.",
     contextProfile: morningProfile,
+  },
+  {
+    id: "reconcile",
+    source: "builtin",
+    slashCommand: "/recon",
+    label: "대사·정합성 점검",
+    shortDescription: "두 표를 키로 맞춰 차이 나는 건을 찾습니다.",
+    triggerPhrases: [
+      "대사",
+      "정합성",
+      "차이 확인",
+      "맞춰봐",
+      "reconcile",
+      "대조",
+      "검증",
+      "잔액 확인",
+    ],
+    guidance:
+      "두 표의 위치, 키 열, 비교할 금액 열을 먼저 확인한다. 키가 중복인지 먼저 점검하고, 한쪽에만 있는 건과 양쪽에 있으나 금액이 다른 건을 각각 나눠 새 시트에 낸다. 비교는 XLOOKUP 또는 INDEX·MATCH 수식으로 남겨 원본이 바뀌면 따라 움직이게 하고, 금액 비교는 부동소수 오차를 감안해 ROUND로 자리를 맞춘 뒤 비교한다. 차이 합계와 건수를 요약에 적는다.",
+    contextProfile: workbookProfile,
   },
   {
     id: "skill-creator",

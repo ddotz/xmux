@@ -74,7 +74,8 @@ describe("the compact chat screen", () => {
     input.value = "/"
     input.dispatchEvent(new Event("input", { bubbles: true }))
     const menu = root.querySelector('[role="listbox"][data-skill-menu="open"]')
-    expect(menu?.querySelectorAll("[data-skill-id]")).toHaveLength(8)
+    // Every built-in skill is offered; the registry is the list, not a hand-kept copy.
+    expect(menu?.querySelectorAll("[data-skill-id]")).toHaveLength(CHAT_SKILLS.length)
     expect(input.getAttribute("aria-expanded")).toBe("true")
   })
 
