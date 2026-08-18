@@ -157,9 +157,18 @@ const undoControls = createUndoControls({
   redo: commands.redo,
 })
 
+// Office.context is only populated once the host handshake completes, and this module runs
+// before that: it is loaded as a deferred module, so top level executes while office.js is
+// still polling for readiness. Reading Office.context here threw before Office.onReady at
+// the bottom of this file was ever reached, which left office.js waiting out its poll and
+// reporting that the app never called Office.onReady. The lookup happens on use instead,
+// by which point onReady has run.
 const linkedWorkbookControl = createLinkedWorkbookControl({
   container: nodes.linkedWorkbooks,
-  requirements: Office.context.requirements,
+  requirements: {
+    isSetSupported: (name, minimumVersion) =>
+      Office.context.requirements.isSetSupported(name, minimumVersion),
+  },
   run: (work) => Excel.run(async (context) => work(context)),
 })
 

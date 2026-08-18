@@ -65,8 +65,9 @@ describe("office.js offline hosting", () => {
         .slice(start, officeJs.indexOf("}", start))
         .matchAll(/"([a-z]{2}(?:-[a-z0-9]+)+)":/g),
     ].map((match) => match[1])
+    const notLocales = new Set(["telemetry", "ariatelemetry"])
     const shipped = readdirSync(vendored, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory() && entry.name !== "telemetry")
+      .filter((entry) => entry.isDirectory() && !notLocales.has(entry.name))
       .map((entry) => entry.name)
 
     expect(declared.length).toBeGreaterThan(40)

@@ -29,7 +29,13 @@ const cdn = "https://appsforoffice.microsoft.com/lib/1/hosted"
 //
 // HostSpecificFileVersionMap caps excel at win32 16.01 and mac/web 16.00, and an older
 // build may ask for a lower version, so every reachable name below that cap is shipped.
-const entryFiles = ["office.js", "o15apptofilemappingtable.js"]
+// The host bundle does not stop at office.js' three siblings. Each one calls loadMsAjaxFull,
+// and its loadMsAjaxFromOfficeJsCDN gate defaults to enabled, which resolves MicrosoftAjax
+// against the directory office.js was served from rather than ajax.aspnetcdn.com. Without
+// this file the request 404s, the object model is never built, and the pane fails twice over:
+// "Cannot read properties of undefined (reading 'requirements')" from our own first API call,
+// then office.js' own "has not fully loaded" after its readiness poll times out.
+const entryFiles = ["office.js", "o15apptofilemappingtable.js", "microsoftajax.js"]
 const hostBundles = [
   "excel-15.js",
   "excel-15.01.js",
@@ -42,7 +48,12 @@ const hostBundles = [
   "excel-win32-16.01.js",
   "excel-win32-16.01-core.js",
 ]
-const telemetryFiles = ["telemetry/oteljs.js", "telemetry/oteljs_agave.js"]
+// Every host bundle also resolves an aria telemetry script against its own directory.
+const telemetryFiles = [
+  "telemetry/oteljs.js",
+  "telemetry/oteljs_agave.js",
+  "ariatelemetry/aria-web-telemetry.js",
+]
 
 const fetchText = async (name) => {
   const response = await fetch(`${cdn}/${name}`)
