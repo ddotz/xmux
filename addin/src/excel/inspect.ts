@@ -1,4 +1,5 @@
-import { MAX_TOOL_CELLS, renderGrid, type ToolCall } from "../ai/tools"
+import type { ToolCall } from "../ai/tool-schemas"
+import { MAX_TOOL_CELLS, renderGrid } from "../ai/tools"
 
 /**
  * Answering the model's questions about the workbook.

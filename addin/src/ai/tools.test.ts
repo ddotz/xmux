@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { isWrite } from "./tool-schemas"
 import { describeCall, MAX_CALLS_PER_REPLY, MAX_TOOL_CELLS, readSteps, renderGrid } from "./tools"
 
 describe("readSteps", () => {
@@ -98,6 +99,52 @@ describe("describeCall", () => {
     expect(describeCall({ tool: "write_range", address: "A1", rows: [["항목"], ["금액"]] })).toBe(
       "A1 표 입력 (2행)",
     )
+  })
+})
+
+describe("the tool surface", () => {
+  it("accepts the ribbon operations the assistant used to have to fake", () => {
+    // Given: work a person does through Excel's own menus. Each one has to be reachable in
+    // a single call, or the model rebuilds it out of cell writes and gets it wrong.
+    const calls = [
+      '{"tool":"remove_duplicates","address":"A1:D999","columns":[1,2]}',
+      '{"tool":"filter_range","address":"A1:D999","column":2,"values":["서울"]}',
+      '{"tool":"create_table","address":"A1:D20","name":"매출"}',
+      '{"tool":"add_pivot","address":"A1:D999","name":"지점별","target":"F1","rows":["지점"],"values":[{"field":"금액"}]}',
+      '{"tool":"data_validation","address":"B2:B99","values":["서울","부산"]}',
+      '{"tool":"define_name","address":"B2:D5","name":"매출"}',
+      '{"tool":"set_visibility","address":"C:D","axis":"columns","hidden":true}',
+      '{"tool":"copy_sheet","name":"2월"}',
+      '{"tool":"protect_sheet","protect":true}',
+      '{"tool":"select_range","address":"A1:D20"}',
+      '{"tool":"clear_filter"}',
+    ]
+
+    for (const call of calls) expect(readSteps(call).kind).toBe("calls")
+  })
+
+  it("treats every one of them as a write, so none can be answered as a question", () => {
+    // Given: reads are routed to `excel/inspect.ts`, writes to `excel/operate.ts`. A new
+    // tool missing from WRITE_TOOLS would silently be handled as a `find`.
+    const written = readSteps('[{"tool":"select_range","address":"A1"},{"tool":"clear_filter"}]')
+
+    expect(written.kind).toBe("calls")
+    if (written.kind !== "calls") return
+    for (const call of written.calls) expect(isWrite(call)).toBe(true)
+  })
+
+  it("names a pivot by where it lands, not by the table it read", () => {
+    expect(
+      describeCall({
+        tool: "add_pivot",
+        address: "A1:D999",
+        name: "지점별",
+        targetSheet: "요약",
+        target: "F1",
+        rows: ["지점"],
+        values: [{ field: "금액" }],
+      }),
+    ).toBe("요약!F1 피벗 만들기")
   })
 })
 

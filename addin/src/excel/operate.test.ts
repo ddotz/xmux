@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { createHistory } from "./history"
-import type { OperateContext } from "./operate"
+import type { OperateContext } from "./office-shapes"
 import { runWrite } from "./operate"
 
 /**
@@ -37,8 +37,15 @@ const workbook = () => {
         return resized
       },
       insert: (shift: string) => performed.push(`insert ${address} ${shift}`),
-      copyFrom: (source: { address: string }, copyType?: string) =>
-        performed.push(`copyFrom ${source.address} -> ${address} ${copyType}`),
+      copyFrom: (
+        source: { address: string },
+        copyType?: string,
+        _skipBlanks?: boolean,
+        transpose?: boolean,
+      ) =>
+        performed.push(
+          `copyFrom ${source.address} -> ${address} ${copyType} transpose=${transpose === true}`,
+        ),
       moveTo: (destination: { address: string }) =>
         performed.push(`moveTo ${address} -> ${destination.address}`),
       delete: (shift: string) => performed.push(`delete ${address} ${shift}`),
@@ -72,6 +79,9 @@ const workbook = () => {
 
   const context: OperateContext = {
     workbook: {
+      names: {
+        add: (name: string) => performed.push(`name ${name}`),
+      },
       worksheets: {
         getActiveWorksheet: () => sheet as never,
         getItem: () => sheet as never,
@@ -204,7 +214,7 @@ describe("runWrite", () => {
       what: "values",
     })
 
-    expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values"])
+    expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values transpose=false"])
     expect(history.last()?.label).toContain("F1:resized(1,2)")
     expect(answer).toContain("복사했습니다")
   })
@@ -227,6 +237,22 @@ describe("runWrite", () => {
     ])
   })
 
+  it("transposes on paste when the model asks for it", async () => {
+    // Given: 행/열 바꿈. Excel does it during the paste; rebuilding the rectangle by hand
+    // would cost a read, a rewrite, and every formula in it.
+    const book = workbook()
+
+    await runWrite(book.context, createHistory(), {
+      tool: "copy_range",
+      address: "A1:C2",
+      target: "F1",
+      what: "values",
+      transpose: true,
+    })
+
+    expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values transpose=true"])
+  })
+
   it("inserts columns to the right of the range it was given", async () => {
     const book = workbook()
 
@@ -244,6 +270,7 @@ describe("runWrite", () => {
     const broken: OperateContext = {
       ...book.context,
       workbook: {
+        names: book.context.workbook.names,
         worksheets: {
           ...book.context.workbook.worksheets,
           getItem: () => {

@@ -1,6 +1,8 @@
-import { isWrite, type ToolCall } from "../ai/tools"
+import { isWrite, type ToolCall } from "../ai/tool-schemas"
+import { runDataTool } from "./data-tools"
 import type { History } from "./history"
 import { snapshotRange } from "./history"
+import type { OperateContext, OperateSheet } from "./office-shapes"
 
 /**
  * Carrying out the assistant's writes.
@@ -13,75 +15,6 @@ import { snapshotRange } from "./history"
  * A failure comes back as text rather than throwing. The model has to be able to read
  * "that range is protected" and try something else; a thrown error just ends the turn.
  */
-
-type OperateRange = {
-  readonly address: string
-  readonly rowCount: number
-  readonly columnCount: number
-  readonly format: {
-    fill: { color: string }
-    font: { bold: boolean; italic: boolean; color: string }
-    horizontalAlignment: string
-    columnWidth: number
-    rowHeight: number
-    wrapText: boolean
-    autofitColumns: () => void
-    autofitRows: () => void
-  }
-  numberFormat: unknown[][]
-  formulas: unknown[][]
-  readonly load: (properties: string) => void
-  readonly getResizedRange: (rows: number, columns: number) => OperateRange
-  readonly insert: (shift: string) => void
-  readonly delete: (shift: string) => void
-  readonly clear: (applyTo?: string) => void
-  readonly sort: {
-    apply: (fields: readonly unknown[], matchCase: boolean, hasHeaders: boolean) => void
-  }
-  readonly merge: (across?: boolean) => void
-  readonly unmerge: () => void
-  readonly autoFill: (destination: OperateRange, type: string) => void
-  readonly copyFrom: (source: OperateRange, copyType?: string) => void
-  readonly moveTo: (destination: OperateRange) => void
-  readonly conditionalFormats: {
-    add: (type: string) => {
-      cellValue: { format: { fill: { color: string }; font: { color: string } }; rule: unknown }
-      colorScale: { criteria: unknown }
-      dataBar: Record<string, unknown>
-    }
-  }
-  readonly getBorder: (index: string) => { style: string; color: string }
-  readonly replaceAll: (find: string, replace: string, criteria: unknown) => void
-}
-
-type OperateSheet = {
-  readonly isNullObject: boolean
-  name: string
-  readonly getRange: (address: string) => OperateRange
-  readonly load: (properties: string) => void
-  readonly freezePanes: {
-    freezeRows: (count: number) => void
-    freezeColumns: (count: number) => void
-    freeze: (range: OperateRange) => void
-  }
-  readonly charts: {
-    add: (type: string, source: OperateRange, seriesBy?: string) => { title: { text: string } }
-  }
-  readonly delete: () => void
-}
-
-export type OperateContext = {
-  readonly workbook: {
-    readonly worksheets: {
-      readonly getItemOrNullObject: (name: string) => OperateSheet
-      readonly getActiveWorksheet: () => OperateSheet
-      /** Used by the undo snapshot, which addresses a sheet it knows exists. */
-      readonly getItem: (name: string) => OperateSheet
-      readonly add: (name: string) => void
-    }
-  }
-  readonly sync: () => Promise<void>
-}
 
 const sheetFor = async (
   context: OperateContext,
@@ -164,6 +97,17 @@ export const runWrite = async (
 
     const sheet = await sheetFor(context, call.sheet)
     if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+
+    // Filters, tables, validation, names, pivots, visibility, sheet copies and protection
+    // are Excel's own operations rather than cell edits; `data-tools.ts` runs them and
+    // answers `null` for everything else, which falls through to the cell work below.
+    const managed = await runDataTool(context, history, sheet, call)
+    if (managed !== null) return managed
+    // Everything `data-tools.ts` declined works on a rectangle. A tool that carries no
+    // address and no handler is a gap in this file, and the model is told so rather than
+    // watching the turn die on an undefined address.
+    if (!("address" in call)) return `${call.tool}을(를) 처리하지 못했습니다.`
+
     const target = sheet.getRange(call.address)
 
     if (call.tool === "write_range") {
@@ -205,7 +149,7 @@ export const runWrite = async (
               : call.what === "formulas"
                 ? "Formulas"
                 : "All"
-        anchor.copyFrom(target, copyType)
+        anchor.copyFrom(target, copyType, false, call.transpose ?? false)
         await context.sync()
         history.push({
           label: `${destinationSheet.name}!${area.address} 붙여넣기`,

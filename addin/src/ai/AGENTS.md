@@ -2,14 +2,15 @@
 
 ## OVERVIEW
 
-Four pure modules behind the 대화 tab: `client.ts` talks to the server, `tools.ts` reads the reply as tool calls, `plan.ts` reads it as a proposal, `settings.ts` holds the connection. No Office.js here.
+Five pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-schemas.ts` says what may be asked of the workbook, `tools.ts` reads the reply as tool calls, `plan.ts` reads it as a proposal, `settings.ts` holds the connection. No Office.js here.
 
 ## MODULES
 
 | File | Exports | Role |
 |---|---|---|
 | `client.ts` | 5 | `askModel`, `testConnection`, `promptFrom`, `AiError`, `ChatMessage` |
-| `tools.ts` | 30+ | one zod schema per tool, `toolCallSchema`, `readSteps`, `describeCall`, `isWrite`, `renderGrid`, and the budgets (`MAX_CALLS_PER_REPLY` 8, `MAX_TOOL_ROUNDS` 16, `MAX_TOOL_CELLS` 500) |
+| `tool-schemas.ts` | 40+ | one zod schema per operation, `toolCallSchema`, `WRITE_TOOLS`, `isWrite`, `ToolCall` |
+| `tools.ts` | 7 | `readSteps`, `describeCall`, `renderGrid`, and the budgets (`MAX_CALLS_PER_REPLY` 8, `MAX_TOOL_ROUNDS` 16, `MAX_TOOL_CELLS` 500) |
 | `plan.ts` | 6 | `parsePlan`, `describeEdit`, `resolveEdits`, `Plan`, `ProposedEdit`, `ProposedSkill` |
 | `settings.ts` | 10 | schema, defaults, `loadSettings`/`saveSettings`, `settingsProblem`, `endpointFor`, `redactKey`, `maskKey` |
 

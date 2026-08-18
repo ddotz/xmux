@@ -2,6 +2,11 @@ import { readFileSync } from "node:fs"
 import { describe, expect, it } from "vitest"
 
 const manifest = readFileSync(new URL("../manifest.template.xml", import.meta.url), "utf8")
+const version = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string
+  }
+).version
 const macSideload = readFileSync(new URL("../scripts/sideload-mac.sh", import.meta.url), "utf8")
 const windowsSideload = readFileSync(
   new URL("../scripts/sideload-windows.ps1", import.meta.url),
@@ -14,7 +19,10 @@ describe("Excel manifest branding", () => {
   })
 
   it("changes the icon URLs when the brand artwork changes", () => {
-    expect(manifest).toContain("<Version>1.3.0.0</Version>")
+    // Excel caches the ribbon icons against the manifest version, so new artwork that
+    // ships under an old version is never seen. The version is pinned to the package's,
+    // because two hand-edited version numbers drift the first time one is forgotten.
+    expect(manifest).toContain(`<Version>${version}.0</Version>`)
     for (const size of [16, 32, 64, 80]) {
       expect(manifest).toContain(`/assets/icon-${size}.png?v=2`)
     }
