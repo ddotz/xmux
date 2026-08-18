@@ -56,20 +56,21 @@ describe("office.js offline hosting", () => {
 
   it("ships locale strings for every language the host may ask for", () => {
     // Given: OSF.getSupportedLocale resolves the host's UI language, not the product's, and
-    // a missing folder costs a startup stall waiting for a request that can never arrive.
-    const source = fileURLToPath(
-      new URL("../node_modules/@microsoft/office-js/dist/", import.meta.url),
-    )
-    const available = readdirSync(source, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .filter((name) => existsSync(join(source, name, "office_strings.js")))
+    // it can only ever land on a key of OSF.SupportedLocales. A miss is not silent: the
+    // loader waits out LocaleStringLoadingTimeout before falling back to en-us.
+    const officeJs = readFileSync(join(vendored, "office.js"), "utf8")
+    const start = officeJs.indexOf("OSF.SupportedLocales=")
+    const declared = [
+      ...officeJs
+        .slice(start, officeJs.indexOf("}", start))
+        .matchAll(/"([a-z]{2}(?:-[a-z0-9]+)+)":/g),
+    ].map((match) => match[1])
     const shipped = readdirSync(vendored, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name !== "telemetry")
       .map((entry) => entry.name)
 
-    expect(available.length).toBeGreaterThan(100)
-    expect(shipped.sort()).toEqual(available.sort())
+    expect(declared.length).toBeGreaterThan(40)
+    expect(shipped.sort()).toEqual([...declared].sort())
   })
 
   it("serves the telemetry sink locally instead of reaching a CDN", () => {
@@ -102,6 +103,28 @@ describe("office.js offline hosting", () => {
     const names = readdirSync(vendored)
     expect(names.filter((name) => name.endsWith(".debug.js"))).toEqual([])
     expect(names.filter((name) => /android|ios|winrt/.test(name))).toEqual([])
-    expect(vendorScript).toContain("excludedHosts")
+  })
+
+  it("vendors a runtime new enough to finish the host handshake", () => {
+    // Given: @microsoft/office-js stopped at 16.0.15407 (2022). Against a current Excel
+    // that build loads but never signals readiness, and the host reports that the app
+    // "must call Office.onReady()". The copy therefore comes from the CDN, on this
+    // machine, where the network the target PC lacks is available.
+    const officeJs = readFileSync(join(vendored, "office.js"), "utf8")
+    const version = officeJs.match(/FileVersion:"(\d+)\.(\d+)\.(\d+)/)
+    expect(version).not.toBeNull()
+    const build = Number(version?.[3])
+    expect(build).toBeGreaterThan(15407)
+    expect(vendorScript).toContain("appsforoffice.microsoft.com/lib/1/hosted")
+  })
+
+  it("keeps the stale package only as an offline fallback", () => {
+    // Given: vendoring must still produce a payload when the CDN is unreachable, even
+    // though that copy is the one that cannot complete initialization.
+    expect(vendorScript).toContain("vendorFromPackage")
+    const cdnAttempt = vendorScript.indexOf("await vendorFromCdn()")
+    const fallback = vendorScript.indexOf("vendorFromPackage()", cdnAttempt)
+    expect(cdnAttempt).toBeGreaterThanOrEqual(0)
+    expect(fallback).toBeGreaterThan(cdnAttempt)
   })
 })
