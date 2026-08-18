@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@microsoft/office-js':
+        specifier: ^1.1.110
+        version: 1.1.110
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -95,6 +98,11 @@ packages:
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
+
+  '@microsoft/office-js@1.1.110':
+    resolution: {integrity: sha512-80nZ3gGUq6Fb22sX8tBdktfulM7uYnrdQu32bpsb3waTeKoakc+j6H6+L21xRV4plDBrufnRMVH3ULMt/06Jwg==}
+    engines: {node: '>=6.9.4'}
+    deprecated: 'This package is no longer officially supported. To ensure your add-in receives essential product updates, reference the Office JavaScript API library from the CDN: https://learn.microsoft.com/office/dev/add-ins/develop/referencing-the-javascript-api-for-office-library-from-its-cdn.'
 
   '@oxc-project/types@0.144.0':
     resolution: {integrity: sha512-nuhZIOLuI6TFQ32I/WnUx+SCPY7SdSKwgnFHydAuoS1+Z4BRcaP+RRJmGzl9lw+0OFF7UmaESf7KQRXaNLHypg==}
@@ -774,6 +782,8 @@ snapshots:
     optional: true
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
+
+  '@microsoft/office-js@1.1.110': {}
 
   '@oxc-project/types@0.144.0': {}
 

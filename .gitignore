@@ -7,6 +7,7 @@
 # Dependencies, caches, and generated web output
 node_modules/
 addin/dist/
+addin/public/office/
 coverage/
 *.tsbuildinfo
 __pycache__/

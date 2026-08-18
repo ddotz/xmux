@@ -19,8 +19,9 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 
 ## BUILD TOPOLOGY
 
-- `vite.config.ts` roots at `src/taskpane` (entry `index.html`, which pulls office.js from the
-  CDN), `publicDir` = `addin/public`, `outDir` = `addin/dist`, `emptyOutDir: true`. Its default
+- `vite.config.ts` roots at `src/taskpane` (entry `index.html`, which loads office.js from the
+  pane's own origin at `/office/office.js` — never the CDN, which a locked-down or offline PC
+  cannot reach), `publicDir` = `addin/public`, `outDir` = `addin/dist`, `emptyOutDir: true`. Its default
   export is the one file exempt from `noDefaultExport`. It also awaits `office-addin-dev-certs`
   at load time and mounts an `xmux-companion-state` middleware serving `/xmux/state` from
   `/tmp/xmux-state.json`, defaulting to `{"editing":false}` when no companion runs.
@@ -36,6 +37,7 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 | script | does |
 |---|---|
 | `generate-manifest.mjs` | template → manifest; `--production` rejects loopback hosts |
+| `vendor-office-js.mjs` | copies office.js + Excel desktop host bundles + en-us/ko-kr strings into `public/office/` (gitignored); runs ahead of both `dev` and `build` |
 | `local-server.mjs` | standalone HTTPS static server; `--root --host --port --cert --key --pfx --passphrase-file --ready-file` |
 | `sideload-mac.sh` | copies `manifest.xml` into Excel's container `wef/`, drops legacy `xmux.manifest.xml` |
 | `sideload-windows.ps1` | trusted SMB shared-folder catalog; needs one elevated shell |
@@ -45,7 +47,7 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 
 ## TESTS
 
-- 35 `*.test.ts` files, node environment by default; 14 opt in via
+- 36 `*.test.ts` files, node environment by default; 14 opt in via
   `// @vitest-environment happy-dom` (DOM-touching `taskpane/` files plus `ai/plan.test.ts`).
 - Excel is never mocked as a global. Tests hand fake context/range objects to the generic
   `excel/` functions. `vi.mock` appears only in `chatting.test.ts` (`../ai/client`,
