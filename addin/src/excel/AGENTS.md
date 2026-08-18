@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-Turns formula reference tokens into real sheet rectangles, reads them, and remembers what the pane wrote. 44 exports across 7 files.
+Turns formula reference tokens into real sheet rectangles, reads them, carries out the assistant's tool calls, and remembers what was overwritten.
 
 ## MODULES
 
@@ -15,8 +15,10 @@ Turns formula reference tokens into real sheet rectangles, reads them, and remem
 | `sheets.ts` | 4 | `listSheets` (2 round trips) + `readWindow` for the second viewport. |
 | `history.ts` | 9 | Pane-local undo/redo + `snapshot`/`recordWrite`/`restore`. |
 | `linked-workbooks.ts` | 8 | Runtime-gated list/refresh of linked workbooks. |
+| `inspect.ts` | 4 | The assistant's read tools: `read_range` (values or formulas), `find`, `used_range`, `list_sheets`. Refuses an over-wide range instead of truncating it. |
+| `operate.ts` | 2 | The assistant's write tools, every one snapshotting its rectangle into the history first. A failure comes back as Korean text, never a throw — the model has to be able to read it and try something else. |
 
-Tests: 5 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
+Tests: 7 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
 
 ## EXCEL API BOUNDARY
 
@@ -32,6 +34,7 @@ Tests: 5 files. `sheets.ts` and `summarise.ts` have none of their own; summarise
 - `intersectArea` returns null on no overlap. `expandArea` adds margin and stops at sheet edges. `clampArea` cuts to the render window, keeping the top-left corner.
 - Excel returns qualified addresses (`Data!$B$2:$F$20`); `splitQualified` strips the sheet part and unwraps `''` in quoted names before any parse.
 - Span results are clamped to `SPAN_LIMIT` = 200 rows x 40 columns.
+- `copy_range`/`move_range` resize the destination anchor to the source's `rowCount`/`columnCount` before snapshotting, so undo holds the rectangle the paste actually covers; a move snapshots both ends in one entry.
 - History cap `LIMIT = 20`, oldest dropped. Empty-cell entries (`cells.length === 0`) never enter. Any `push` clears redo. `restore` is a write that is deliberately **not** re-recorded.
 
 ## GOTCHAS

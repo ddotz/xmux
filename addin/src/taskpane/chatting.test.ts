@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { AiError, askModel, testConnection } from "../ai/client"
+import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
 import { DEFAULT_SETTINGS } from "../ai/settings"
+import { MAX_TOOL_ROUNDS } from "../ai/tools"
 import { createHistory } from "../excel/history"
 import { readWorkbookContext } from "./chat-workbook"
-import { type Chatting, compactTurns, createChatting } from "./chatting"
+import { type Chatting, compactTurns, createChatting, trimObservations } from "./chatting"
 
 vi.mock("../ai/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../ai/client")>()
@@ -699,5 +700,165 @@ describe("asking without picking a range first", () => {
 
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
     expect(chatting.state().error).toBeNull()
+  })
+})
+
+describe("working through a batch of tool calls", () => {
+  const workbook = () => {
+    const added: string[] = []
+    const written: unknown[] = []
+    let missing = true
+    const range = (address: string) => {
+      const node = {
+        address,
+        rowCount: 1,
+        columnCount: 2,
+        values: [["항목", "금액"]],
+        formulas: [[""]],
+        cellCount: 2,
+        isNullObject: false,
+        worksheet: { name: "정리" },
+        format: {
+          fill: { color: "" },
+          font: { bold: false, italic: false, color: "" },
+          horizontalAlignment: "",
+          columnWidth: 0,
+          rowHeight: 0,
+          wrapText: false,
+          autofitColumns: () => {},
+          autofitRows: () => {},
+        },
+        load: () => {},
+        getResizedRange: () => range(`${address}#`),
+        insert: () => {},
+        delete: () => {},
+        clear: () => {},
+        sort: { apply: () => {} },
+      }
+      Object.defineProperty(node, "formulas", {
+        get: () => [[""]],
+        set: (value: unknown) => written.push(value),
+        configurable: true,
+      })
+      return node
+    }
+    const sheet = {
+      isNullObject: false,
+      name: "정리",
+      getRange: (address: string) => range(address),
+      getUsedRangeOrNullObject: () => range("A1:B1"),
+      load: () => {},
+    }
+    const context = {
+      workbook: {
+        worksheets: {
+          add: (name: string) => {
+            added.push(name)
+            missing = false
+          },
+          getActiveWorksheet: () => sheet,
+          getItem: () => sheet,
+          getItemOrNullObject: () => ({
+            ...sheet,
+            get isNullObject() {
+              return missing
+            },
+          }),
+          load: () => {},
+          items: [{ name: "정리" }],
+        },
+        getSelectedRange: () => range("A1"),
+      },
+      sync: async () => {},
+    }
+    return { context, added, written }
+  }
+
+  const chattingOver = (context: unknown): Chatting => {
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    return chatting
+  }
+
+  it("runs every call in one reply before going back to the model", async () => {
+    // Given: work whose steps are already decided. Against the internal server each extra
+    // round trip is dead air, so an array has to cost one turn, not one turn per call.
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '[{"tool":"create_sheet","name":"정리"},' +
+          '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"]]}]',
+      )
+      .mockResolvedValueOnce("정리 시트를 만들고 표를 넣었습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트 만들고 표 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    expect(book.added).toEqual(["정리"])
+    expect(book.written).toEqual([[["항목", "금액"]]])
+    // And the model is told which result belongs to which call.
+    const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
+    const observation = second.at(-1)?.content ?? ""
+    expect(observation).toContain("[1] 정리 시트 만들기")
+    expect(observation).toContain("[2] 정리!A1 표 입력 (1행)")
+  })
+
+  it("says it stopped instead of printing raw JSON when the rounds run out", async () => {
+    // Given: a model that never stops asking for tools. The turn has to end in words.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue('{"tool":"used_range","sheet":"정리"}')
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("계속 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // One opening ask, one per round, and one last request for a summary.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(MAX_TOOL_ROUNDS + 2)
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("도구 사용 한도")
+    expect(said).not.toContain('"tool"')
+  })
+})
+
+describe("carrying observations forward", () => {
+  const observation = (index: number): ChatMessage => ({
+    role: "user",
+    content: `실행 결과:\n${`${index}`.repeat(400)}`,
+  })
+
+  it("keeps the newest results whole and shrinks the rest", () => {
+    // Given: a long working session. Every observation is resent every round, so the old
+    // ones are what push a request past what the server will take.
+    const messages: ChatMessage[] = [
+      { role: "system", content: "규칙" },
+      ...Array.from({ length: 9 }, (_, index) => observation(index)),
+    ]
+
+    const trimmed = trimObservations(messages)
+
+    expect(trimmed[0]?.content).toBe("규칙")
+    // The three oldest of nine are stubs; the six it is actually working from survive.
+    for (const index of [1, 2, 3]) {
+      expect(trimmed[index]?.content).toContain("(이전 결과 생략)")
+      expect(trimmed[index]?.content.length).toBeLessThan(messages[index]?.content.length ?? 0)
+    }
+    for (let index = 4; index < messages.length; index += 1) {
+      expect(trimmed[index]?.content).toBe(messages[index]?.content)
+    }
+  })
+
+  it("leaves a short thread alone", () => {
+    const messages: ChatMessage[] = [observation(1), observation(2)]
+
+    expect(trimObservations(messages)).toEqual(messages)
   })
 })

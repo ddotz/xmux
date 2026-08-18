@@ -13,6 +13,8 @@ export type InspectContext = {
     readonly worksheets: {
       readonly getItemOrNullObject: (name: string) => InspectSheet
       readonly getActiveWorksheet: () => InspectSheet
+      readonly load: (properties: string) => void
+      readonly items: readonly { readonly name: string }[]
     }
     readonly getSelectedRange: () => InspectRange
   }
@@ -31,6 +33,7 @@ export type InspectRange = {
   readonly isNullObject: boolean
   readonly address: string
   readonly values: readonly (readonly unknown[])[]
+  readonly formulas: readonly (readonly unknown[])[]
   readonly cellCount: number
   readonly worksheet: { readonly name: string }
   readonly load: (properties: string) => void
@@ -42,7 +45,10 @@ const sheetFor = async (
   name: string | undefined,
 ): Promise<InspectSheet | null> => {
   if (name === undefined || name.trim() === "") {
-    return context.workbook.worksheets.getActiveWorksheet()
+    const active = context.workbook.worksheets.getActiveWorksheet()
+    active.load("name")
+    await context.sync()
+    return active
   }
   const sheet = context.workbook.worksheets.getItemOrNullObject(name.trim())
   sheet.load("isNullObject, name")
@@ -62,9 +68,16 @@ const readRange = async (context: InspectContext, call: ToolCall): Promise<strin
     return `${range.address}는 ${range.cellCount}칸이라 한 번에 읽기에 너무 넓습니다. ${MAX_TOOL_CELLS}칸 이하로 나눠서 요청하세요.`
   }
 
-  range.load("values")
+  range.load(call.formulas === true ? "formulas" : "values")
   await context.sync()
-  return renderGrid(range.address, range.values)
+  return renderGrid(range.address, call.formulas === true ? range.formulas : range.values)
+}
+
+const listSheetNames = async (context: InspectContext): Promise<string> => {
+  context.workbook.worksheets.load("items/name")
+  await context.sync()
+  const names = context.workbook.worksheets.items.map((sheet) => sheet.name)
+  return `시트 ${names.length}개: ${names.join(", ")}`
 }
 
 const usedRange = async (context: InspectContext, call: ToolCall): Promise<string> => {
@@ -119,6 +132,7 @@ export const runTool = async (context: InspectContext, call: ToolCall): Promise<
   try {
     if (call.tool === "read_range") return await readRange(context, call)
     if (call.tool === "used_range") return await usedRange(context, call)
+    if (call.tool === "list_sheets") return await listSheetNames(context)
     return await find(context, call)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)

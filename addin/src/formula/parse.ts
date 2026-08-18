@@ -71,6 +71,15 @@ const lex = (formula: string): readonly Token[] => {
   return tokens
 }
 
+/**
+ * Excel writes functions added after 2007 as `_xlfn.IFNA` when the file has to stay
+ * readable by older versions, and `range.formulas` hands that prefix straight through. It
+ * is spelling, not meaning: without stripping it every such function misses its phrase and
+ * reads as an unknown call.
+ */
+const functionName = (text: string): string =>
+  text.toUpperCase().replace(/^(?:_XLFN\.)?(?:_XLWS\.)?/, "")
+
 class Parser {
   private position = 0
 
@@ -131,6 +140,20 @@ class Parser {
     }
   }
 
+  /**
+   * One argument, including an omitted one.
+   *
+   * `IF(A1,,0)` has three arguments, the middle one empty. Parsing that slot as an
+   * expression consumed the separator itself, so every later argument shifted one place
+   * left and the formula was explained with the wrong operands.
+   */
+  private argument(): Node {
+    const token = this.peek()
+    const empty =
+      token?.kind === "symbol" && (token.text === "," || token.text === ";" || token.text === ")")
+    return empty ? { kind: "unknown", text: "" } : this.expression()
+  }
+
   private factor(): Node {
     if (this.eat("-")) return { kind: "unary", operand: this.factor() }
     const token = this.peek()
@@ -148,11 +171,11 @@ class Parser {
         if (!this.eat("(")) return { kind: "unknown", text: token.text }
         const args: Node[] = []
         if (!this.eat(")")) {
-          do args.push(this.expression())
+          do args.push(this.argument())
           while (this.eat(",") || this.eat(";"))
           this.eat(")")
         }
-        return { kind: "call", name: token.text.toUpperCase(), args }
+        return { kind: "call", name: functionName(token.text), args }
       }
       case "symbol":
         if (token.text === "(") {

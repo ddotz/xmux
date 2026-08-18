@@ -657,7 +657,17 @@ body {
 }
 
 .chat-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   color: var(--muted);
+}
+
+.chat-activity {
+  padding-left: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  opacity: 0.85;
 }
 
 .chat-error {

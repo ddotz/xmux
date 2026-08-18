@@ -7,7 +7,7 @@ import {
   resolveEdits,
 } from "../ai/plan"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
-import { isWrite, readStep } from "../ai/tools"
+import { describeCall, isWrite, MAX_TOOL_ROUNDS, readSteps, type ToolCall } from "../ai/tools"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
 import { type InspectContext, runTool } from "../excel/inspect"
@@ -39,8 +39,42 @@ export type Chatting = {
   readonly updateSelection: (selection: SelectionAttachment | null) => void
 }
 
-/** How many times the model may look at the workbook before it has to answer. */
-const MAX_TOOL_ROUNDS = 12
+/**
+ * How much of an old tool result is worth carrying.
+ *
+ * Every observation is resent on every round, so a session that read five big ranges early
+ * on pays for them again with each later step, until the request stops fitting. The most
+ * recent results stay whole (they are what the model is acting on); older ones shrink to a
+ * stub that still says what was asked.
+ */
+const KEPT_OBSERVATIONS = 6
+const TRIMMED_OBSERVATION_CHARS = 200
+const OBSERVATION_PREFIX = "실행 결과:"
+
+/** Shown when the model has spent its rounds and still will not answer in words. */
+const OUT_OF_ROUNDS =
+  "도구 사용 한도에 도달해 작업을 멈췄습니다. 지금까지 반영된 변경은 되돌리기로 취소할 수 있습니다."
+
+/** Shrink all but the newest tool results so a long working session keeps fitting. */
+export const trimObservations = (messages: readonly ChatMessage[]): readonly ChatMessage[] => {
+  const observationIndexes = messages
+    .map((message, index) => ({ message, index }))
+    .filter(
+      ({ message }) => message.role === "user" && message.content.startsWith(OBSERVATION_PREFIX),
+    )
+    .map(({ index }) => index)
+  const cut = new Set(
+    observationIndexes.slice(0, Math.max(0, observationIndexes.length - KEPT_OBSERVATIONS)),
+  )
+  return messages.map((message, index) =>
+    cut.has(index) && message.content.length > TRIMMED_OBSERVATION_CHARS
+      ? {
+          ...message,
+          content: `${message.content.slice(0, TRIMMED_OBSERVATION_CHARS)}\n… (이전 결과 생략)`,
+        }
+      : message,
+  )
+}
 
 /**
  * How much conversation is carried forward.
@@ -92,6 +126,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     selectionAttachment: null,
     connectionPending: false,
     connectionStatus: null,
+    activity: [],
   }
 
   const set = (next: Partial<ChatState>): void => {
@@ -157,33 +192,68 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     // selected it is not part of the request.
     const request = stripSlashCommand(question, state.skills)
     const asked: ChatTurn = { role: "user", text: question }
-    set({ turns: [...previous, asked], pending: true, error: null, plan: null })
+    set({ turns: [...previous, asked], pending: true, error: null, plan: null, activity: [] })
     try {
       const workbook = await describeWorkbook(attachment)
       const turns = [
         ...conversation(request, workbook, selectedSkillId, state.skills, attachment, previous),
       ]
 
-      // The model used to get one fixed window around the selection and had to guess at
-      // everything else. It can now look before it answers: each round it either asks for
-      // part of the workbook and gets a real answer back, or it replies. Reads only — the
-      // edits it proposes still wait for 적용.
+      // The model works the workbook the way a person would: look, act, look again. Each
+      // round it sends one tool call or a batch of them, every call runs against the real
+      // sheet as it arrives, and the results go back so it can continue — until it answers.
+      const runCall = async (call: ToolCall): Promise<string> => {
+        set({ activity: [...state.activity, describeCall(call)] })
+        let observation = "실행하지 못했습니다."
+        try {
+          await deps.run(async (context) => {
+            // A write lands as soon as the model asks for it. Undo is what makes that safe,
+            // so every change goes through the history rather than straight at the range.
+            observation = isWrite(call)
+              ? await runWrite(context as unknown as OperateContext, deps.history, call)
+              : await runTool(context as unknown as InspectContext, call)
+          })
+        } catch (error) {
+          // The loop survives a refused sync (cell edit mode, protection): the model reads
+          // what went wrong and works around it, the same as any other failed call.
+          const detail = error instanceof Error ? error.message : String(error)
+          observation = `실행하지 못했습니다: ${detail}`
+        }
+        if (isWrite(call)) deps.redraw()
+        return observation
+      }
+
       let reply = await askModel(state.settings, turns)
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-        const step = readStep(reply)
-        if (step.kind === "answer") break
-        let observation = "조회하지 못했습니다."
-        await deps.run(async (context) => {
-          // A write lands as soon as the model asks for it. Undo is what makes that safe,
-          // so every change goes through the history rather than straight at the range.
-          observation = isWrite(step.call)
-            ? await runWrite(context as unknown as OperateContext, deps.history, step.call)
-            : await runTool(context as unknown as InspectContext, step.call)
-        })
-        if (isWrite(step.call)) deps.redraw()
+      let step = readSteps(reply)
+      for (let round = 0; round < MAX_TOOL_ROUNDS && step.kind === "calls"; round += 1) {
+        const observations: string[] = []
+        for (const [index, call] of step.calls.entries()) {
+          const observation = await runCall(call)
+          observations.push(
+            step.calls.length === 1
+              ? observation
+              : `[${index + 1}] ${describeCall(call)}\n${observation}`,
+          )
+        }
         turns.push({ role: "assistant", content: reply })
-        turns.push({ role: "user", content: `조회 결과:\n${observation}` })
-        reply = await askModel(state.settings, turns)
+        turns.push({ role: "user", content: `실행 결과:\n${observations.join("\n\n")}` })
+        reply = await askModel(state.settings, trimObservations(turns))
+        step = readSteps(reply)
+      }
+
+      // Out of budget with the model still asking for tools: nothing more runs, but the
+      // user still deserves an account of what happened instead of a dangling JSON blob.
+      if (step.kind === "calls") {
+        turns.push({ role: "assistant", content: reply })
+        turns.push({
+          role: "user",
+          content:
+            "도구 사용 한도에 도달했습니다. 지금까지 수행한 작업과 남은 작업을 한국어로 요약하세요. JSON은 넣지 마세요.",
+        })
+        reply = await askModel(state.settings, trimObservations(turns))
+        // A model that answers the summary request with yet another tool call would put a
+        // raw JSON blob on screen as if it were the answer. Say what happened instead.
+        if (readSteps(reply).kind === "calls") reply = OUT_OF_ROUNDS
       }
 
       const plan: Plan = parsePlan(reply)
@@ -191,10 +261,16 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         turns: [...state.turns, { role: "assistant", text: plan.say }],
         plan: planTouchesWorkbook(plan) || plan.skill !== undefined ? plan : null,
         pending: false,
+        activity: [],
       })
     } catch (error) {
       if (error instanceof AiError) {
-        set({ pending: false, error: error.message, settingsOpen: state.settings.apiKey === "" })
+        set({
+          pending: false,
+          error: error.message,
+          settingsOpen: state.settings.apiKey === "",
+          activity: [],
+        })
         return
       }
       throw error

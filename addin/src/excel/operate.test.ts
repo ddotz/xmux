@@ -17,6 +17,8 @@ const workbook = () => {
   const makeRange = (address: string) => {
     const range = {
       address,
+      rowCount: 2,
+      columnCount: 3,
       formulas: [["기존"]] as unknown[][],
       numberFormat: [[""]] as unknown[][],
       format: {
@@ -24,6 +26,7 @@ const workbook = () => {
         font: { bold: false, italic: false, color: "" },
         horizontalAlignment: "",
         columnWidth: 0,
+        rowHeight: 0,
         wrapText: false,
         autofitColumns: () => performed.push(`autofitColumns ${address}`),
         autofitRows: () => performed.push(`autofitRows ${address}`),
@@ -34,6 +37,10 @@ const workbook = () => {
         return resized
       },
       insert: (shift: string) => performed.push(`insert ${address} ${shift}`),
+      copyFrom: (source: { address: string }, copyType?: string) =>
+        performed.push(`copyFrom ${source.address} -> ${address} ${copyType}`),
+      moveTo: (destination: { address: string }) =>
+        performed.push(`moveTo ${address} -> ${destination.address}`),
       delete: (shift: string) => performed.push(`delete ${address} ${shift}`),
       clear: (applyTo?: string) => performed.push(`clear ${address} ${applyTo}`),
       sort: {
@@ -182,6 +189,54 @@ describe("runWrite", () => {
       'sort A1:D20 [{"key":1,"ascending":false}] headers=true',
     ])
     expect(history.last()).not.toBeNull()
+  })
+
+  it("pastes into the whole rectangle the source covers, and records what it buried", async () => {
+    // Given: a 2x3 source. The undo entry has to hold the destination rectangle, not the
+    // single anchor cell the model named.
+    const book = workbook()
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "copy_range",
+      address: "A1:C2",
+      target: "F1",
+      what: "values",
+    })
+
+    expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values"])
+    expect(history.last()?.label).toContain("F1:resized(1,2)")
+    expect(answer).toContain("복사했습니다")
+  })
+
+  it("holds both ends of a move in one undo entry", async () => {
+    // Given: a move empties the source, so walking it back needs both rectangles.
+    const book = workbook()
+    const history = createHistory()
+
+    await runWrite(book.context, history, {
+      tool: "move_range",
+      address: "A1:C2",
+      target: "F1",
+    })
+
+    expect(book.performed).toEqual(["moveTo A1:C2 -> F1"])
+    expect(history.last()?.ranges?.map((held) => held.address)).toEqual([
+      "A1:C2",
+      "F1:resized(1,2)",
+    ])
+  })
+
+  it("inserts columns to the right of the range it was given", async () => {
+    const book = workbook()
+
+    const answer = await runWrite(book.context, createHistory(), {
+      tool: "insert_columns",
+      address: "C:D",
+    })
+
+    expect(book.performed).toEqual(["insert C:D Right"])
+    expect(answer).toContain("열을 삽입했습니다")
   })
 
   it("tells the model what went wrong instead of ending the turn", async () => {

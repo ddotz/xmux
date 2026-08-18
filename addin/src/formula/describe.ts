@@ -73,6 +73,16 @@ const callValue = (name: string, summary: ReferenceSummary | null): number | nul
   }
 }
 
+/**
+ * `범위 조건 기준` pairs, as SUMIFS and COUNTIFS spell them: range, criterion, range,
+ * criterion. Written without a particle so a range label ending in a digit still reads.
+ */
+const conditions = (args: readonly string[]): string => {
+  const pairs: string[] = []
+  for (let at = 0; at + 1 < args.length; at += 2) pairs.push(`${args[at]} 조건 ${args[at + 1]}`)
+  return pairs.join(", ")
+}
+
 const CALL_PHRASES: Record<string, (args: readonly string[]) => string> = {
   SUM: ([range]) => `${range}을 모두 더하기`,
   AVERAGE: ([range]) => `${range}의 평균 내기`,
@@ -83,8 +93,22 @@ const CALL_PHRASES: Record<string, (args: readonly string[]) => string> = {
   ROUND: ([value, digits]) => `${value}을 소수점 ${digits}자리로 반올림하기`,
   IF: ([condition, whenTrue, whenFalse]) => `${condition}이면 ${whenTrue}, 아니면 ${whenFalse}`,
   IFERROR: ([value, fallback]) => `${value}, 오류면 ${fallback}`,
+  IFNA: ([value, fallback]) => `${value}, 찾지 못하면 ${fallback}`,
   VLOOKUP: ([needle, table]) => `${table}에서 ${needle}을 찾기`,
   XLOOKUP: ([needle, table]) => `${table}에서 ${needle}을 찾기`,
+  MATCH: ([needle, table]) => `${table}에서 ${needle}의 위치 찾기`,
+  INDEX: ([table, row]) => `${table}의 ${row}번째 값 꺼내기`,
+  // The conditional aggregates: the workbooks this pane is read against are full of them,
+  // and left to the fallback they read as an unexplained function call.
+  SUMIF: ([range, criterion, target]) =>
+    `${range} 조건 ${criterion}에 맞는 ${target ?? range}을 더하기`,
+  SUMIFS: ([target, ...rest]) => `${conditions(rest)}에 맞는 ${target}을 더하기`,
+  COUNTIF: ([range, criterion]) => `${range} 조건 ${criterion}에 맞는 개수 세기`,
+  COUNTIFS: (args) => `${conditions(args)}에 맞는 개수 세기`,
+  AVERAGEIF: ([range, criterion, target]) =>
+    `${range} 조건 ${criterion}에 맞는 ${target ?? range}의 평균 내기`,
+  AVERAGEIFS: ([target, ...rest]) => `${conditions(rest)}에 맞는 ${target}의 평균 내기`,
+  SUBTOTAL: ([, range]) => `${range}의 부분합 구하기`,
 }
 
 /**
@@ -106,7 +130,9 @@ export const describeSteps = (formula: string, lookup: Lookup): readonly Step[] 
       case "text":
         return { label: node.text, value: null }
       case "unknown":
-        return { label: node.text, value: null }
+        // An omitted argument (`IF(A1,,0)`) is a real slot with nothing in it. Naming it
+        // keeps the phrase from reading as though an operand went missing.
+        return { label: node.text === "" ? "(생략)" : node.text, value: null }
       case "ref":
         return { label: refPhrase(node, lookup), value: refValue(node.at, lookup) }
       case "unary": {

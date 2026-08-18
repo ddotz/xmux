@@ -33,6 +33,7 @@ const state = (overrides: Partial<ChatState> = {}): ChatState => ({
   selectionAttachment: null,
   connectionPending: false,
   connectionStatus: null,
+  activity: [],
   ...overrides,
 })
 const mount = (chat: ChatState, on: ChatHandlers = handlers()): HTMLElement => {
@@ -205,6 +206,25 @@ describe("the compact chat screen", () => {
     const label = root.querySelector(".attachment-label")?.textContent
     expect(label).toContain("Main!B3")
     expect(label).not.toContain("Main!Main!B3")
+  })
+
+  it("shows what the assistant is doing instead of a silent wait", () => {
+    // Given: a turn that has been working through tools for a while. Only the last few
+    // steps are worth the room; the rest would push the conversation off screen.
+    const old = ["A1 값 읽기", "B1 값 읽기", "C1 값 읽기"]
+    const recent = [
+      "D1 값 읽기",
+      "E1 값 읽기",
+      "F1 값 읽기",
+      "정리 시트 만들기",
+      "정리!A1 표 입력 (3행)",
+    ]
+
+    const root = mount(state({ pending: true, activity: [...old, ...recent] }))
+
+    const lines = [...root.querySelectorAll(".chat-activity")].map((node) => node.textContent)
+    expect(lines).toEqual(recent)
+    expect(root.querySelector(".chat-pending")?.textContent).toContain("작업 중")
   })
 
   it("uses SVG icon controls with accessible names and responsive data states", () => {

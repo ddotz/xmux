@@ -2,13 +2,14 @@
 
 ## OVERVIEW
 
-Three pure modules behind the 대화 tab: `client.ts` talks to the server, `plan.ts` reads the reply as a proposal, `settings.ts` holds the connection. No Office.js here.
+Four pure modules behind the 대화 tab: `client.ts` talks to the server, `tools.ts` reads the reply as tool calls, `plan.ts` reads it as a proposal, `settings.ts` holds the connection. No Office.js here.
 
 ## MODULES
 
 | File | Exports | Role |
 |---|---|---|
 | `client.ts` | 5 | `askModel`, `testConnection`, `promptFrom`, `AiError`, `ChatMessage` |
+| `tools.ts` | 30+ | one zod schema per tool, `toolCallSchema`, `readSteps`, `describeCall`, `isWrite`, `renderGrid`, and the budgets (`MAX_CALLS_PER_REPLY` 8, `MAX_TOOL_ROUNDS` 16, `MAX_TOOL_CELLS` 500) |
 | `plan.ts` | 6 | `parsePlan`, `describeEdit`, `resolveEdits`, `Plan`, `ProposedEdit`, `ProposedSkill` |
 | `settings.ts` | 10 | schema, defaults, `loadSettings`/`saveSettings`, `settingsProblem`, `endpointFor`, `redactKey`, `maskKey` |
 
@@ -24,7 +25,9 @@ Every function takes its dependency as an argument: `fetcher: typeof fetch = fet
 - `testConnection` is `askModel` with `temperature: 0, maxTokens: 1` and one throwaway turn.
 - `parsePlan` takes the last fenced ```` ```json ```` block, else the first `{` to last `}`. Bad JSON or a failed `planSchema.safeParse` degrades to `{ say: reply.trim(), edits: [] }`: prose survives, the block is dropped, nothing throws.
 - An edit is `{ sheet?, address, value }`; omitted `sheet` means the mirrored sheet, filled by `resolveEdits(plan, fallbackSheet)`, which also drops empty sheet names. A `skill` proposal is length-bounded (name ≤64, label ≤80, description ≤240, instructions ≤4000, ≤20 triggers).
-- **Approval gate lives in `taskpane/chatting.ts`.** `ask()` only stores the plan in state; the write happens in `apply()`, reached solely through `onApply`, and goes through `recordWrite` so it lands in the undo history. `onDiscard` throws it away. Skills wait for `onSaveSkill`. `taskpane/chat-prompt.ts` tells the model the same thing (`writes: "proposal-only"`), but the prompt is a hint, the handler is the enforcement.
+- **Tool calls are the working path; the plan is the fallback.** `readSteps` takes the last fenced block, else the widest span from the first `{`/`[` to the last `}`/`]`, and validates it against `toolCallSchema` — one object, or an array run in order and cut at the first element that does not validate. Anything that is not a tool call is the answer, including a plan and including broken JSON: the loop must never stall on a parse failure.
+- Writes land as the model asks for them (`excel/operate.ts`), reads answer from `excel/inspect.ts`, and each call's Korean one-liner (`describeCall`) is what the pane shows while the turn works.
+- **Approval gate lives in `taskpane/chatting.ts`.** `ask()` only stores the plan in state; the write happens in `apply()`, reached solely through `onApply`, and goes through `recordWrite` so it lands in the undo history. `onDiscard` throws it away. Skills wait for `onSaveSkill`. That path is only reached by a model that answers in the old proposal shape; `chat-prompt.ts` pins `writes: "direct"` and teaches the tools instead.
 
 ## KEY HANDLING
 

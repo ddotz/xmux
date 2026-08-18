@@ -13,6 +13,10 @@ const range = (overrides: Partial<InspectRange> = {}): InspectRange => ({
     ["항목", "금액"],
     ["대출채권", 1200],
   ],
+  formulas: [
+    ["항목", "금액"],
+    ["대출채권", "=B1*2"],
+  ],
   cellCount: 4,
   worksheet: { name: "Main" },
   load: () => {},
@@ -28,11 +32,17 @@ const sheet = (overrides: Partial<InspectSheet> = {}, cell = range()): InspectSh
   ...overrides,
 })
 
-const context = (active: InspectSheet, named: InspectSheet | null = null): InspectContext => ({
+const context = (
+  active: InspectSheet,
+  named: InspectSheet | null = null,
+  names: readonly string[] = ["Main", "Data"],
+): InspectContext => ({
   workbook: {
     worksheets: {
       getActiveWorksheet: () => active,
       getItemOrNullObject: () => named ?? sheet({ isNullObject: true }),
+      load: () => {},
+      items: names.map((name) => ({ name })),
     },
     getSelectedRange: () => range(),
   },
@@ -45,6 +55,25 @@ describe("runTool", () => {
 
     expect(answer).toContain("Main!A1:B2")
     expect(answer).toContain("대출채권\t1200")
+  })
+
+  it("reads the formulas as written when the model asks for them", async () => {
+    // Given: the model checking what a column computes, not what it currently shows.
+    const answer = await runTool(context(sheet()), {
+      tool: "read_range",
+      address: "A1:B2",
+      formulas: true,
+    })
+
+    expect(answer).toContain("=B1*2")
+    expect(answer).not.toContain("1200")
+  })
+
+  it("lists every sheet so the model can orient itself", async () => {
+    const answer = await runTool(context(sheet()), { tool: "list_sheets" })
+
+    expect(answer).toContain("2개")
+    expect(answer).toContain("Main, Data")
   })
 
   it("refuses a range too wide to carry back, and says how to narrow it", async () => {

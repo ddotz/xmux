@@ -38,6 +38,8 @@ export type ChatState = {
   readonly selectionAttachment: SelectionAttachment | null
   readonly connectionPending: boolean
   readonly connectionStatus: string | null
+  /** What the assistant is doing right now, one line per tool call, newest last. */
+  readonly activity: readonly string[]
 }
 
 export type ChatHandlers = {
@@ -86,7 +88,13 @@ const renderConversation = (state: ChatState): HTMLElement => {
   if (state.turns.length === 0)
     log.append(text("div", "pane-empty chat-empty", "Excel 작업을 자연어로 요청해 보세요."))
   for (const turn of state.turns) log.append(text("div", `turn turn-${turn.role}`, turn.text))
-  if (state.pending) log.append(text("div", "turn turn-assistant chat-pending", "답변 작성 중…"))
+  if (state.pending) {
+    const pending = element("div", "turn turn-assistant chat-pending")
+    pending.append(text("div", "", state.activity.length === 0 ? "답변 작성 중…" : "작업 중…"))
+    // The last few steps, so a long-working turn reads as progress rather than silence.
+    for (const line of state.activity.slice(-5)) pending.append(text("div", "chat-activity", line))
+    log.append(pending)
+  }
   stickToBottom(log)
   return log
 }

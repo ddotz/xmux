@@ -16,11 +16,14 @@ import { snapshotRange } from "./history"
 
 type OperateRange = {
   readonly address: string
+  readonly rowCount: number
+  readonly columnCount: number
   readonly format: {
     fill: { color: string }
     font: { bold: boolean; italic: boolean; color: string }
     horizontalAlignment: string
     columnWidth: number
+    rowHeight: number
     wrapText: boolean
     autofitColumns: () => void
     autofitRows: () => void
@@ -38,6 +41,8 @@ type OperateRange = {
   readonly merge: (across?: boolean) => void
   readonly unmerge: () => void
   readonly autoFill: (destination: OperateRange, type: string) => void
+  readonly copyFrom: (source: OperateRange, copyType?: string) => void
+  readonly moveTo: (destination: OperateRange) => void
   readonly conditionalFormats: {
     add: (type: string) => {
       cellValue: { format: { fill: { color: string }; font: { color: string } }; rule: unknown }
@@ -82,8 +87,12 @@ const sheetFor = async (
   context: OperateContext,
   name: string | undefined,
 ): Promise<OperateSheet | null> => {
-  if (name === undefined || name.trim() === "")
-    return context.workbook.worksheets.getActiveWorksheet()
+  if (name === undefined || name.trim() === "") {
+    const active = context.workbook.worksheets.getActiveWorksheet()
+    active.load("name")
+    await context.sync()
+    return active
+  }
   const sheet = context.workbook.worksheets.getItemOrNullObject(name.trim())
   sheet.load("isNullObject, name")
   await context.sync()
@@ -116,7 +125,12 @@ export const runWrite = async (
 
     // Reads are answered elsewhere; `create_sheet` is the one write without a range and
     // returned above. What remains all carries an address.
-    if (call.tool === "read_range" || call.tool === "find" || call.tool === "used_range") {
+    if (
+      call.tool === "read_range" ||
+      call.tool === "find" ||
+      call.tool === "used_range" ||
+      call.tool === "list_sheets"
+    ) {
       return "쓰기 작업이 아닙니다."
     }
     if (call.tool === "delete_sheet") {
@@ -166,6 +180,52 @@ export const runWrite = async (
       return `${sheet.name}!${area.address}에 ${rows.length}행 × ${rows[0]?.length ?? 0}열을 썼습니다.`
     }
 
+    if (call.tool === "copy_range" || call.tool === "move_range") {
+      // The destination anchor grows to the source's size, so what gets snapshotted for
+      // undo is the exact rectangle the paste will cover — not just the one anchor cell.
+      target.load("rowCount, columnCount")
+      await context.sync()
+      const destinationSheet =
+        call.targetSheet === undefined ? sheet : await sheetFor(context, call.targetSheet)
+      if (destinationSheet === null) return `시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`
+      const anchor = destinationSheet.getRange(call.target)
+      const area = anchor.getResizedRange(target.rowCount - 1, target.columnCount - 1)
+      area.load("address")
+      await context.sync()
+
+      if (call.tool === "copy_range") {
+        const held = await snapshotRange(context as never, [
+          { sheet: destinationSheet.name, address: area.address },
+        ])
+        const copyType =
+          call.what === "values"
+            ? "Values"
+            : call.what === "formats"
+              ? "Formats"
+              : call.what === "formulas"
+                ? "Formulas"
+                : "All"
+        anchor.copyFrom(target, copyType)
+        await context.sync()
+        history.push({
+          label: `${destinationSheet.name}!${area.address} 붙여넣기`,
+          cells: [],
+          ranges: held,
+        })
+        return `${sheet.name}!${call.address}을 ${destinationSheet.name}!${area.address}에 복사했습니다.`
+      }
+
+      // A move empties the source, so both rectangles go into the same undo entry.
+      const held = await snapshotRange(context as never, [
+        { sheet: sheet.name, address: call.address },
+        { sheet: destinationSheet.name, address: area.address },
+      ])
+      target.moveTo(anchor)
+      await context.sync()
+      history.push({ label: `${sheet.name}!${call.address} 이동`, cells: [], ranges: held })
+      return `${sheet.name}!${call.address}을 ${destinationSheet.name}!${area.address}로 이동했습니다.`
+    }
+
     // Everything below changes cells in place, so the rectangle is captured as it stands.
     const held = await snapshotRange(context as never, [
       { sheet: sheet.name, address: call.address },
@@ -182,6 +242,8 @@ export const runWrite = async (
       if (call.numberFormat !== undefined) target.numberFormat = [[call.numberFormat]]
       if (call.columnWidth === "auto") target.format.autofitColumns()
       else if (call.columnWidth !== undefined) target.format.columnWidth = call.columnWidth
+      if (call.rowHeight === "auto") target.format.autofitRows()
+      else if (call.rowHeight !== undefined) target.format.rowHeight = call.rowHeight
       await context.sync()
       // Formatting is not part of the cell history, which holds formulas; say so plainly
       // rather than implying undo will take the colour back off.
@@ -193,6 +255,13 @@ export const runWrite = async (
       await context.sync()
       history.push({ label: `${sheet.name}!${call.address} 행 삽입`, cells: [], ranges: held })
       return `${sheet.name}!${call.address}에 행을 삽입했습니다.`
+    }
+
+    if (call.tool === "insert_columns") {
+      target.insert("Right")
+      await context.sync()
+      history.push({ label: `${sheet.name}!${call.address} 열 삽입`, cells: [], ranges: held })
+      return `${sheet.name}!${call.address}에 열을 삽입했습니다.`
     }
 
     if (call.tool === "delete_range") {

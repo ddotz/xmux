@@ -34,7 +34,7 @@ xmux/
 | Reference → real Excel range | `addin/src/excel/resolve.ts` | names, tables, cross-sheet |
 | What the pane renders | `addin/src/taskpane/view.ts`, `sheet.ts` | pure; no Excel I/O |
 | Pane bootstrap + selection mirror | `addin/src/taskpane/main.ts` | 305 LOC; the only `Excel.run` caller |
-| Chat / AI request path | `taskpane/chatting.ts` → `ai/client.ts` | plan schema in `ai/plan.ts` |
+| Chat / AI request path | `taskpane/chatting.ts` → `ai/client.ts` | tool schemas in `ai/tools.ts` |
 | Pane state shape | `addin/src/model.ts` | `PaneState` / `ViewportState` unions |
 | Native editor state | `addin/src/companion.ts` | polls `/xmux/state`, optional by design |
 | Manifest / sideload / packaging | `addin/scripts/` | never hand-edit `manifest.xml` |
@@ -51,10 +51,10 @@ xmux/
 | AI settings store | module | `ai/settings.ts` | 10 | 10 exports; key lives in web storage only |
 | skill library | module | `taskpane/chat-skills.ts` | 8 | built-in + locally saved skills |
 | `scanReferences` | function | `formula/scanner.ts` | 8 | 268 LOC; the entry to all formula work |
-| edit plan schema | module | `ai/plan.ts` | 8 | zod-validated model output |
+| assistant tool schemas | module | `ai/tools.ts` | 8 | zod-validated tool calls; the loop's budgets live here |
 | selection refresh | module | `taskpane/selection-refresh.ts` | 3 | 14 exports — highest export count in repo |
 
-Exports by domain: taskpane 106, excel 44, formula 22, ai 21. ~5.5k LOC of non-test TS.
+Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-test TS.
 
 ## CONVENTIONS
 
@@ -92,7 +92,7 @@ Exports by domain: taskpane 106, excel 44, formula 22, ai 21. ~5.5k LOC of non-t
 cd addin && pnpm install
 pnpm dev                  # bare vite: HTTPS dev server on :3927, certs auto-trusted
 pnpm manifest:dev         # regenerate manifest.xml — `pnpm dev` does NOT do this
-pnpm test                 # vitest run — 35 test files
+pnpm test                 # vitest run — 40 test files
 pnpm typecheck            # tsc --noEmit
 pnpm check                # biome check .
 pnpm build                # typecheck + vite build → addin/dist/
