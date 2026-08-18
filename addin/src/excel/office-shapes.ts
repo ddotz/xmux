@@ -11,6 +11,7 @@ export type OperateRange = {
   readonly address: string
   readonly rowCount: number
   readonly columnCount: number
+  readonly cellCount: number
   readonly format: {
     fill: { color: string }
     font: { bold: boolean; italic: boolean; color: string }

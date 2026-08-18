@@ -235,30 +235,11 @@ export const describeCall = (call: ToolCall): string => {
       return `${call.table} 표에 ${call.name} 열 추가`
     case "recalculate":
       return "전체 재계산"
+    case "scale_values":
+      return `${place(call.sheet, call.address)} 단위 변환`
   }
 }
 
 /** Cap on what one tool answer may carry back into the conversation. */
 export const MAX_TOOL_CELLS = 500
 export const MAX_TOOL_CHARS = 4_000
-
-const cellText = (value: unknown): string =>
-  value === null || value === undefined ? "" : String(value)
-
-/** Render a grid as TSV, bounded, so a wide sheet cannot flood the context. */
-export const renderGrid = (address: string, values: readonly (readonly unknown[])[]): string => {
-  const rows: string[] = []
-  let cells = 0
-  let characters = 0
-  for (const row of values) {
-    if (cells >= MAX_TOOL_CELLS || characters >= MAX_TOOL_CHARS) {
-      rows.push("… (생략됨)")
-      break
-    }
-    const line = row.map(cellText).join("\t")
-    cells += row.length
-    characters += line.length
-    rows.push(line)
-  }
-  return `${address}\n${rows.join("\n")}`
-}

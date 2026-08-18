@@ -141,11 +141,32 @@ describe("runTool", () => {
     expect(answer).toContain("매출: Main!A1:D20")
   })
 
-  it("reports the used range with its size", async () => {
+  it("reports the used range with its size and the holes in it", async () => {
+    // Given: a used range is a rectangle, not a table. A model working from size alone
+    // walks straight into the blanks.
     const answer = await runTool(context(sheet()), { tool: "used_range" })
 
     expect(answer).toContain("Main!A1:B2")
+    expect(answer).toContain("2행 × 2열")
     expect(answer).toContain("4칸")
+  })
+
+  it("counts the blank cells when there are any", async () => {
+    const holed = context(sheet())
+    const withBlanks = {
+      ...holed,
+      workbook: {
+        ...holed.workbook,
+        functions: {
+          ...holed.workbook.functions,
+          countBlank: () => ({ value: 3, load: () => {} }),
+        },
+      },
+    }
+
+    const answer = await runTool(withBlanks, { tool: "used_range" })
+
+    expect(answer).toContain("빈 칸 3개")
   })
 
   it("turns a thrown Excel error into something the model can read", async () => {

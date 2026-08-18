@@ -1,8 +1,10 @@
 import { isWrite, type ToolCall } from "../ai/tool-schemas"
+import { parseArea } from "./address"
 import { runDataTool } from "./data-tools"
 import type { History } from "./history"
 import { snapshotLayout, snapshotRange } from "./history"
 import type { OperateContext, OperateSheet } from "./office-shapes"
+import { areaWritten, selfReference } from "./self-reference"
 
 /**
  * Carrying out the assistant's writes.
@@ -105,6 +107,17 @@ export const runWrite = async (
 
     if (call.tool === "write_range") {
       const rows = rectangle(call.rows)
+      // A formula written on top of what it reads is a circular reference, and Excel will
+      // take it. Asked to divide a column by a million, a model writes `=B2/1000000` into
+      // `B2` — the range it was asked to fix is the range it breaks.
+      const covered = areaWritten(call.address, rows.length, rows[0]?.length ?? 1)
+      for (const row of rows) {
+        for (const written of row) {
+          const circular = selfReference(written, sheet.name, covered)
+          if (circular === null) continue
+          return `${written}은 자기 자신이 들어갈 자리(${circular})를 참조해 순환참조가 됩니다. 기존 값을 그 자리에서 바꾸려면 계산된 값을 쓰거나 scale_values를 쓰고, 수식을 남기려면 다른 열에 씁니다.`
+        }
+      }
       const area = target.getResizedRange(rows.length - 1, (rows[0]?.length ?? 1) - 1)
       area.load("address")
       await context.sync()
@@ -254,6 +267,10 @@ export const runWrite = async (
     }
 
     if (call.tool === "fill_formula") {
+      const circular = selfReference(call.formula, sheet.name, parseArea(call.address))
+      if (circular !== null) {
+        return `${call.formula}은 채울 범위 안(${circular})을 참조해 순환참조가 됩니다. 결과를 다른 열에 채우거나, 기존 값을 바꾸려면 scale_values를 쓰세요.`
+      }
       // Excel shifts the relative references itself, so the model writes the formula once.
       const anchor = sheet.getRange(call.anchor)
       anchor.formulas = [[call.formula]]

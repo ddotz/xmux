@@ -517,6 +517,28 @@ export const recalculateSchema = z.object({
   setAutomatic: z.boolean().optional(),
 })
 
+/**
+ * Divide or multiply what is already in a range, in place.
+ *
+ * "백만 단위로 나누고 반올림해줘" has no safe formula answer: a formula written into the
+ * cell it reads is a circular reference, and a formula written elsewhere is a second copy
+ * of the table. So the values are converted where they stand — a number becomes the
+ * converted number, and a formula is wrapped so it keeps recalculating.
+ */
+export const scaleValuesSchema = z.object({
+  tool: z.literal("scale_values"),
+  sheet: z.string().max(120).optional(),
+  address,
+  /** e.g. 1000000 for 백만 단위. */
+  divideBy: z
+    .number()
+    .refine((value) => value !== 0, "0으로는 나눌 수 없습니다")
+    .optional(),
+  multiplyBy: z.number().optional(),
+  /** Decimal places to round to; omitted leaves the precision alone. */
+  decimals: z.number().int().min(0).max(10).optional(),
+})
+
 export const toolCallSchema = z.discriminatedUnion("tool", [
   readRangeSchema,
   findSchema,
@@ -566,6 +588,7 @@ export const toolCallSchema = z.discriminatedUnion("tool", [
   listTablesSchema,
   addTableColumnSchema,
   recalculateSchema,
+  scaleValuesSchema,
 ])
 
 /**
@@ -612,6 +635,7 @@ const WRITE_TOOL_NAMES = [
   "set_print_layout",
   "add_table_column",
   "recalculate",
+  "scale_values",
 ] as const satisfies readonly ToolCall["tool"][]
 
 export const WRITE_TOOLS: ReadonlySet<string> = new Set(WRITE_TOOL_NAMES)

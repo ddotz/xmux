@@ -1,8 +1,11 @@
 import type { ToolCall } from "../ai/tool-schemas"
-import { MAX_TOOL_CELLS, renderGrid } from "../ai/tools"
+import { MAX_TOOL_CELLS } from "../ai/tools"
+import { parseArea } from "./address"
 import { runAuditTool } from "./audit"
+import { renderGrid } from "./grid"
 import type { InspectContext, InspectSheet } from "./office-shapes"
 import { runReasoningTool } from "./reasoning"
+import { splitQualified } from "./resolve"
 
 /**
  * Answering the model's questions about the workbook.
@@ -43,7 +46,9 @@ const readRange = async (context: InspectContext, call: ToolCall): Promise<strin
 
   range.load(call.formulas === true ? "formulas" : "values")
   await context.sync()
-  return renderGrid(range.address, call.formulas === true ? range.formulas : range.values)
+  // Where the rectangle starts, so every row can carry the sheet row it actually is.
+  const anchor = parseArea(splitQualified(range.address).local)
+  return renderGrid(range.address, call.formulas === true ? range.formulas : range.values, anchor)
 }
 
 const listSheetNames = async (context: InspectContext): Promise<string> => {
@@ -78,10 +83,16 @@ const usedRange = async (context: InspectContext, call: ToolCall): Promise<strin
   if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
 
   const used = sheet.getUsedRangeOrNullObject()
-  used.load("isNullObject, address, cellCount")
+  used.load("isNullObject, address, cellCount, rowCount, columnCount")
   await context.sync()
   if (used.isNullObject) return `${sheet.name}은 비어 있습니다.`
-  return `${sheet.name}의 사용 범위: ${used.address} (${used.cellCount}칸)`
+  // A used range is a rectangle, not a table: the holes in it are what a model working
+  // from size alone walks straight into.
+  const blank = context.workbook.functions.countBlank(used)
+  blank.load("value")
+  await context.sync()
+  const holes = typeof blank.value === "number" ? blank.value : 0
+  return `${sheet.name}의 사용 범위: ${used.address} (${used.rowCount}행 × ${used.columnCount}열, ${used.cellCount}칸${holes > 0 ? `, 그중 빈 칸 ${holes}개` : ""})`
 }
 
 /** Where a piece of text sits, so the model can ask for that neighborhood next. */

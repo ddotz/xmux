@@ -18,11 +18,13 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `office-shapes.ts` | 5 | The slice of Office.js the write side touches, as structural types. Method names match the real API exactly — that is what makes a typo a type error instead of a broken workbook. |
 | `data-tools.ts` | 1 | Excel's own operations: duplicates, filters, tables, pivots, validation, names, visibility, sheet copy, protection, selection. Answers `null` for anything else so `operate.ts` keeps one entry point. |
 | `reasoning.ts` | 1 | Why a number is what it is: `explain_cell` (formula, what each reference holds, numbered steps — the pane's own scanner and summaries, asked from the chat side), `check_sum` (stated total vs the sum of its parts), `find_dependents` (what moves when this cell moves, found by parsing formulas so `SUM(B1:B9)` counts as depending on `B5`). |
+| `grid.ts` | 1 | The rectangle the model reads back: every row labelled with its real sheet row, columns with their letters, blank rows named as blank. Counting lines is how a write lands two rows off. |
+| `self-reference.ts` | 3 | Catches a formula about to be written on top of what it reads (`=B2/1000000` into `B2`). Excel accepts the circular reference; this does not. |
 | `audit.ts` | 1 | What a workbook gets checked for before anyone signs it: error cells, numbers typed into calculated columns, external links, defined names, and per-column totals computed inside Excel so a 200k-row table never crosses the boundary. |
 | `inspect.ts` | 4 | The assistant's read tools: `read_range` (values or formulas), `find`, `used_range`, `list_sheets`. Refuses an over-wide range instead of truncating it. |
 | `operate.ts` | 2 | The assistant's write tools, every one snapshotting its rectangle into the history first. A failure comes back as Korean text, never a throw — the model has to be able to read it and try something else. |
 
-Tests: 11 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
+Tests: 13 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
 
 ## EXCEL API BOUNDARY
 
@@ -38,6 +40,7 @@ Tests: 11 files. `sheets.ts` and `summarise.ts` have none of their own; summaris
 - `intersectArea` returns null on no overlap. `expandArea` adds margin and stops at sheet edges. `clampArea` cuts to the render window, keeping the top-left corner.
 - Excel returns qualified addresses (`Data!$B$2:$F$20`); `splitQualified` strips the sheet part and unwraps `''` in quoted names before any parse.
 - Span results are clamped to `SPAN_LIMIT` = 200 rows x 40 columns.
+- `scale_values` is the only safe answer to "백만 단위로 나눠줘": a number becomes the converted number, a formula is wrapped (`=ROUND((기존식)*배수,0)`) so it keeps recalculating, and text and blanks are left alone. Bounded at 5,000 cells because it reads and rewrites every one.
 - A scan (`find_errors`, `find_hardcoded`, `list_links`) loads every cell's formula, so it is capped at 20,000 cells — far below a read's 500-cell answer cap, because the answer is a handful of addresses rather than the data.
 - `column_stats` goes through `workbook.functions`, the same host-side trick `summarise.ts` uses: seven numbers per column come back, no cells do.
 - Column widths and row heights **are** in the history (`snapshotLayout`/`restoreLayouts`, one number per line, capped at 64). Colour, font and number format still are not. An unrequested autofit used to be the one change nothing could take back.

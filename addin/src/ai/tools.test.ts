@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { isWrite } from "./tool-schemas"
-import { describeCall, MAX_CALLS_PER_REPLY, MAX_TOOL_CELLS, readSteps, renderGrid } from "./tools"
+import { describeCall, MAX_CALLS_PER_REPLY, readSteps } from "./tools"
 
 describe("readSteps", () => {
   it("recognises a fenced tool call", () => {
@@ -214,30 +214,5 @@ describe("the tool surface", () => {
         values: [{ field: "금액" }],
       }),
     ).toBe("요약!F1 피벗 만들기")
-  })
-})
-
-describe("renderGrid", () => {
-  it("renders values as rows the model can read", () => {
-    const grid = renderGrid("Main!A1:B2", [
-      ["항목", "금액"],
-      ["대출채권", 1200],
-    ])
-
-    expect(grid).toBe("Main!A1:B2\n항목\t금액\n대출채권\t1200")
-  })
-
-  it("writes empty cells as empty, not as null", () => {
-    expect(renderGrid("A1:B1", [[null, undefined]])).toBe("A1:B1\n\t")
-  })
-
-  it("stops before flooding the conversation", () => {
-    // Given: more cells than one answer may carry.
-    const rows = Array.from({ length: 400 }, () => ["a", "b", "c"])
-
-    const grid = renderGrid("A1:C400", rows)
-
-    expect(grid).toContain("… (생략됨)")
-    expect(grid.split("\n").length - 2).toBeLessThanOrEqual(MAX_TOOL_CELLS)
   })
 })

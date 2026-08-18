@@ -292,6 +292,48 @@ describe("runWrite", () => {
     expect(answer).toContain("열을 삽입했습니다")
   })
 
+  it("refuses a table write whose formulas would read the cells they land in", async () => {
+    // Given: 백만 단위로 나눠달라는 요청. Excel accepts the circular reference and the
+    // range the user asked to fix is the range that breaks.
+    const book = workbook()
+
+    const answer = await runWrite(book.context, createHistory(), {
+      tool: "write_range",
+      address: "B2",
+      rows: [["=B2/1000000", "=C2/1000000"]],
+    })
+
+    expect(book.written).toEqual([])
+    expect(answer).toContain("순환참조")
+    expect(answer).toContain("scale_values")
+  })
+
+  it("refuses a fill whose formula reads the range it fills", async () => {
+    const book = workbook()
+
+    const answer = await runWrite(book.context, createHistory(), {
+      tool: "fill_formula",
+      anchor: "D2",
+      address: "D2:D200",
+      formula: "=ROUND(D2/1000000,0)",
+    })
+
+    expect(book.performed).toEqual([])
+    expect(answer).toContain("순환참조")
+  })
+
+  it("still writes the formulas that read their neighbours", async () => {
+    const book = workbook()
+
+    await runWrite(book.context, createHistory(), {
+      tool: "write_range",
+      address: "D2",
+      rows: [["=B2*C2"]],
+    })
+
+    expect(book.written).toHaveLength(1)
+  })
+
   it("records the column widths before an autofit, so undo can put them back", async () => {
     // Given: the user's own layout. Formatting sits outside the history, which made an
     // unasked-for autofit permanent — the one thing 되돌리기 could not return.

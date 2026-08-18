@@ -18,6 +18,20 @@ import type { OperateContext, OperateSheet } from "./office-shapes"
 /** Only removing duplicates destroys cell content; the rest change how a sheet behaves. */
 const NOT_UNDOABLE = "(되돌리기에 포함되지 않습니다)"
 
+/** Converting values reads and rewrites every cell, so it is bounded like a read is. */
+const MAX_SCALED_CELLS = 5_000
+
+const round = (value: number, decimals: number): number => {
+  const scale = 10 ** decimals
+  return Math.round(value * scale) / scale
+}
+
+/** The same conversion, written as a formula so the cell keeps recalculating. */
+const scaled = (expression: string, factor: number, decimals: number | undefined): string => {
+  const body = factor === 1 ? expression : `${expression}*${factor}`
+  return decimals === undefined ? `=${body}` : `=ROUND(${body},${decimals})`
+}
+
 type FilterCall = Extract<ToolCall, { tool: "filter_range" }>
 
 const criteriaFor = (call: FilterCall): Record<string, unknown> => {
@@ -178,6 +192,40 @@ export const runDataTool = async (
       await context.sync()
     }
     return `${table.name} 표에 ${call.name} 열을 넣었습니다. (${body.address})`
+  }
+
+  if (call.tool === "scale_values") {
+    const factor = (call.multiplyBy ?? 1) / (call.divideBy ?? 1)
+    if (!Number.isFinite(factor)) return "변환 배수가 올바르지 않습니다."
+    const target = sheet.getRange(call.address)
+    target.load("address, cellCount, formulas")
+    await context.sync()
+    if (target.cellCount > MAX_SCALED_CELLS) {
+      return `${target.address}는 ${target.cellCount}칸이라 한 번에 바꾸기에 너무 넓습니다. ${MAX_SCALED_CELLS}칸 이하로 나눠서 요청하세요.`
+    }
+
+    const held = await snapshotRange(context as never, [
+      { sheet: sheet.name, address: call.address },
+    ])
+    let numbers = 0
+    let wrapped = 0
+    const converted = target.formulas.map((row) =>
+      row.map((cell) => {
+        // A formula keeps recalculating: it is wrapped, not replaced by its current result.
+        if (typeof cell === "string" && cell.startsWith("=")) {
+          wrapped += 1
+          return scaled(`(${cell.slice(1)})`, factor, call.decimals)
+        }
+        if (typeof cell !== "number" || !Number.isFinite(cell)) return cell
+        numbers += 1
+        const value = cell * factor
+        return call.decimals === undefined ? value : round(value, call.decimals)
+      }),
+    )
+    target.formulas = converted
+    await context.sync()
+    history.push({ label: `${sheet.name}!${call.address} 단위 변환`, cells: [], ranges: held })
+    return `${sheet.name}!${target.address}의 숫자 ${numbers}칸을 바꿨습니다${wrapped > 0 ? `, 수식 ${wrapped}칸은 계산식을 유지한 채 감쌌습니다` : ""}. 값과 글자가 아닌 칸은 그대로입니다.`
   }
 
   if (call.tool === "set_print_layout") {
