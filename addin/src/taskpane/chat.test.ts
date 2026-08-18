@@ -156,7 +156,7 @@ describe("the compact chat screen", () => {
     }
     const saved: ProposedSkill[] = []
     const root = mount(
-      state({ plan: { say: "", edits: [], skill: proposed } }),
+      state({ plan: { say: "", edits: [], blocks: [], newSheets: [], skill: proposed } }),
       handlers({ onSaveSkill: (skill) => saved.push(skill) }),
     )
 
@@ -226,7 +226,12 @@ describe("the compact chat screen", () => {
     let applied = 0
     const root = mount(
       state({
-        plan: { say: "", edits: [{ sheet: "Main", address: "B6", value: "=SUM(B2:B5)" }] },
+        plan: {
+          say: "",
+          edits: [{ sheet: "Main", address: "B6", value: "=SUM(B2:B5)" }],
+          blocks: [],
+          newSheets: [],
+        },
       }),
       handlers({ onApply: () => (applied += 1) }),
     )

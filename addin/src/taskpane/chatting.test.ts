@@ -4,7 +4,7 @@ import { AiError, askModel, testConnection } from "../ai/client"
 import { DEFAULT_SETTINGS } from "../ai/settings"
 import { createHistory } from "../excel/history"
 import { readWorkbookContext } from "./chat-workbook"
-import { type Chatting, createChatting } from "./chatting"
+import { type Chatting, compactTurns, createChatting } from "./chatting"
 
 vi.mock("../ai/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../ai/client")>()
@@ -391,5 +391,116 @@ describe("message order the server accepts", () => {
     expect(second.filter((message) => message.role === "system")).toHaveLength(1)
     expect(second[0]?.role).toBe("system")
     expect(second.length).toBeGreaterThan(2)
+  })
+})
+
+describe("thread management", () => {
+  it("clears the conversation on /new without calling the server", async () => {
+    const chatting = create()
+    const asked = nextReply()
+    chatting.handlers.onSend("첫 질문")
+    await asked
+    expect(chatting.state().turns.length).toBeGreaterThan(0)
+
+    chatting.handlers.onSend("/new")
+
+    expect(chatting.state().turns).toEqual([])
+    expect(chatting.state().plan).toBeNull()
+    // Given: /new is a command. The second call never happened.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps a short thread exactly as it is", () => {
+    const turns = Array.from({ length: 8 }, (_, index) => ({
+      role: "user" as const,
+      text: `질문 ${index}`,
+    }))
+
+    expect(compactTurns(turns)).toEqual(turns)
+  })
+
+  it("folds an old thread into a summary so it keeps fitting", () => {
+    // Given: every turn is resent on every question, so an unbounded thread eventually
+    // stops fitting and the chat fails on requests that used to work.
+    const turns = Array.from({ length: 30 }, (_, index) => ({
+      role: (index % 2 === 0 ? "user" : "assistant") as "user" | "assistant",
+      text: `턴 ${index}`,
+    }))
+
+    const compacted = compactTurns(turns)
+
+    expect(compacted.length).toBeLessThan(turns.length)
+    expect(compacted[0]?.text).toContain("이전 대화")
+    // The newest turns survive untouched.
+    expect(compacted.at(-1)?.text).toBe("턴 29")
+  })
+})
+
+describe("operating on the workbook", () => {
+  it("creates the sheet, then writes the table into it as one rectangle", async () => {
+    // Given: "tidy this table onto a new sheet" — the request that could not be expressed
+    // before, because a plan could only set one existing cell at a time.
+    const added: string[] = []
+    const written: { address: string; resized: string; rows: unknown }[] = []
+    let missing = true
+    const context = {
+      workbook: {
+        worksheets: {
+          add: (name: string) => {
+            added.push(name)
+            missing = false
+          },
+          getItemOrNullObject: () => ({
+            get isNullObject() {
+              return missing
+            },
+            load: () => {},
+          }),
+          getItem: () => ({
+            getRange: (address: string) => ({
+              address,
+              getResizedRange: (rows: number, columns: number) => ({
+                set formulas(value: unknown) {
+                  written.push({ address, resized: `${rows}x${columns}`, rows: value })
+                },
+              }),
+              set formulas(_value: unknown) {},
+              load: () => {},
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+
+    vi.mocked(askModel).mockResolvedValue(
+      '정리했습니다.\n```json\n{"newSheets":[{"name":"정리"}],"blocks":[{"sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}]}\n```',
+    )
+
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("이 표를 새 시트에 정리해줘")
+    await vi.waitFor(() => expect(chatting.state().plan).not.toBeNull())
+
+    chatting.handlers.onApply()
+    await vi.waitFor(() => expect(chatting.state().plan).toBeNull())
+
+    // Then: the sheet was made before the write, and the table landed in one assignment.
+    expect(added).toEqual(["정리"])
+    expect(written).toHaveLength(1)
+    expect(written[0]?.address).toBe("A1")
+    expect(written[0]?.resized).toBe("1x1")
+    expect(written[0]?.rows).toEqual([
+      ["항목", "금액"],
+      ["대출채권", "1200"],
+    ])
+    expect(chatting.state().turns.at(-1)?.text).toContain("새 시트 1개, 표 1개(2행)")
   })
 })

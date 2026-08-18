@@ -60,7 +60,7 @@ export const renderComposer = (state: ChatState, handlers: ChatHandlers): HTMLEl
   const input = document.createElement("textarea")
   input.className = "composer-input"
   input.rows = 2
-  input.placeholder = "Excel 작업을 요청하거나 /로 스킬을 선택하세요"
+  input.placeholder = "Excel 작업을 요청하거나 /로 스킬 선택, /new로 새 대화"
   input.disabled = state.pending
   input.setAttribute("aria-controls", "chat-skill-menu")
   input.setAttribute("aria-expanded", "false")

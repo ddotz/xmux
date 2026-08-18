@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest"
-import { describeEdit, parsePlan, resolveEdits } from "./plan"
+import { describeApplied, describeEdit, parsePlan, planTouchesWorkbook, resolveEdits } from "./plan"
 import {
   DEFAULT_SETTINGS,
   endpointFor,
@@ -179,21 +179,71 @@ describe("storing the connection", () => {
 
 describe("resolveEdits", () => {
   it("fills the missing sheet with the cell the pane is mirroring", () => {
-    const plan = { say: "", edits: [{ address: "B6", value: "7" }] }
+    const plan = { say: "", edits: [{ address: "B6", value: "7" }], blocks: [], newSheets: [] }
 
     expect(resolveEdits(plan, "Main")).toEqual([{ sheet: "Main", address: "B6", value: "7" }])
   })
 
   it("keeps the sheet the model named", () => {
-    const plan = { say: "", edits: [{ sheet: "Data", address: "B2", value: "=A1" }] }
+    const plan = {
+      say: "",
+      edits: [{ sheet: "Data", address: "B2", value: "=A1" }],
+      blocks: [],
+      newSheets: [],
+    }
 
     expect(resolveEdits(plan, "Main")).toEqual([{ sheet: "Data", address: "B2", value: "=A1" }])
   })
 
   it("drops an edit that names no sheet and has none to fall back to", () => {
     // Given: nothing mirrored yet, so there is no honest place to put it
-    const plan = { say: "", edits: [{ address: "B6", value: "7" }] }
+    const plan = { say: "", edits: [{ address: "B6", value: "7" }], blocks: [], newSheets: [] }
 
     expect(resolveEdits(plan, "")).toEqual([])
+  })
+})
+
+describe("tables and new sheets", () => {
+  it("reads a table as one block instead of a cell at a time", () => {
+    // Given: "tidy this onto a new sheet" is a rectangle, not a list of cells.
+    const plan = parsePlan(
+      '정리했습니다.\n```json\n{"newSheets":[{"name":"정리"}],"blocks":[{"sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}]}\n```',
+    )
+
+    expect(plan.newSheets).toEqual([{ name: "정리" }])
+    expect(plan.blocks).toHaveLength(1)
+    expect(plan.blocks[0]?.rows).toEqual([
+      ["항목", "금액"],
+      ["대출채권", "1200"],
+    ])
+    expect(plan.say).toBe("정리했습니다.")
+  })
+
+  it("drops a sheet name Excel would refuse", () => {
+    // Given: Excel forbids \ / ? * [ ] : outright, and the write would fail halfway.
+    const plan = parsePlan('{"newSheets":[{"name":"2026/2Q"},{"name":"정상"}]}')
+
+    expect(plan.newSheets).toEqual([{ name: "정상" }])
+  })
+
+  it("still reads a plain cell edit", () => {
+    const plan = parsePlan('{"edits":[{"address":"B6","value":"=SUM(A1:A5)"}]}')
+
+    expect(plan.edits).toHaveLength(1)
+    expect(plan.blocks).toEqual([])
+    expect(plan.newSheets).toEqual([])
+  })
+
+  it("counts what the plan does in words the approval step can show", () => {
+    const plan = parsePlan(
+      '{"newSheets":[{"name":"정리"}],"blocks":[{"address":"A1","rows":[["a"],["b"]]}],"edits":[{"address":"B6","value":"1"}]}',
+    )
+
+    expect(describeApplied(plan)).toBe("새 시트 1개, 표 1개(2행), 셀 1건")
+    expect(planTouchesWorkbook(plan)).toBe(true)
+  })
+
+  it("knows when a reply changes nothing", () => {
+    expect(planTouchesWorkbook(parsePlan("그냥 설명입니다."))).toBe(false)
   })
 })

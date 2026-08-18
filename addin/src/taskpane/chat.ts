@@ -65,12 +65,25 @@ const text = (tag: string, className: string, content: string): HTMLElement => {
 const describePlan = (plan: Plan, sheet: string): readonly string[] =>
   plan.edits.map((edit) => describeEdit(edit, sheet))
 
+/**
+ * The log is rebuilt on every redraw, so the browser has nothing to restore and starts at
+ * the top — pressing 적용 threw the user back to the first message they had already read.
+ * The newest turn is what they are looking at, so the log is pinned to the bottom after it
+ * is attached.
+ */
+const stickToBottom = (log: HTMLElement): void => {
+  queueMicrotask(() => {
+    log.scrollTop = log.scrollHeight
+  })
+}
+
 const renderConversation = (state: ChatState): HTMLElement => {
   const log = element("div", "chat-log")
   if (state.turns.length === 0)
     log.append(text("div", "pane-empty chat-empty", "Excel 작업을 자연어로 요청해 보세요."))
   for (const turn of state.turns) log.append(text("div", `turn turn-${turn.role}`, turn.text))
   if (state.pending) log.append(text("div", "turn turn-assistant chat-pending", "답변 작성 중…"))
+  stickToBottom(log)
   return log
 }
 

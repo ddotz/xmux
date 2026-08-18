@@ -1,5 +1,11 @@
 import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
-import { type Plan, parsePlan, resolveEdits } from "../ai/plan"
+import {
+  describeApplied,
+  type Plan,
+  parsePlan,
+  planTouchesWorkbook,
+  resolveEdits,
+} from "../ai/plan"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
 import { readStep } from "../ai/tools"
 import type { History } from "../excel/history"
@@ -34,6 +40,29 @@ export type Chatting = {
 
 /** How many times the model may look at the workbook before it has to answer. */
 const MAX_TOOL_ROUNDS = 6
+
+/**
+ * How much conversation is carried forward.
+ *
+ * Every turn is resent on every question, so a long session eventually exceeds what the
+ * server will accept and the chat starts failing on requests that used to work. Past this
+ * many turns the oldest ones are folded into one summary line and dropped: the thread stays
+ * usable without the user having to notice or intervene.
+ */
+const MAX_CARRIED_TURNS = 20
+const KEPT_AFTER_COMPACTION = 10
+
+/** Fold the oldest turns into a note so the thread keeps its gist but not its bulk. */
+export const compactTurns = (turns: readonly ChatTurn[]): readonly ChatTurn[] => {
+  if (turns.length <= MAX_CARRIED_TURNS) return turns
+  const dropped = turns.slice(0, turns.length - KEPT_AFTER_COMPACTION)
+  const asked = dropped.filter((turn) => turn.role === "user").length
+  const summary: ChatTurn = {
+    role: "assistant",
+    text: `(이전 대화 ${dropped.length}개를 정리했습니다. 사용자 요청 ${asked}건이 있었습니다.)`,
+  }
+  return [summary, ...turns.slice(turns.length - KEPT_AFTER_COMPACTION)]
+}
 
 const sheetOf = (address: string): string => {
   const cut = address.lastIndexOf("!")
@@ -105,7 +134,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
   }
 
   const ask = async (question: string): Promise<void> => {
-    const previous = state.turns
+    const previous = compactTurns(state.turns)
     const attachment = state.selectionAttachment
     const selectedSkillId =
       resolvePromptSkill(question, state.selectedSkillId, state.skills)?.id ?? null
@@ -137,7 +166,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       const plan: Plan = parsePlan(reply)
       set({
         turns: [...state.turns, { role: "assistant", text: plan.say }],
-        plan: plan.edits.length > 0 || plan.skill !== undefined ? plan : null,
+        plan: planTouchesWorkbook(plan) || plan.skill !== undefined ? plan : null,
         pending: false,
       })
     } catch (error) {
@@ -156,12 +185,39 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     const write = async (): Promise<void> => {
       try {
         await deps.run(async (context) => {
+          // A sheet has to exist before anything can be written into it, and creating one
+          // is not undoable through the cell history — there is no prior value to restore.
+          // So sheets are made first, in their own sync, and the history covers the cells.
+          for (const sheet of plan.newSheets) {
+            const existing = context.workbook.worksheets.getItemOrNullObject(sheet.name)
+            existing.load("isNullObject")
+            await context.sync()
+            if (existing.isNullObject) context.workbook.worksheets.add(sheet.name)
+          }
+          if (plan.newSheets.length > 0) await context.sync()
+
           const edits = resolveEdits(plan, fallback)
-          await recordWrite(context, deps.history, `AI 제안 ${edits.length}건`, edits, () => {
+          const label = describeApplied(plan)
+          await recordWrite(context, deps.history, label, edits, () => {
             for (const edit of edits) {
               context.workbook.worksheets.getItem(edit.sheet).getRange(edit.address).formulas = [
                 [edit.value],
               ]
+            }
+            // A block lands as one rectangle: one range assignment instead of one per cell.
+            for (const block of plan.blocks) {
+              const width = Math.max(...block.rows.map((row) => row.length))
+              const padded = block.rows.map((row) => [
+                ...row,
+                ...Array.from({ length: width - row.length }, () => ""),
+              ])
+              const sheetName = block.sheet ?? fallback
+              if (sheetName === "") continue
+              const target = context.workbook.worksheets
+                .getItem(sheetName)
+                .getRange(block.address)
+                .getResizedRange(padded.length - 1, width - 1)
+              target.formulas = padded
             }
           })
         })
@@ -175,7 +231,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         error: null,
         turns: [
           ...state.turns,
-          { role: "assistant", text: `${plan.edits.length}건을 적용했습니다.` },
+          { role: "assistant", text: `${describeApplied(plan)}을 적용했습니다.` },
         ],
       })
     }
@@ -184,6 +240,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
   const handlers: ChatHandlers = {
     onSend: (question) => {
+      // A fresh thread is a command, not a question: nothing is sent to the server.
+      if (question.trim() === "/new") {
+        set({ turns: [], plan: null, error: null, connectionStatus: null })
+        return
+      }
       const anchor = deps.anchor()
       set({ sheet: anchor === null ? state.sheet : sheetOf(anchor.address) })
       void ask(question)
@@ -207,8 +268,13 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       )
       saveLocalSkills(localStorage, localSkills)
       const remainingPlan =
-        state.plan !== null && state.plan.edits.length > 0
-          ? { say: state.plan.say, edits: state.plan.edits }
+        state.plan !== null && planTouchesWorkbook(state.plan)
+          ? {
+              say: state.plan.say,
+              edits: state.plan.edits,
+              blocks: state.plan.blocks,
+              newSheets: state.plan.newSheets,
+            }
           : null
       set({
         skills: [...CHAT_SKILLS, ...localSkills],
