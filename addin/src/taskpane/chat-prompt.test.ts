@@ -45,6 +45,24 @@ describe("inferred chat policy", () => {
     expect(prompt).toContain("조회 없이 바로 진행합니다")
   })
 
+  it("states the answer contract and the multi-step order for complex work", () => {
+    // Given: a request that builds three sheets. Without a contract the model either wrote
+    // one vague sentence or pasted tool output back; without an order it formatted first
+    // and repainted numbers it had not verified yet.
+    const prompt = systemPrompt(null)
+    const headers = prompt.split("\n").filter((line) => line.startsWith("## "))
+
+    expect(headers).toContain("## 최종 답변 형식")
+    expect(headers).toContain("## 여러 단계 작업 순서")
+    expect(prompt).toContain("시트!범위")
+    expect(prompt).toContain("최대 6줄")
+    // Verification precedes formatting, and formatting is last because undo does not cover it.
+    expect(prompt.indexOf("4) 검증")).toBeLessThan(prompt.indexOf("5) 서식"))
+    // The loop's own memory and budget behaviour is disclosed, not left to be discovered.
+    expect(prompt).toContain("이전 결과 생략")
+    expect(prompt).toContain("남은 도구 왕복")
+  })
+
   it("reads as sections, with the reply contract stated last as well as first", () => {
     // Given: 7,000 characters of instructions. A model reading one run-on list loses the
     // middle of it; the headers are what make the rest findable, and the closing lines are

@@ -60,6 +60,15 @@ const UNRUNNABLE_CALL =
 /** Shown when the model finished its work but said nothing about it. */
 const SILENT_ANSWER = "요청하신 작업을 마쳤습니다."
 
+/**
+ * When the model starts being told how much budget is left.
+ *
+ * Every round costs a server turn, and the loop used to cut the model off without warning:
+ * it spent sixteen rounds surveying a workbook and hit OUT_OF_ROUNDS with the build half
+ * done. Told the count, it can land the work and answer instead.
+ */
+const BUDGET_WARNING_ROUNDS = 4
+
 /** Shown when the model has spent its rounds and still will not answer in words. */
 const OUT_OF_ROUNDS =
   "도구 사용 한도에 도달해 작업을 멈췄습니다. 지금까지 반영된 변경은 되돌리기로 취소할 수 있습니다."
@@ -282,6 +291,8 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         // A call this side refused goes back to the model to be rewritten. It is not an
         // answer, and it never reaches the screen.
         if (step.rejected !== null) observations.push(step.rejected)
+        const left = MAX_TOOL_ROUNDS - (round + 1)
+        if (left <= BUDGET_WARNING_ROUNDS) observations.push(`남은 도구 왕복 ${left}회`)
         turns.push({ role: "assistant", content: reply })
         turns.push({ role: "user", content: `실행 결과:\n${observations.join("\n\n")}` })
         reply = await askModel(state.settings, trimObservations(turns))

@@ -952,6 +952,29 @@ describe("working through a batch of tool calls", () => {
     expect(said).toContain("멈췄습니다")
   })
 
+  it("tells the model how much budget is left before it runs out", async () => {
+    // Given: a model that keeps surveying. It used to be cut off mid-build with no warning;
+    // told the remaining count it can land the work and answer.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue('{"tool":"used_range","sheet":"정리"}')
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("계속 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // The observation is the last message of each request; the system prompt also mentions
+    // the budget line, so only the observation itself is worth asserting on.
+    const observations = vi
+      .mocked(askModel)
+      .mock.calls.map((call) => call[1].at(-1)?.content ?? "")
+      .filter((content) => content.startsWith("실행 결과:"))
+    // Early rounds carry no budget line; the last ones do, counting down to zero.
+    expect(observations[0] ?? "").not.toContain("남은 도구 왕복")
+    expect(observations.at(-1) ?? "").toContain("남은 도구 왕복 0회")
+    // And it never reaches the user.
+    expect(chatting.state().turns.at(-1)?.text ?? "").not.toContain("남은 도구 왕복")
+  })
+
   it("says it stopped instead of printing raw JSON when the rounds run out", async () => {
     // Given: a model that never stops asking for tools. The turn has to end in words.
     const book = workbook()

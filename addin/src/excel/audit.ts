@@ -39,6 +39,13 @@ const areaFor = async (
   return range.isNullObject ? null : range
 }
 
+/**
+ * `range.address` already carries the sheet (`지점요약!A1:B6`), so pairing it with
+ * `sheet.name` printed the name twice in every scan result the model reads.
+ */
+const where = (sheet: InspectSheet, range: InspectRange): string =>
+  range.address.includes("!") ? range.address : `${sheet.name}!${range.address}`
+
 const tooWide = (range: InspectRange): string =>
   `${range.address}는 ${range.cellCount}칸이라 한 번에 검사하기에 너무 넓습니다. ${MAX_SCAN_CELLS}칸 이하로 나눠서 요청하세요.`
 
@@ -64,8 +71,8 @@ const findErrors = async (
     })
   })
   return hits.length === 0
-    ? `${sheet.name} ${range.address}에 오류 셀이 없습니다.`
-    : `${sheet.name} ${range.address}의 오류 셀 ${hits.length}개:\n${hits.join("\n")}`
+    ? `${where(sheet, range)}에 오류 셀이 없습니다.`
+    : `${where(sheet, range)}의 오류 셀 ${hits.length}개:\n${hits.join("\n")}`
 }
 
 /**
@@ -107,8 +114,8 @@ const findHardcoded = async (
     )
   }
   return findings.length === 0
-    ? `${sheet.name} ${range.address}의 계산 열에 손으로 넣은 값이 없습니다.`
-    : `${sheet.name} ${range.address}에서 수식 열에 값이 직접 들어간 곳:\n${findings.join("\n")}`
+    ? `${where(sheet, range)}의 계산 열에 손으로 넣은 값이 없습니다.`
+    : `${where(sheet, range)}에서 수식 열에 값이 직접 들어간 곳:\n${findings.join("\n")}`
 }
 
 /** Formulas reaching into another workbook — what breaks when the file is sent on. */
@@ -134,8 +141,8 @@ const findLinks = async (
     })
   })
   return hits.length === 0
-    ? `${sheet.name} ${range.address}에 다른 통합 문서 참조가 없습니다.`
-    : `${sheet.name} ${range.address}의 외부 참조 ${hits.length}개:\n${hits.join("\n")}`
+    ? `${where(sheet, range)}에 다른 통합 문서 참조가 없습니다.`
+    : `${where(sheet, range)}의 외부 참조 ${hits.length}개:\n${hits.join("\n")}`
 }
 
 const listNames = async (context: InspectContext): Promise<string> => {
@@ -198,7 +205,7 @@ const columnStats = async (
     (stat) =>
       `${stat.letter}열: 숫자 ${number(stat.count)} · 값 ${number(stat.filled)} · 빈칸 ${number(stat.blank)} · 합계 ${number(stat.sum)} · 평균 ${number(stat.average)} · 최소 ${number(stat.min)} · 최대 ${number(stat.max)}`,
   )
-  return `${sheet.name} ${range.address} (${range.rowCount}행)\n${lines.join("\n")}`
+  return `${where(sheet, range)} (${range.rowCount}행)\n${lines.join("\n")}`
 }
 
 /**

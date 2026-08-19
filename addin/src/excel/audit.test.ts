@@ -160,6 +160,20 @@ describe("runAuditTool", () => {
     expect(answer).toContain("예산.xlsx")
   })
 
+  it("names the sheet once, not twice, in what the model reads", async () => {
+    // Given: Excel returns sheet-qualified addresses (`Main!B2:D5`). Pairing that with the
+    // sheet name printed "Main Main!B2:D5" in every scan result the model has to read.
+    const book = workbook()
+
+    const answer = await runAuditTool(book.context, book.sheet, {
+      tool: "find_errors",
+      sheet: "Main",
+    })
+
+    expect(answer).toContain("Main!B2:D5")
+    expect(answer).not.toContain("Main Main")
+  })
+
   it("lists defined names with their scope and what they point at", async () => {
     const book = workbook()
 
