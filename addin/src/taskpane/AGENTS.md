@@ -32,7 +32,7 @@ DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `
 | Cell appearance, editor, focus outline | `sheet.ts` (`focusClasses`, `baseCellClass`, `editorNode`) |
 | Selection event storms / stale refreshes | `selection-refresh.ts` |
 | New chat handler | `chat.ts` `ChatHandlers` → `chatting.ts` `handlers` → renderer in `chat-controls.ts` |
-| What the model is told | `chat-prompt.ts` (`systemPrompt`, `assistantPolicy`), payload in `chat-context.ts` |
+| What the model is told | `chat-prompt.ts` (`systemPrompt`, `assistantPolicy`), payload in `chat-context.ts` — harness layout: named section constants (PROTOCOL, EXAMPLE with a wire-format episode, CONTEXT_SPEC, tool catalogs, domain rules) composed by `section()` |
 | New built-in skill | `chat-skills.ts` `CHAT_SKILLS` + icon case in `chat-skill-ui.ts` `iconForSkill` |
 | Keyboard shortcut on the sheet tab | `reference-keys.ts` then `tabs.ts` `SHEET_SHORTCUTS` (a11y string) |
 | Markup ids, host chrome safe area | `index.html` + `accessibility.test.ts` (asserts CSS custom props too) |

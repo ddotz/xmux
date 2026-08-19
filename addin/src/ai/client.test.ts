@@ -22,6 +22,16 @@ const answering = (body: unknown, status = 200) => {
 const reply = { choices: [{ message: { role: "assistant", content: "  네, B6에 넣겠습니다.  " } }] }
 
 describe("askModel", () => {
+  it("turns a 200 that is not JSON into an AiError, not a raw SyntaxError", async () => {
+    // Given: a proxy answering with an HTML error page and a happy status code. The raw
+    // SyntaxError from response.json() escaped everything and froze the pane on pending.
+    const { fetcher } = answering("<html>Bad Gateway</html>")
+
+    await expect(askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)).rejects.toThrow(
+      AiError,
+    )
+  })
+
   it("returns what the model said, without the padding around it", async () => {
     const { fetcher } = answering(reply)
 

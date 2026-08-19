@@ -227,6 +227,16 @@ describe("runDataTool", () => {
   it("turns each filter shape into the criteria Excel expects", async () => {
     const book = workbook()
 
+    // A filter naming a column but no criteria used to reach Excel as an empty Custom
+    // criterion and come back as an opaque English error.
+    const refused = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "filter_range",
+      address: "A1:D99",
+      column: 2,
+    })
+    expect(refused).toContain("values, criterion, top")
+    expect(book.performed).toEqual([])
+
     await runDataTool(book.context, createHistory(), book.sheet, {
       tool: "filter_range",
       address: "A1:D99",

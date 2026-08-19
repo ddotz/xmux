@@ -13,6 +13,11 @@ const workbook = () => {
   const added: string[] = []
   const performed: string[] = []
   let existingSheet = true
+  let replacements = 3
+  const conditional: { criteria?: unknown } = {}
+  // What a whole-column used range answers, which is how a fill learns whether it covered
+  // the data it reads.
+  let columnUsed: string | null = "Main!A1:A19"
 
   // One column or row, with the width Excel would report for it.
   const sized = (label: string, size: number) => ({
@@ -36,6 +41,7 @@ const workbook = () => {
   const makeRange = (address: string) => {
     const range = {
       address,
+      isNullObject: false,
       rowCount: 2,
       columnCount: 3,
       formulas: [["기존"]] as unknown[][],
@@ -55,6 +61,8 @@ const workbook = () => {
         const resized = makeRange(`${address}:resized(${rows},${columns})`)
         return resized
       },
+      getUsedRangeOrNullObject: () =>
+        columnUsed === null ? { ...makeRange(address), isNullObject: true } : makeRange(columnUsed),
       getColumn: (index: number) => sized(`${address}#col${index}`, 8.43 + index),
       getRow: (index: number) => sized(`${address}#row${index}`, 15 + index),
       insert: (shift: string) => performed.push(`insert ${address} ${shift}`),
@@ -69,11 +77,34 @@ const workbook = () => {
         ),
       moveTo: (destination: { address: string }) =>
         performed.push(`moveTo ${address} -> ${destination.address}`),
+      autoFill: (destination: { address: string }, type: string) =>
+        performed.push(`autoFill ${address} -> ${destination.address} ${type}`),
       delete: (shift: string) => performed.push(`delete ${address} ${shift}`),
       clear: (applyTo?: string) => performed.push(`clear ${address} ${applyTo}`),
       sort: {
         apply: (fields: readonly unknown[], _matchCase: boolean, hasHeaders: boolean) =>
           performed.push(`sort ${address} ${JSON.stringify(fields)} headers=${hasHeaders}`),
+      },
+      replaceAll: (find: string, replace: string) => {
+        performed.push(`replaceAll ${address} ${find}->${replace}`)
+        return { value: replacements }
+      },
+      conditionalFormats: {
+        add: (type: string) => {
+          performed.push(`conditionalFormat ${address} ${type}`)
+          return {
+            cellValue: { format: { fill: { color: "" }, font: { color: "" } }, rule: {} },
+            colorScale: {
+              set criteria(value: unknown) {
+                conditional.criteria = value
+              },
+              get criteria() {
+                return conditional.criteria
+              },
+            },
+            dataBar: {},
+          }
+        },
       },
     }
     Object.defineProperty(range, "formulas", {
@@ -130,6 +161,13 @@ const workbook = () => {
     setMissing: () => {
       existingSheet = false
     },
+    setColumnUsed: (address: string | null) => {
+      columnUsed = address
+    },
+    setReplacements: (count: number) => {
+      replacements = count
+    },
+    conditional,
     sheet,
   }
 }
@@ -223,7 +261,7 @@ describe("runWrite", () => {
     expect(book.performed).toEqual([
       "insert 3:5 Down",
       "delete A3:C3 Up",
-      'sort A1:D20 [{"key":1,"ascending":false}] headers=true',
+      'sort A1:D20 [{"key":0,"ascending":false}] headers=true',
     ])
     expect(history.last()).not.toBeNull()
   })
@@ -280,6 +318,58 @@ describe("runWrite", () => {
     expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values transpose=true"])
   })
 
+  it("reports how many cells a replace actually changed", async () => {
+    const book = workbook()
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "find_replace",
+      address: "A1:D99",
+      find: "구지점",
+      replace: "신지점",
+    })
+
+    expect(book.performed).toEqual(["replaceAll A1:D99 구지점->신지점"])
+    expect(answer).toContain("3건")
+    expect(history.last()).not.toBeNull()
+  })
+
+  it("says a replace found nothing instead of claiming it worked", async () => {
+    // Given: a find text with a typo. Zero replacements used to read exactly like fifty,
+    // and the model reported the rename done.
+    const book = workbook()
+    book.setReplacements(0)
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "find_replace",
+      address: "A1:D99",
+      find: "없는말",
+      replace: "신지점",
+    })
+
+    expect(answer).toContain("찾지 못해")
+    // And: an undo entry for a write that changed nothing would mislabel the button.
+    expect(history.last()).toBeNull()
+  })
+
+  it("gives a colour scale real criteria, not an empty rule", async () => {
+    const book = workbook()
+
+    await runWrite(book.context, createHistory(), {
+      tool: "conditional_format",
+      address: "B2:B20",
+      kind: "colorScale",
+      fill: "#FF0000",
+    })
+
+    expect(book.performed).toEqual(["conditionalFormat B2:B20 ColorScale"])
+    expect(book.conditional.criteria).toEqual({
+      minimum: { type: "LowestValue", color: "#FFFFFF" },
+      maximum: { type: "HighestValue", color: "#FF0000" },
+    })
+  })
+
   it("inserts columns to the right of the range it was given", async () => {
     const book = workbook()
 
@@ -320,6 +410,37 @@ describe("runWrite", () => {
 
     expect(book.performed).toEqual([])
     expect(answer).toContain("순환참조")
+  })
+
+  it("tells the model when a filled column skipped the first row of its data", async () => {
+    // Given: a list with no header. The model wrote a header and started the formula on
+    // row 2, so the user's first line has no result and the last filled row reads nothing.
+    const book = workbook()
+
+    const answer = await runWrite(book.context, createHistory(), {
+      tool: "fill_formula",
+      anchor: "B2",
+      address: "B2:B20",
+      formula: '=IF(A2="","",A2)',
+    })
+
+    expect(answer).toContain("채웠습니다")
+    expect(answer).toContain("A1의 결과가 없고")
+    expect(answer).toContain("1행부터 다시 채우세요")
+  })
+
+  it("says nothing extra when the fill covers its source exactly", async () => {
+    const book = workbook()
+    book.setColumnUsed("Main!A1:A20")
+
+    const answer = await runWrite(book.context, createHistory(), {
+      tool: "fill_formula",
+      anchor: "B2",
+      address: "B2:B20",
+      formula: '=IF(A2="","",A2)',
+    })
+
+    expect(answer).not.toContain("다만")
   })
 
   it("still writes the formulas that read their neighbours", async () => {

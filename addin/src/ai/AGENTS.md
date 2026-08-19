@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-Five pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-schemas.ts` says what may be asked of the workbook, `tools.ts` reads the reply as tool calls, `plan.ts` reads it as a proposal, `settings.ts` holds the connection. No Office.js here.
+Six pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-schemas.ts` says what may be asked of the workbook, `loose-json.ts` reads what the model wrote as JSON, `tools.ts` reads the reply as tool calls, `plan.ts` reads it as a proposal, `settings.ts` holds the connection. No Office.js here.
 
 ## MODULES
 
@@ -10,6 +10,7 @@ Five pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-
 |---|---|---|
 | `client.ts` | 5 | `askModel`, `testConnection`, `conversationFor`, `AiError`, `ChatMessage` |
 | `tool-schemas.ts` | 40+ | one zod schema per operation, `toolCallSchema`, `WRITE_TOOLS`, `isWrite`, `ToolCall` |
+| `loose-json.ts` | 2 | `parseLoose`, `repairJson`: strict JSON first, then the dialect models actually write |
 | `tools.ts` | 7 | `readSteps`, `describeCall`, `renderGrid`, and the budgets (`MAX_CALLS_PER_REPLY` 8, `MAX_TOOL_ROUNDS` 16, `MAX_TOOL_CELLS` 500) |
 | `plan.ts` | 6 | `parsePlan`, `describeEdit`, `resolveEdits`, `Plan`, `ProposedEdit`, `ProposedSkill` |
 | `settings.ts` | 10 | schema, defaults, `loadSettings`/`saveSettings`, `settingsProblem`, `endpointFor`, `redactKey`, `maskKey` |
@@ -25,9 +26,11 @@ Every function takes its dependency as an argument: `fetcher: typeof fetch = fet
 - Reply read by `textOf`: `choices[0].message.content` only. Anything else is `AiError("AI 응답을 이해하지 못했습니다.")`.
 - `settingsProblem` runs before the fetch, so a missing key never becomes a 401 round trip.
 - `testConnection` is `askModel` with `temperature: 0, maxTokens: 1` and one throwaway turn.
+- **A reply is read through `parseLoose`, not `JSON.parse`.** Strict parsing is tried first and only its failure reaches the repair scanner, which rebuilds single and typographic quotes, Python literals, trailing commas, bare keys, `//` notes, and the unescaped `""` an Excel formula is full of (`"formula":"=IF(A2="","",A2)"`). A quote inside a value ends the string only when what follows it could follow a string, and valid JSON can never put a quote directly after the one that closed a value — so the pair rule can only fire on text that was already broken. What cannot be rebuilt stays a failure; no call is guessed into a different call.
 - `parsePlan` takes the last fenced ```` ```json ```` block, else the first `{` to last `}`. Bad JSON or a failed `planSchema.safeParse` degrades to `{ say: reply.trim(), edits: [] }`: prose survives, the block is dropped, nothing throws.
 - An edit is `{ sheet?, address, value }`; omitted `sheet` means the mirrored sheet, filled by `resolveEdits(plan, fallbackSheet)`, which also drops empty sheet names. A `skill` proposal is length-bounded (name ≤64, label ≤80, description ≤240, instructions ≤4000, ≤20 triggers).
-- **Tool calls are the working path; the plan is the fallback.** `readSteps` takes the last fenced block, else the widest span from the first `{`/`[` to the last `}`/`]`, and validates it against `toolCallSchema` — one object, or an array run in order and cut at the first element that does not validate. Anything that is not a tool call is the answer, including a plan and including broken JSON: the loop must never stall on a parse failure.
+- **Tool calls are the working path; the plan is the fallback.** `readSteps` takes the last fenced block, else every span from an opening `{`/`[` to the last `}`/`]` (widest first, 12 max) and runs the first that parses — prose containing `- [x]` opens a span that is not JSON in any dialect, and the call after it still is. The result is validated against `toolCallSchema` — one object, or an array run in order and cut at the first element that does not validate. A batch past `MAX_CALLS_PER_REPLY` is cut at the cap **and the cut is reported** in `rejected`, so the model never reports unrun calls as done. Anything that is not a tool call is the answer, including a plan and including broken JSON: the loop must never stall on a parse failure.
+- A block that carries a `tool` key in any quoting (`TOOL_KEY`, shared with `containsToolCall`) and still will not parse comes back as a rejection, never as an answer: `길이 제한` when it stops mid-value, and the escaping rule with a worked `fill_formula` example when it closes.
 - Writes land as the model asks for them (`excel/operate.ts`), reads answer from `excel/inspect.ts`, and each call's Korean one-liner (`describeCall`) is what the pane shows while the turn works.
 - **Approval gate lives in `taskpane/chatting.ts`.** `ask()` only stores the plan in state; the write happens in `apply()`, reached solely through `onApply`, and goes through `recordWrite` so it lands in the undo history. `onDiscard` throws it away. Skills wait for `onSaveSkill`. That path is only reached by a model that answers in the old proposal shape; `chat-prompt.ts` pins `writes: "direct"` and teaches the tools instead.
 

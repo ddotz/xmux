@@ -38,6 +38,7 @@ xmux/
 | What the pane renders | `addin/src/taskpane/view.ts`, `sheet.ts` | pure; no Excel I/O |
 | Pane bootstrap + selection mirror | `addin/src/taskpane/main.ts` | 305 LOC; the only `Excel.run` caller |
 | Chat / AI request path | `taskpane/chatting.ts` → `ai/client.ts` | tool schemas in `ai/tool-schemas.ts` |
+| Model reply → tool calls | `ai/tools.ts` → `ai/loose-json.ts` | strict JSON first, then the dialect models write |
 | Add an operation the assistant can do | `ai/tool-schemas.ts` → `excel/data-tools.ts` or `excel/operate.ts` → `taskpane/chat-prompt.ts` | all three, or the tool does not exist |
 | Pane state shape | `addin/src/model.ts` | `PaneState` / `ViewportState` unions |
 | Native editor state | `addin/src/companion.ts` | polls `/xmux/state`, optional by design |
@@ -58,7 +59,7 @@ xmux/
 | assistant tool schemas | module | `ai/tool-schemas.ts` | 5 | 48 zod-validated operations; `isWrite` is a type guard splitting read from write |
 | selection refresh | module | `taskpane/selection-refresh.ts` | 3 | 14 exports — highest export count in repo |
 
-Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-test TS.
+Exports by domain: taskpane 106, excel 50, formula 22, ai 23. ~7k LOC of non-test TS.
 
 ## CONVENTIONS
 
@@ -85,6 +86,8 @@ Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-tes
 - **Never blank the pane on a transient failure.** The last good render is what the user is
   reading; degrade in place.
 - **Never inject workbook text as markup.** `textContent` only (`view.ts`).
+- **Never read a model reply with bare `JSON.parse`.** Use `ai/loose-json.ts`; a refused parse
+  is how a tool call ends up printed at the user as if it were an answer.
 - **Never load an unbounded reference.** Clamp `B:B`-style refs against the used range; AI
   context stays within 72 cells / 4,000 chars and falls back to statistics.
 - **Never place a control in the top-right 56 px.** That is Office host chrome safe area.
@@ -96,7 +99,7 @@ Exports by domain: taskpane 106, excel 46, formula 22, ai 21. ~7k LOC of non-tes
 cd addin && pnpm install
 pnpm dev                  # bare vite: HTTPS dev server on :3927, certs auto-trusted
 pnpm manifest:dev         # regenerate manifest.xml — `pnpm dev` does NOT do this
-pnpm test                 # vitest run — 47 test files
+pnpm test                 # vitest run — 49 test files
 pnpm typecheck            # tsc --noEmit
 pnpm check                # biome check .
 pnpm build                # typecheck + vite build → addin/dist/

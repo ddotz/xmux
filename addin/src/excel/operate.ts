@@ -1,9 +1,11 @@
 import { isWrite, type ToolCall } from "../ai/tool-schemas"
-import { parseArea } from "./address"
+import { columnLetters, parseArea } from "./address"
 import { runDataTool } from "./data-tools"
+import { alignmentNote, fillSource } from "./fill-alignment"
 import type { History } from "./history"
 import { snapshotLayout, snapshotRange } from "./history"
-import type { OperateContext, OperateSheet } from "./office-shapes"
+import type { OperateContext, OperateRange, OperateSheet } from "./office-shapes"
+import { splitQualified } from "./resolve"
 import { areaWritten, selfReference } from "./self-reference"
 
 /**
@@ -32,6 +34,58 @@ const sheetFor = async (
   sheet.load("isNullObject, name")
   await context.sync()
   return sheet.isNullObject ? null : sheet
+}
+
+/**
+ * Whether a filled column covers the data it reads, in one line for the model.
+ *
+ * The check is advice and never part of the write: a host that cannot answer it costs a
+ * hint, not the fill that already landed. The only reads are the source column's used
+ * range — an address, not its cells — and the cells at each end of it, which is what lets
+ * the model tell a header from a record, and a totals line from a row it forgot, without
+ * spending a round asking.
+ */
+const fillNote = async (
+  context: OperateContext,
+  sheet: OperateSheet,
+  call: Extract<ToolCall, { tool: "fill_formula" }>,
+): Promise<string | null> => {
+  try {
+    const fill = parseArea(call.address)
+    const anchor = parseArea(call.anchor)
+    if (fill === null || anchor === null) return null
+    const source = fillSource(call.formula, sheet.name, fill)
+    if (source === null) return null
+
+    const letters = columnLetters(source.column)
+    const used = sheet.getRange(`${letters}:${letters}`).getUsedRangeOrNullObject(true)
+    used.load("isNullObject, address")
+    await context.sync()
+    if (used.isNullObject) return null
+    const area = parseArea(splitQualified(used.address).local)
+    if (area === null) return null
+
+    const span = { top: area.top, bottom: area.top + area.height - 1 }
+    const first = sheet.getRange(`${letters}${span.top}`)
+    const last = sheet.getRange(`${letters}${span.bottom}`)
+    first.load("formulas")
+    last.load("formulas")
+    await context.sync()
+    const held = (range: OperateRange): string | null => {
+      const text = String(range.formulas[0]?.[0] ?? "").trim()
+      return text === "" ? null : text.slice(0, 40)
+    }
+    return alignmentNote({
+      column: source.column,
+      fill: { top: fill.top, bottom: fill.top + fill.height - 1 },
+      delta: source.row - anchor.top,
+      source: span,
+      head: held(first),
+      tail: held(last),
+    })
+  } catch {
+    return null
+  }
 }
 
 /** Pad ragged rows so Excel receives a true rectangle. */
@@ -256,8 +310,10 @@ export const runWrite = async (
     }
 
     if (call.tool === "sort_range") {
+      // The schema counts columns from 1, the way every other tool here does; Excel's
+      // sort key counts from 0 within the range.
       target.sort.apply(
-        [{ key: call.column, ascending: call.ascending ?? true }],
+        [{ key: call.column - 1, ascending: call.ascending ?? true }],
         false,
         call.hasHeaders ?? true,
       )
@@ -278,7 +334,10 @@ export const runWrite = async (
       anchor.autoFill(target, "FillDefault")
       await context.sync()
       history.push({ label: `${sheet.name}!${call.address} 수식 채우기`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}에 ${call.formula}을 채웠습니다.`
+      // A column that skips the first row of its source looks finished and is not; what to
+      // do about it is the model's call, but it has to be told.
+      const note = await fillNote(context, sheet, call)
+      return `${sheet.name}!${call.address}에 ${call.formula}을 채웠습니다.${note === null ? "" : ` ${note}`}`
     }
 
     if (call.tool === "merge_cells") {
@@ -329,6 +388,14 @@ export const runWrite = async (
           operator: call.operator ?? "GreaterThan",
         }
       }
+      // A colour scale with no criteria is a rule Excel may refuse or render as nothing.
+      // The shape declared `colorScale.criteria` from the start; it was never set.
+      if (call.kind === "colorScale") {
+        added.colorScale.criteria = {
+          minimum: { type: "LowestValue", color: "#FFFFFF" },
+          maximum: { type: "HighestValue", color: call.fill ?? "#5B9BD5" },
+        }
+      }
       await context.sync()
       return `${sheet.name}!${call.address}에 조건부 서식을 넣었습니다. (되돌리기에 포함되지 않습니다)`
     }
@@ -341,13 +408,18 @@ export const runWrite = async (
     }
 
     if (call.tool === "find_replace") {
-      target.replaceAll(call.find, call.replace, {
+      const replaced = target.replaceAll(call.find, call.replace, {
         completeMatch: false,
         matchCase: call.matchCase ?? false,
       })
       await context.sync()
+      // Zero replacements used to read exactly like fifty: the model reported the change
+      // done and the user found the old text still there. The count is the answer.
+      if (replaced.value === 0) {
+        return `${sheet.name}!${call.address}에서 "${call.find}"을 찾지 못해 아무것도 바꾸지 않았습니다. 철자와 범위를 확인하세요.`
+      }
       history.push({ label: `${sheet.name}!${call.address} 바꾸기`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}에서 "${call.find}"을 "${call.replace}"로 바꿨습니다.`
+      return `${sheet.name}!${call.address}에서 "${call.find}"을 "${call.replace}"로 ${replaced.value}건 바꿨습니다.`
     }
 
     target.format.autofitColumns()

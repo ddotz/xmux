@@ -1,4 +1,5 @@
 import type { ZodError } from "zod"
+import { parseLoose } from "./loose-json"
 import type { ToolCall } from "./tool-schemas"
 import { toolCallSchema } from "./tool-schemas"
 
@@ -44,21 +45,39 @@ export const MAX_TOOL_ROUNDS = 16
 const FENCE = /```(?:json)?\s*([\s\S]*?)```/g
 
 /**
- * The last fenced block, else the widest JSON span in the prose.
+ * The `tool` key, however the model quoted it.
+ *
+ * `"tool":` was the only spelling this looked for, so a reply written in Python's dialect —
+ * `[{'tool': 'fill_formula', …}]` — was not recognised as an attempted call at all, and the
+ * user read the call instead of seeing it run.
+ */
+const TOOL_KEY = /["'\u2018\u2019\u201c\u201d]?tool["'\u2018\u2019\u201c\u201d]?\s*:/
+
+/** How many openings in one reply are worth trying before giving up on it. */
+const MAX_SPANS = 12
+
+/**
+ * The last fenced block, else every JSON span in the prose, widest first.
  *
  * `parsePlan` looks for a brace pair, because a plan is always an object. A step may also be
- * an array of calls, and models drop the fence as often as they keep it, so the span runs
- * from whichever of `{` or `[` comes first to whichever of `}` or `]` comes last.
+ * an array of calls, and models drop the fence as often as they keep it, so a span runs from
+ * an opening bracket to whichever of `}` or `]` comes last.
+ *
+ * There is more than one candidate because prose has brackets in it too. A reply that
+ * explains itself with `- [x]` before writing its call opens the widest span inside a
+ * sentence, and that span is not JSON in any dialect. The call after it still is.
  */
-const lastJsonBlock = (reply: string): string | null => {
-  const blocks = [...reply.matchAll(FENCE)].map((match) => match[1])
-  const fenced = blocks.at(-1)
-  if (fenced !== undefined) return fenced.trim()
-  const opens = [reply.indexOf("{"), reply.indexOf("[")].filter((at) => at >= 0)
-  if (opens.length === 0) return null
-  const open = Math.min(...opens)
+const jsonBlocks = (reply: string): readonly string[] => {
+  const fenced = [...reply.matchAll(FENCE)].map((match) => match[1]).at(-1)
+  if (fenced !== undefined) return [fenced.trim()]
   const close = Math.max(reply.lastIndexOf("}"), reply.lastIndexOf("]"))
-  return close > open ? reply.slice(open, close + 1) : null
+  if (close < 0) return []
+  const spans: string[] = []
+  for (let at = 0; at < close && spans.length < MAX_SPANS; at += 1) {
+    const ch = reply[at]
+    if (ch === "{" || ch === "[") spans.push(reply.slice(at, close + 1))
+  }
+  return spans
 }
 
 /**
@@ -84,26 +103,36 @@ const rejection = (candidate: { readonly tool: unknown }, error: ZodError): stri
   return `${String(candidate.tool)} 호출은 형식이 맞지 않아 실행하지 못했습니다: ${issues.join(", ")}${more}. 고쳐서 다시 보내세요.`
 }
 
+/** A block that stops mid-value ran out of room; one that closes was merely written wrong. */
+const unreadable = (block: string): string => {
+  const tail = block.trimEnd().at(-1)
+  return tail === "}" || tail === "]"
+    ? 'JSON 형식이 잘못돼 실행하지 못했습니다. 키와 값은 큰따옴표로 감싸고, 수식 안의 큰따옴표는 \\" 로 이스케이프하세요. 예: {"tool":"fill_formula","anchor":"B2","address":"B2:B20","formula":"=IF(A2=\\"\\",\\"\\",A2)"}'
+    : "JSON이 완결되지 않아 실행하지 못했습니다. 길이 제한에 걸린 것 같습니다. 한 번에 더 적은 행·더 적은 호출로 나눠 보내세요."
+}
+
 export const readSteps = (reply: string): ModelStep => {
-  const block = lastJsonBlock(reply)
-  if (block === null) return { kind: "answer" }
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(block)
-  } catch {
-    // Broken JSON that was plainly meant to be a call is usually a reply that ran out of
-    // room mid-table. Telling the model that is worth a round; treating it as the answer
-    // wastes the turn and shows the user nothing.
-    return /"tool"\s*:/.test(block)
-      ? {
-          kind: "calls",
-          calls: [],
-          rejected:
-            "JSON이 완결되지 않아 실행하지 못했습니다. 길이 제한에 걸린 것 같습니다. 한 번에 더 적은 행·더 적은 호출로 나눠 보내세요.",
-        }
+  const blocks = jsonBlocks(reply)
+  const widest = blocks[0]
+  if (widest === undefined) return { kind: "answer" }
+  let read: { readonly value: unknown } | null = null
+  for (const block of blocks) {
+    read = parseLoose(block)
+    if (read !== null) break
+  }
+  if (read === null) {
+    // JSON that was plainly meant to be a call is a reply that ran out of room, or one
+    // quoted in a dialect too far gone to rebuild. Telling the model that is worth a round;
+    // treating it as the answer wastes the turn and puts raw JSON on the screen.
+    return TOOL_KEY.test(widest)
+      ? { kind: "calls", calls: [], rejected: unreadable(widest) }
       : { kind: "answer" }
   }
+  const parsed = read.value
   const candidates = Array.isArray(parsed) ? parsed.slice(0, MAX_CALLS_PER_REPLY) : [parsed]
+  // A batch cut at the cap used to be cut silently: the model watched eight results come
+  // back, assumed the rest ran too, and told the user the work was done.
+  const overflow = Array.isArray(parsed) ? Math.max(0, parsed.length - MAX_CALLS_PER_REPLY) : 0
   const calls: ToolCall[] = []
   let rejected: string | null = null
   for (const candidate of candidates) {
@@ -115,6 +144,10 @@ export const readSteps = (reply: string): ModelStep => {
     // A plan (`{"edits":[…]}`) is not a failed tool call, it is the other reply shape.
     if (isAttemptedCall(candidate)) rejected = rejection(candidate, call.error)
     break
+  }
+  if (overflow > 0) {
+    const cut = `호출이 ${MAX_CALLS_PER_REPLY}개를 넘어 앞의 ${MAX_CALLS_PER_REPLY}개만 실행했습니다. 나머지 ${overflow}개는 실행되지 않았으니 결과를 확인한 뒤 이어서 보내세요.`
+    rejected = rejected === null ? cut : `${rejected} ${cut}`
   }
   return calls.length === 0 && rejected === null
     ? { kind: "answer" }
@@ -129,8 +162,8 @@ export const readSteps = (reply: string): ModelStep => {
  * how the user ends up reading raw JSON.
  */
 export const containsToolCall = (reply: string): boolean => {
-  const block = lastJsonBlock(reply)
-  return block !== null && /"tool"\s*:/.test(block)
+  const widest = jsonBlocks(reply)[0]
+  return widest !== undefined && TOOL_KEY.test(widest)
 }
 
 const place = (sheet: string | undefined, address: string): string =>

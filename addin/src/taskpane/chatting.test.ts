@@ -202,6 +202,19 @@ describe("chat safety and connection errors", () => {
     expect(chatting.state().error).not.toContain("sk-secret")
   })
 
+  it("ends the turn as text when the failure is not an AiError", async () => {
+    // Given: a bug or an unexpected shape, not a server error. Rethrowing from inside
+    // `void ask()` reached nobody; pending stayed true and the composer stayed disabled.
+    vi.mocked(askModel).mockRejectedValue(new Error("unexpected shape"))
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+
+    chatting.handlers.onSend("요약해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().error).toContain("unexpected shape")
+  })
+
   it("does not claim a failed proposal write was applied", async () => {
     vi.mocked(askModel).mockResolvedValue(
       '합계\n```json {"edits":[{"sheet":"Main","address":"B6","value":"=SUM(B2:B5)"}]} ```',
@@ -796,6 +809,8 @@ describe("working through a batch of tool calls", () => {
         },
         load: () => {},
         getResizedRange: () => range(`${address}#`),
+        getUsedRangeOrNullObject: () => range("정리!A1:A19"),
+        autoFill: () => {},
         insert: () => {},
         delete: () => {},
         clear: () => {},
@@ -876,6 +891,30 @@ describe("working through a batch of tool calls", () => {
     const observation = second.at(-1)?.content ?? ""
     expect(observation).toContain("[1] 정리 시트 만들기")
     expect(observation).toContain("[2] 정리!A1 표 입력 (1행)")
+  })
+
+  it("runs a call the model quoted in Python's dialect instead of printing it", async () => {
+    // Given: the reply that reached the screen as text. Single quotes are not JSON, the
+    // call was never recognised, and the user read the model's working notes.
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        "[{'tool': 'fill_formula', 'anchor': 'B2', 'address': 'B2:B20', " +
+          "'formula': '=IF(A2=\"\",\"\",MID(A2,7,LEN(A2)))'}]",
+      )
+      .mockResolvedValueOnce("B열에 분리한 텍스트를 채웠습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("자료 분리해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.written).toEqual([[['=IF(A2="","",MID(A2,7,LEN(A2)))']]])
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toBe("B열에 분리한 텍스트를 채웠습니다.")
+    expect(said).not.toContain("fill_formula")
+    // And the fill that started below its data came back as something to fix.
+    const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
+    expect(second.at(-1)?.content).toContain("A1의 결과가 없고")
   })
 
   it("never puts a tool call on screen, and tells the model how to fix it", async () => {

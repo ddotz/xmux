@@ -9,6 +9,8 @@
 
 export type OperateRange = {
   readonly address: string
+  /** Loaded alongside `address` when the range came from a `…OrNullObject` accessor. */
+  readonly isNullObject: boolean
   readonly rowCount: number
   readonly columnCount: number
   readonly cellCount: number
@@ -27,6 +29,12 @@ export type OperateRange = {
   rowHidden: boolean
   columnHidden: boolean
   readonly load: (properties: string) => void
+  /**
+   * The part of this range that holds something. Asked for a whole column it answers the
+   * rows the data occupies, which is how a fill learns whether it covered its source —
+   * without reading a column of 200,000 cells to find out.
+   */
+  readonly getUsedRangeOrNullObject: (valuesOnly?: boolean) => OperateRange
   readonly getColumn: (index: number) => OperateRange
   readonly getRow: (index: number) => OperateRange
   readonly getResizedRange: (rows: number, columns: number) => OperateRange
@@ -57,7 +65,12 @@ export type OperateRange = {
     }
   }
   readonly getBorder: (index: string) => { style: string; color: string }
-  readonly replaceAll: (find: string, replace: string, criteria: unknown) => void
+  /** Returns Excel's own count of replacements; `value` is valid after the next sync. */
+  readonly replaceAll: (
+    find: string,
+    replace: string,
+    criteria: unknown,
+  ) => { readonly value: number }
 }
 
 export type OperateDuplicates = {

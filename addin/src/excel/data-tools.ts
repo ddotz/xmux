@@ -105,6 +105,13 @@ export const runDataTool = async (
   }
 
   if (call.tool === "filter_range") {
+    // With none of the three, `criteriaFor` falls back to an empty Custom criterion and
+    // Excel answers with an opaque English error. Say what is missing instead.
+    const noValues = call.values === undefined || call.values.length === 0
+    const noCriterion = call.criterion === undefined || call.criterion.trim() === ""
+    if (noValues && noCriterion && call.top === undefined) {
+      return "filter_range에는 values, criterion, top 중 하나가 필요합니다. 필터를 지우려면 clear_filter를 쓰세요."
+    }
     const target = sheet.getRange(call.address)
     sheet.autoFilter.apply(target, call.column - 1, criteriaFor(call))
     await context.sync()

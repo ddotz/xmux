@@ -20,11 +20,12 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `reasoning.ts` | 1 | Why a number is what it is: `explain_cell` (formula, what each reference holds, numbered steps — the pane's own scanner and summaries, asked from the chat side), `check_sum` (stated total vs the sum of its parts), `find_dependents` (what moves when this cell moves, found by parsing formulas so `SUM(B1:B9)` counts as depending on `B5`). |
 | `grid.ts` | 1 | The rectangle the model reads back: every row labelled with its real sheet row, columns with their letters, blank rows named as blank. Counting lines is how a write lands two rows off. |
 | `self-reference.ts` | 3 | Catches a formula about to be written on top of what it reads (`=B2/1000000` into `B2`). Excel accepts the circular reference; this does not. |
+| `fill-alignment.ts` | 4 | Pure arithmetic over where a `fill_formula` landed vs. the rows its source column holds. A model that writes a header and starts the formula on row 2 over data that starts on row 1 drops the user's first line silently; the finding goes back to the model in the tool result. |
 | `audit.ts` | 1 | What a workbook gets checked for before anyone signs it: error cells, numbers typed into calculated columns, external links, defined names, and per-column totals computed inside Excel so a 200k-row table never crosses the boundary. |
 | `inspect.ts` | 4 | The assistant's read tools: `read_range` (values or formulas), `find`, `used_range`, `list_sheets`. Refuses an over-wide range instead of truncating it. |
 | `operate.ts` | 2 | The assistant's write tools, every one snapshotting its rectangle into the history first. A failure comes back as Korean text, never a throw — the model has to be able to read it and try something else. |
 
-Tests: 13 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
+Tests: 14 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
 
 ## EXCEL API BOUNDARY
 
@@ -44,6 +45,9 @@ Tests: 13 files. `sheets.ts` and `summarise.ts` have none of their own; summaris
 - A scan (`find_errors`, `find_hardcoded`, `list_links`) loads every cell's formula, so it is capped at 20,000 cells — far below a read's 500-cell answer cap, because the answer is a handful of addresses rather than the data.
 - `column_stats` goes through `workbook.functions`, the same host-side trick `summarise.ts` uses: seven numbers per column come back, no cells do.
 - Column widths and row heights **are** in the history (`snapshotLayout`/`restoreLayouts`, one number per line, capped at 64). Colour, font and number format still are not. An unrequested autofit used to be the one change nothing could take back.
+- `fill_formula` answers with an alignment finding when the fill is displaced from its source by as much as it overruns it (`missingHead > 0 && overshoot > 0 && overshoot <= missingHead`) or stops short of the data. A long buffer range (`D2:D200` over 19 rows) is deliberately not a finding. The probe costs one whole-column `getUsedRangeOrNullObject` address and one cell, is wrapped in its own `try`, and never blocks the write it describes.
+- **Column numbers are 1-based across the whole tool surface**, `sort_range` included (operate.ts subtracts 1 for Excel's zero-based sort key). It used to be the one zero-based column argument, and the model sorted by the neighbour of the column it was asked for.
+- `find_replace` reports Excel's own replacement count and refuses to push an undo entry when it is 0 — zero replacements used to read exactly like fifty. `filter_range` with none of values/criterion/top is refused in Korean instead of reaching Excel as an empty Custom criterion. `conditional_format` kind `colorScale` sets explicit min/max criteria (white → fill colour); an unconfigured scale was a rule Excel could ignore.
 - Only `remove_duplicates` destroys cell content among the data tools, so it is the only one that snapshots into the history; the rest say `되돌리기에 포함되지 않습니다` in their own reply rather than implying undo covers a filter or a pivot.
 - `copy_range`/`move_range` resize the destination anchor to the source's `rowCount`/`columnCount` before snapshotting, so undo holds the rectangle the paste actually covers; a move snapshots both ends in one entry.
 - History cap `LIMIT = 20`, oldest dropped. Empty-cell entries (`cells.length === 0`) never enter. Any `push` clears redo. `restore` is a write that is deliberately **not** re-recorded.

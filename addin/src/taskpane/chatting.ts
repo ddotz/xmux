@@ -325,7 +325,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         })
         return
       }
-      throw error
+      // Rethrowing from inside `void ask()` reached nobody: the rejection was unhandled,
+      // `pending` stayed true, and the composer stayed disabled until the pane reloaded.
+      // A dead chat tab is strictly worse than a caught bug shown as text.
+      const detail = error instanceof Error ? error.message : String(error)
+      commit({ pending: false, error: `요청을 처리하지 못했습니다: ${detail}`, activity: [] })
     }
   }
 

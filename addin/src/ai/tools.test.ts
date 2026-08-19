@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { isWrite } from "./tool-schemas"
-import { describeCall, MAX_CALLS_PER_REPLY, readSteps } from "./tools"
+import { containsToolCall, describeCall, MAX_CALLS_PER_REPLY, readSteps } from "./tools"
 
 describe("readSteps", () => {
   it("recognises a fenced tool call", () => {
@@ -51,6 +51,60 @@ describe("readSteps", () => {
     expect(step.kind).toBe("calls")
     if (step.kind !== "calls") return
     expect(step.calls).toHaveLength(MAX_CALLS_PER_REPLY)
+    // And the model is told the batch was cut, so it does not report unrun work as done.
+    expect(step.rejected).toContain("나머지 5개")
+  })
+
+  it("runs a call the model wrote in Python's dialect instead of printing it", () => {
+    // Given: the reply that reached the screen as a wall of text. Nothing about it was
+    // ambiguous — the quotes were wrong, the parse failed, and work became an answer.
+    const step = readSteps(
+      "[{'tool': 'fill_formula', 'sheet': 'Sheet1', 'anchor': 'B2', 'address': 'B2:B20', " +
+        '\'formula\': \'=IF(A2="","",MID(A2,FIND("- [x] ",A2)+6,LEN(A2)))\'}]',
+    )
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.rejected).toBeNull()
+    expect(step.calls).toEqual([
+      {
+        tool: "fill_formula",
+        sheet: "Sheet1",
+        anchor: "B2",
+        address: "B2:B20",
+        formula: '=IF(A2="","",MID(A2,FIND("- [x] ",A2)+6,LEN(A2)))',
+      },
+    ])
+  })
+
+  it("runs a fill whose formula carries Excel's own quotes", () => {
+    const step = readSteps(
+      '{"tool":"fill_formula","anchor":"B2","address":"B2:B20","formula":"=IF(A2="","",A2)"}',
+    )
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    const [fill] = step.calls
+    expect(fill?.tool === "fill_formula" ? fill.formula : null).toBe('=IF(A2="","",A2)')
+  })
+
+  it("says how to quote a call it could not rebuild, rather than blaming the length", () => {
+    const step = readSteps("{'tool': 'write_range', 'rows': [[1, 2] }")
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([])
+    expect(step.rejected).toContain("큰따옴표")
+  })
+
+  it("finds the call after prose that has brackets of its own", () => {
+    // Given: a reply that restates the request before doing the work. `- [x]` opens a span
+    // that is not JSON in any dialect, and the call that follows it was lost with it.
+    const step = readSteps('- [x] 기준으로 나눕니다.\n[{"tool":"used_range","sheet":"Sheet1"}]')
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([{ tool: "used_range", sheet: "Sheet1" }])
   })
 
   it("treats an edit proposal as the answer, not a tool call", () => {
@@ -112,6 +166,14 @@ describe("readSteps", () => {
   it("keeps a plan an answer rather than calling it a broken tool call", () => {
     // Given: the other reply shape. It carries no `tool` key, so it is not a failed call.
     expect(readSteps('{"edits":[{"address":"B6","value":"=SUM(A1:A5)"}]}').kind).toBe("answer")
+  })
+})
+
+describe("containsToolCall", () => {
+  it("knows a call however the model quoted it", () => {
+    expect(containsToolCall("[{'tool': 'used_range'}]")).toBe(true)
+    expect(containsToolCall('{"tool": "used_range"}')).toBe(true)
+    expect(containsToolCall("B6에 합계를 넣었습니다.")).toBe(false)
   })
 })
 

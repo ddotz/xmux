@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { parseLoose } from "./loose-json"
 
 /** One proposal may not carry more rows than a person will review in one sitting. */
 export const MAX_BLOCK_ROWS = 500
@@ -90,15 +91,13 @@ export const parsePlan = (reply: string): Plan => {
   const block = findBlock(reply)
   if (block === null) return { say: reply.trim(), edits: [], blocks: [], newSheets: [] }
 
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(block.json)
-  } catch {
-    // Malformed JSON is the model's problem, not the user's: show the words, drop the block.
-    return { say: reply.trim(), edits: [], blocks: [], newSheets: [] }
-  }
+  // A model quotes in the dialect it was trained on; `parseLoose` reads those too, so a
+  // proposal is not thrown away over a single quote mark.
+  const read = parseLoose(block.json)
+  // Malformed JSON is the model's problem, not the user's: show the words, drop the block.
+  if (read === null) return { say: reply.trim(), edits: [], blocks: [], newSheets: [] }
 
-  const plan = planSchema.safeParse(parsed)
+  const plan = planSchema.safeParse(read.value)
   if (!plan.success) return { say: reply.trim(), edits: [], blocks: [], newSheets: [] }
 
   const prose = (reply.slice(0, block.start) + reply.slice(block.end)).trim()

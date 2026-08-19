@@ -139,8 +139,14 @@ export const sortRangeSchema = z.object({
   tool: z.literal("sort_range"),
   sheet: z.string().max(120).optional(),
   address,
-  /** Zero-based column offset within the range. */
-  column: z.number().int().min(0).max(1_000),
+  /**
+   * 1-based column within the range, like every other column argument here.
+   *
+   * This used to be the one zero-based column in the whole surface. `filter_range`,
+   * `remove_duplicates` and `column_stats` all count from 1, so the model counted from 1
+   * here too, and Excel silently sorted by the column next to the one it was asked for.
+   */
+  column: z.number().int().min(1).max(1_000),
   ascending: z.boolean().optional(),
   hasHeaders: z.boolean().optional(),
 })

@@ -23,6 +23,28 @@ describe("inferred chat policy", () => {
     expect(assistantPolicy("morning").externalData).toBe("user-provided-only")
   })
 
+  it("carries the harness sections: protocol, worked example, context spec", () => {
+    // Given: the largest failure class was format, not judgement. A harness states the
+    // turn protocol once, shows one faithful episode, and explains the payload it appends.
+    const prompt = systemPrompt(null)
+    const headers = prompt.split("\n").filter((line) => line.startsWith("## "))
+
+    expect(headers).toContain("## 응답 프로토콜")
+    expect(headers).toContain("## 예시")
+    expect(headers).toContain("## 현재 통합 문서")
+    // Both budgets live in the protocol, the numbers the loop actually enforces.
+    expect(prompt).toContain("최대 8개")
+    expect(prompt).toContain("최대 16회")
+    // The example is in the wire format: tabbed grid rows with sheet row labels, the
+    // observation prefix, and the escaped quotes a formula needs inside JSON.
+    expect(prompt).toContain("1\t서울지점-0113")
+    expect(prompt).toContain("사용자: 실행 결과:")
+    expect(prompt).toContain('FIND(\\"-\\",A1)')
+    // The context payload is explained, so the model uses it instead of re-reading it.
+    expect(prompt).toContain("selectionAttachment")
+    expect(prompt).toContain("조회 없이 바로 진행합니다")
+  })
+
   it("reads as sections, with the reply contract stated last as well as first", () => {
     // Given: 7,000 characters of instructions. A model reading one run-on list loses the
     // middle of it; the headers are what make the rest findable, and the closing lines are

@@ -139,7 +139,15 @@ export const askModel = async (
   if (!response.ok)
     throw new AiError(describeFailure(response.status, await response.text(), settings))
 
-  const text = textOf(await response.json())
+  // A 200 carrying something that is not JSON (a proxy error page, a half-written body)
+  // used to escape as a raw SyntaxError, which nothing upstream caught.
+  let body: unknown
+  try {
+    body = await response.json()
+  } catch {
+    throw new AiError("AI 응답을 이해하지 못했습니다.")
+  }
+  const text = textOf(body)
   if (text === null) throw new AiError("AI 응답을 이해하지 못했습니다.")
   return text.trim()
 }
