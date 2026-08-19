@@ -21,6 +21,19 @@ const answering = (body: unknown, status = 200) => {
 
 const reply = { choices: [{ message: { role: "assistant", content: "  네, B6에 넣겠습니다.  " } }] }
 
+/**
+ * The fields of the request body these tests actually assert on.
+ *
+ * `Record<string, unknown>` forced bracket access, which `noPropertyAccessFromIndexSignature`
+ * demands and Biome's `useLiteralKeys` forbids — the two rules cannot both be satisfied
+ * through an index signature. Naming the two fields removes the index signature instead of
+ * silencing either rule.
+ */
+type RequestBody = {
+  readonly reasoning_effort?: string
+  readonly messages?: unknown
+}
+
 describe("askModel", () => {
   it("turns a 200 that is not JSON into an AiError, not a raw SyntaxError", async () => {
     // Given: a proxy answering with an HTML error page and a happy status code. The raw
@@ -38,6 +51,27 @@ describe("askModel", () => {
     await expect(askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)).resolves.toBe(
       "네, B6에 넣겠습니다.",
     )
+  })
+
+  it("never hands back the draft call inside a thinking model's deliberation", async () => {
+    // Given: the default model is a thinking one. A server that does not split
+    // `reasoning_content` out returns the whole deliberation in `content`, and the draft
+    // call inside it is the one the model decided against — running it wrecks the sheet.
+    const { fetcher } = answering({
+      choices: [
+        {
+          message: {
+            content:
+              '<think>{"tool":"delete_sheet","name":"원장"} 은 너무 위험하다.</think>' +
+              '{"tool":"create_sheet","name":"정리"}',
+          },
+        },
+      ],
+    })
+
+    await expect(
+      askModel(SETTINGS, [{ role: "user", content: "정리해줘" }], fetcher),
+    ).resolves.toBe('{"tool":"create_sheet","name":"정리"}')
   })
 
   it("posts to the chat completions route of the configured server", async () => {
@@ -73,12 +107,36 @@ describe("askModel", () => {
       model: "qwen3.6_27b",
       messages: [
         { role: "system", content: "규칙" },
-        { role: "user", content: "안녕" },
+        // The thinking switch rides on the last turn the model reads. Off is the default
+        // and the way the server is actually run.
+        { role: "user", content: "안녕\n\n/no_think" },
       ],
       temperature: SETTINGS.temperature,
       max_tokens: SETTINGS.maxTokens,
       stream: false,
     })
+  })
+
+  it("sends nothing the server has to understand when thinking is off", async () => {
+    // Given: the setting everybody runs. An unknown field in the body is a 400 on a strict
+    // server, so the default path must not add one — the switch is in the prompt instead.
+    const { calls, fetcher } = answering(reply)
+
+    await askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)
+
+    const sent = JSON.parse(String(calls[0]?.init?.body)) as RequestBody
+    expect(sent.reasoning_effort).toBeUndefined()
+    expect(JSON.stringify(sent.messages)).toContain("/no_think")
+  })
+
+  it("asks for thinking both ways when the user turns it on", async () => {
+    const { calls, fetcher } = answering(reply)
+
+    await askModel({ ...SETTINGS, reasoning: "high" }, [{ role: "user", content: "안녕" }], fetcher)
+
+    const sent = JSON.parse(String(calls[0]?.init?.body)) as RequestBody
+    expect(sent.reasoning_effort).toBe("high")
+    expect(JSON.stringify(sent.messages)).toContain("/think")
   })
 
   it("refuses to call anything before a key is entered", async () => {

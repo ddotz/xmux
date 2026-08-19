@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { MAX_TOOL_CELLS } from "../ai/tools"
+import { DEFAULT_BUDGET } from "../ai/budget"
 import { renderGrid } from "./grid"
 
 describe("renderGrid", () => {
@@ -64,12 +64,24 @@ describe("renderGrid", () => {
   })
 
   it("stops before flooding the conversation", () => {
-    // Given: more cells than one answer may carry.
-    const rows = Array.from({ length: 400 }, () => ["a", "b", "c"])
+    // Given: more cells than one answer may carry on the configured window.
+    const rows = Array.from({ length: DEFAULT_BUDGET.readCells }, () => ["a", "b", "c"])
 
     const grid = renderGrid("A1:C400", rows)
 
     expect(grid).toContain("… (생략됨)")
-    expect(grid.split("\n").length - 2).toBeLessThanOrEqual(MAX_TOOL_CELLS)
+    expect(grid.split("\n").length - 2).toBeLessThanOrEqual(DEFAULT_BUDGET.readCells)
+  })
+
+  it("carries more of the sheet when the server has room for it", () => {
+    // Given: the same rectangle read on a small window and on a large one. The cap is not
+    // a property of the grid, it is a property of the deployment.
+    const rows = Array.from({ length: 300 }, (_, row) => [`${row}`, "값", "값"])
+    const small = { readCells: 60, readChars: 4_000 }
+
+    expect(renderGrid("A1:C300", rows, { top: 1, left: 1 }, small)).toContain("… (생략됨)")
+    expect(renderGrid("A1:C300", rows, { top: 1, left: 1 }, DEFAULT_BUDGET)).not.toContain(
+      "… (생략됨)",
+    )
   })
 })

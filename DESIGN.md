@@ -176,7 +176,8 @@ summaries.
 The client uses the legacy OpenAI **`completions` route** — one prompt in, one text out — and
 flattens turns into a transcript (`지시:` / `사용자:` / `조수:`). Connection settings default
 to `https://ai.kdb.co.kr:32210/api` and model `qwen3.6_27b`, with bearer auth, temperature,
-and token limits. These are compatibility defaults, not a claim of real KDB connectivity.
+token limits, a reasoning level (default off) and the server's context window (default
+128,000 tokens) that every harness budget is derived from. These are compatibility defaults, not a claim of real KDB connectivity.
 The editable connection form can test URL, credentials, and model with a one-token request.
 
 The call goes out from the pane itself, so configured hosts must be allowed by the manifest.

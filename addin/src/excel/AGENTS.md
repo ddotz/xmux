@@ -23,6 +23,7 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `fill-alignment.ts` | 4 | Pure arithmetic over where a `fill_formula` landed vs. the rows its source column holds. A model that writes a header and starts the formula on row 2 over data that starts on row 1 drops the user's first line silently; the finding goes back to the model in the tool result. |
 | `audit.ts` | 1 | What a workbook gets checked for before anyone signs it: error cells, numbers typed into calculated columns, external links, defined names, and per-column totals computed inside Excel so a 200k-row table never crosses the boundary. |
 | `inspect.ts` | 4 | The assistant's read tools: `read_range` (values or formulas), `find`, `used_range`, `list_sheets`. Refuses an over-wide range instead of truncating it. |
+| `write-outcome.ts` | 2 | `refused()` marks a reply that means the workbook is unchanged, `changedWorkbook()` reads that marker back. Every refusal read as one to a person and to nobody else, so the chat loop counted refused calls as work performed and its receipt named sheets it had not created. |
 | `operate.ts` | 2 | The assistant's write tools, every one snapshotting its rectangle into the history first. A failure comes back as Korean text, never a throw — the model has to be able to read it and try something else. |
 
 Tests: 14 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.

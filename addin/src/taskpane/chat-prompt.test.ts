@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest"
+import { SYSTEM_PROMPT_CHARS } from "../ai/budget"
+import { toolCallSchema } from "../ai/tool-schemas"
 import { assistantPolicy, systemPrompt } from "./chat-prompt"
+import { CHAT_SKILLS } from "./chat-skills"
 
 describe("inferred chat policy", () => {
   it("supports analysis, edits, formulas, and review without a selected role", () => {
@@ -85,5 +88,80 @@ describe("inferred chat policy", () => {
     expect(prompt).toContain('"instructions"')
     expect(prompt).toContain("로컬 스킬")
     expect(prompt).not.toContain("워크플로:")
+  })
+})
+
+describe("what the instructions cost", () => {
+  it("stays inside the room the budget reserves for it", () => {
+    // Given: `budget.ts` cannot import this module — the prompt asks the budget for the
+    // read cap it prints — so the prompt's size is pinned there as a number. A section
+    // added here without raising it hands the harness room it has already spent, and the
+    // failure lands as a request the server refuses in the middle of a long build.
+    const longest = CHAT_SKILLS.reduce(
+      (worst, skill) => Math.max(worst, systemPrompt(skill.id).length),
+      systemPrompt(null).length,
+    )
+
+    expect(longest).toBeLessThanOrEqual(SYSTEM_PROMPT_CHARS)
+  })
+})
+
+/** A `{"tool":…}` example lifted out of the prompt; only its tool name is read here. */
+type TaughtCall = { readonly tool: unknown }
+
+describe("the catalog the model reads against the schemas it is checked by", () => {
+  /** Every `{"tool":"…"}` example the prompt teaches, parsed as the model would read it. */
+  const taught = (): readonly TaughtCall[] => {
+    const prompt = systemPrompt(null)
+    const found: TaughtCall[] = []
+    // Examples sit inline in prose, several to a line, so each one is read by walking its
+    // braces rather than by a regex that cannot count them.
+    for (let at = prompt.indexOf('{"tool":"'); at >= 0; at = prompt.indexOf('{"tool":"', at + 1)) {
+      let depth = 0
+      let quoted = false
+      for (let cursor = at; cursor < prompt.length; cursor += 1) {
+        const ch = prompt[cursor]
+        if (quoted) {
+          if (ch === "\\") cursor += 1
+          else if (ch === '"') quoted = false
+          continue
+        }
+        if (ch === '"') quoted = true
+        else if (ch === "{") depth += 1
+        else if (ch === "}") {
+          depth -= 1
+          if (depth === 0) {
+            try {
+              found.push(JSON.parse(prompt.slice(at, cursor + 1)) as TaughtCall)
+            } catch {
+              // An example written with an escaped Excel formula is still prose here.
+            }
+            break
+          }
+        }
+      }
+    }
+    return found
+  }
+
+  it("teaches every operation the workbook actually offers", () => {
+    // Given: two lists of 49 that are maintained by hand in different files. A tool missing
+    // from the catalog is a capability nobody can reach; one that outlived its schema is a
+    // call refused every time the model trusts the prompt.
+    const named = new Set(taught().map((call) => String(call.tool)))
+
+    for (const schema of toolCallSchema.options) {
+      const tool = String(schema.shape.tool.value)
+      expect(named).toContain(tool)
+    }
+  })
+
+  it("writes every example in a shape the schema accepts", () => {
+    // The catalog is what the model copies verbatim. An argument the prompt invents costs a
+    // refused call and a round trip, every single time.
+    for (const call of taught()) {
+      const read = toolCallSchema.safeParse(call)
+      expect(read.success, `${String(call.tool)}: ${JSON.stringify(call)}`).toBe(true)
+    }
   })
 })

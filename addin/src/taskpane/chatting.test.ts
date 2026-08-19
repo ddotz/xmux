@@ -1,11 +1,18 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { budgetFor, DEFAULT_BUDGET } from "../ai/budget"
 import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
 import { DEFAULT_SETTINGS } from "../ai/settings"
 import { MAX_TOOL_ROUNDS } from "../ai/tools"
 import { createHistory } from "../excel/history"
 import { readWorkbookContext } from "./chat-workbook"
-import { type Chatting, compactTurns, createChatting, trimObservations } from "./chatting"
+import {
+  boundRound,
+  type Chatting,
+  compactTurns,
+  createChatting,
+  trimObservations,
+} from "./chatting"
 
 vi.mock("../ai/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../ai/client")>()
@@ -191,6 +198,7 @@ describe("chat safety and connection errors", () => {
       if (chatting?.state().error !== null) announce()
     })
     chatting.handlers.onTestSettings({
+      ...DEFAULT_SETTINGS,
       baseUrl: "https://example.test/v1",
       apiKey: "sk-secret",
       model: "model",
@@ -441,7 +449,7 @@ describe("thread management", () => {
       text: `턴 ${index}`,
     }))
 
-    const compacted = compactTurns(turns)
+    const compacted = compactTurns(turns, { ...DEFAULT_BUDGET, carriedTurns: 20 })
 
     expect(compacted.length).toBeLessThan(turns.length)
     // What was asked for survives the fold; the answers are what gets dropped.
@@ -949,14 +957,19 @@ describe("working through a batch of tool calls", () => {
     // Then: it spends its rounds being told to fix the call, and stops in words.
     const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).not.toContain('"tool"')
-    expect(said).toContain("멈췄습니다")
+    expect(said).toContain("도구 실행을 여기서 멈추고")
   })
 
   it("tells the model how much budget is left before it runs out", async () => {
-    // Given: a model that keeps surveying. It used to be cut off mid-build with no warning;
-    // told the remaining count it can land the work and answer.
+    // Given: a model that keeps surveying — a different sheet each time, so it is working
+    // rather than stuck. It used to be cut off mid-build with no warning; told the
+    // remaining count it can land the work and answer.
     const book = workbook()
-    vi.mocked(askModel).mockResolvedValue('{"tool":"used_range","sheet":"정리"}')
+    let survey = 0
+    vi.mocked(askModel).mockImplementation(() => {
+      survey += 1
+      return Promise.resolve(`{"tool":"used_range","sheet":"정리${survey}"}`)
+    })
 
     const chatting = chattingOver(book.context)
     chatting.handlers.onSend("계속 확인해줘")
@@ -976,9 +989,14 @@ describe("working through a batch of tool calls", () => {
   })
 
   it("says it stopped instead of printing raw JSON when the rounds run out", async () => {
-    // Given: a model that never stops asking for tools. The turn has to end in words.
+    // Given: a model that never stops asking for tools, and asks something new every time.
+    // The turn has to end in words.
     const book = workbook()
-    vi.mocked(askModel).mockResolvedValue('{"tool":"used_range","sheet":"정리"}')
+    let survey = 0
+    vi.mocked(askModel).mockImplementation(() => {
+      survey += 1
+      return Promise.resolve(`{"tool":"used_range","sheet":"정리${survey}"}`)
+    })
 
     const chatting = chattingOver(book.context)
     chatting.handlers.onSend("계속 확인해줘")
@@ -987,8 +1005,289 @@ describe("working through a batch of tool calls", () => {
     // One opening ask, one per round, and one last request for a summary.
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(MAX_TOOL_ROUNDS + 2)
     const said = chatting.state().turns.at(-1)?.text ?? ""
-    expect(said).toContain("도구 사용 한도")
+    expect(said).toContain("도구 실행을 여기서 멈추고")
     expect(said).not.toContain('"tool"')
+  })
+
+  it("does not run the same batch twice, and stops asking when it comes back a third time", async () => {
+    // Given: the way a long build actually fails. The model cannot see why its call did
+    // nothing, sends it again unchanged, and used to spend the whole round budget doing it
+    // — with every write in the batch landing again each time. `insert_rows` twice is not
+    // `insert_rows` once.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue('{"tool":"create_sheet","name":"정리"}')
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // Then: the call ran once. The opening ask, the result, the nudge, the summary — four
+    // requests instead of eighteen.
+    expect(book.added).toEqual(["정리"])
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(4)
+    const nudged = vi.mocked(askModel).mock.calls[2]?.[1].at(-1)?.content ?? ""
+    expect(nudged).toContain("다시 실행하지 않았습니다")
+    expect(chatting.state().turns.at(-1)?.text ?? "").not.toContain('"tool"')
+  })
+
+  it("says what it did when the model finishes without a word about it", async () => {
+    // Given: a thinking model that spent its last tokens deliberating. The answer is empty,
+    // and "요청하신 작업을 마쳤습니다" after a build the user cannot see is worse than silence.
+    const book = workbook()
+    // The sheet both calls name has to exist, or they are refused rather than performed —
+    // and a receipt is only worth reading when it lists work that really landed.
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '[{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"]]},' +
+          '{"tool":"format_range","sheet":"정리","address":"A1:B1","bold":true}]',
+      )
+      .mockResolvedValueOnce("")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트에 표 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("표 입력")
+    expect(said).toContain("서식 적용")
+    // And formatting is not in the undo history, which only the pane knows to say.
+    expect(said).toContain("되돌리기로 복구되지 않는")
+  })
+
+  it("does not credit a write the workbook refused or failed", async () => {
+    // Given: the shape a long build actually ends in. One call lands, one is refused
+    // outright (the sheet is already there), one fails inside Excel — and the model spends
+    // its last tokens deliberating, so the pane has to give the account itself. It used to
+    // list all three as done, and warn about undo for a chart that never existed.
+    const book = workbook()
+    // The sheet exists before the turn starts, so create_sheet is refused rather than run.
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '[{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]},' +
+          '{"tool":"create_sheet","name":"정리"},' +
+          '{"tool":"add_chart","sheet":"정리","address":"A1:B2","chartType":"ColumnClustered"}]',
+      )
+      .mockResolvedValueOnce("")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트 만들고 표 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    // What landed is named.
+    expect(said).toContain("표 입력")
+    // What was refused, and what threw, are not.
+    expect(said).not.toContain("시트 만들기")
+    expect(said).not.toContain("차트 추가")
+    // And no undo warning for a chart that was never added.
+    expect(said).not.toContain("되돌리기로 복구되지 않는")
+  })
+
+  it("keeps what the model said about the work when the tool phase is cut short", async () => {
+    // Given: the tool phase ends — here because the model sent the same batch twice — and
+    // the summary it is then asked for comes back with one more call appended out of a
+    // turn's habit of writing JSON. The account of the build is the whole value of that
+    // reply, and it used to be replaced wholesale by the pane's generic "멈춥니다" line.
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValue(
+        '정리!A1:B6에 지점별 합계를 넣었습니다.\n[{"tool":"select_range","sheet":"정리","address":"A1:B6"}]',
+      )
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("지점별로 정리해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("지점별 합계를 넣었습니다")
+    expect(said).not.toContain('"tool"')
+    expect(said).not.toContain("select_range")
+  })
+
+  it("still says what it changed when the server drops the turn mid-build", async () => {
+    // Given: the writes have already landed and the connection dies on the way to the
+    // answer. An error line alone leaves the user looking at a workbook that changed for
+    // reasons nobody described — unable to tell whether to press 되돌리기. What the pane ran
+    // is the one account that survives a dead server, because the pane ran it.
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '[{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]},' +
+          '{"tool":"format_range","sheet":"정리","address":"A1:B1","bold":true}]',
+      )
+      .mockRejectedValue(new AiError("AI 서버에 연결하지 못했습니다: timeout"))
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트에 표 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // The failure is still reported as a failure.
+    expect(chatting.state().error).toContain("timeout")
+    // And the work that landed before it is on screen, not lost with the turn.
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("표 입력")
+    expect(said).toContain("서식 적용")
+  })
+
+  it("takes the markdown off the answer before it reaches the pane", async () => {
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"list_sheets"}')
+      .mockResolvedValueOnce("### 결과\n**정리** 시트만 있습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("시트 뭐 있어?")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toBe("결과\n정리 시트만 있습니다.")
+  })
+})
+
+describe("a long build on the configured window", () => {
+  /** A sheet whose reads are big enough to blow a budget that is not being enforced. */
+  const wideWorkbook = () => {
+    const range = (address: string) => {
+      const values = Array.from({ length: 100 }, (_, row) =>
+        Array.from({ length: 4 }, (_, column) => `${address}-${row}-${column}-값값값값값`),
+      )
+      const node: Record<string, unknown> = {
+        address: `원장!${address}`,
+        rowCount: 100,
+        columnCount: 4,
+        cellCount: 400,
+        values,
+        isNullObject: false,
+        load: () => {},
+        getResizedRange: () => range(address),
+        getUsedRangeOrNullObject: () => range(address),
+      }
+      Object.defineProperty(node, "formulas", { get: () => values, set: () => {} })
+      return node
+    }
+    const sheet = {
+      isNullObject: false,
+      name: "원장",
+      getRange: (address: string) => range(address),
+      getUsedRangeOrNullObject: () => range("A1:D100"),
+      load: () => {},
+    }
+    return {
+      workbook: {
+        worksheets: {
+          getActiveWorksheet: () => sheet,
+          getItem: () => sheet,
+          getItemOrNullObject: () => sheet,
+          load: () => {},
+          items: [{ name: "원장" }],
+        },
+      },
+      sync: async () => {},
+    }
+  }
+
+  for (const contextTokens of [32_000, 128_000]) {
+    it(`never sends more than a ${contextTokens / 1_000}k window can hold`, async () => {
+      // Given: a model that surveys until the round budget runs out, on a sheet whose reads
+      // are wide. Every observation is resent on every later round, so this is the shape of
+      // session that used to die of its own survey — the failure the user sees is not a
+      // truncated answer, it is the request the server refuses halfway through the build.
+      const context = wideWorkbook()
+      let round = 0
+      vi.mocked(askModel).mockImplementation(() => {
+        round += 1
+        return Promise.resolve(
+          JSON.stringify(
+            Array.from({ length: 4 }, (_, at) => ({
+              tool: "read_range",
+              sheet: "원장",
+              address: `A${round * 100 + at}:D${round * 100 + at + 99}`,
+            })),
+          ),
+        )
+      })
+
+      const chatting = createChatting({
+        redraw: () => {},
+        run: async (work) => {
+          await work(context as unknown as Excel.RequestContext)
+        },
+        anchor: () => ({ address: "원장!A1", formula: "" }),
+        history: createHistory(),
+      })
+      chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test", contextTokens })
+      chatting.handlers.onSend("원장 전체를 훑어서 정리해줘")
+      await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+
+      // The first call is handed the array the loop keeps pushing into, so what it recorded
+      // is the end state rather than what was sent; every later call is a snapshot.
+      const sent = vi
+        .mocked(askModel)
+        .mock.calls.slice(1)
+        .map((call) => call[1].reduce((sum, message) => sum + message.content.length, 0))
+      // Characters, at the rate `budgetFor` buys them, must leave room for the reply.
+      const spent = Math.max(...sent) / 1.5
+      expect(spent).toBeLessThan(contextTokens - DEFAULT_SETTINGS.maxTokens)
+    }, 30_000)
+  }
+})
+
+describe("the configured window", () => {
+  it("tells the model the read cap its own server allows", async () => {
+    // Given: the same pane against a 32k box and against the 128k box in use. The catalog
+    // the model reads and the cap the tool enforces are the same number, and it is not a
+    // constant — a model told 500 on a box that allows two thousand splits reads for
+    // nothing, and one told two thousand on a small box gets refused every time.
+    const promptFor = async (contextTokens: number): Promise<string> => {
+      const asked = nextReply()
+      const chatting = create()
+      chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test", contextTokens })
+      chatting.handlers.onSend("요약해줘")
+      await asked
+      return vi.mocked(askModel).mock.calls.at(-1)?.[1][0]?.content ?? ""
+    }
+
+    const small = await promptFor(32_000)
+    const large = await promptFor(128_000)
+
+    expect(small).toContain(
+      `최대 ${budgetFor({ contextTokens: 32_000, maxTokens: 4_096 }).readCells}칸`,
+    )
+    expect(large).toContain(
+      `최대 ${budgetFor({ contextTokens: 128_000, maxTokens: 4_096 }).readCells}칸`,
+    )
+    expect(small).not.toBe(large)
+  })
+})
+
+describe("bounding one round of results", () => {
+  it("shares the budget out instead of cutting every result in half", () => {
+    // Given: a batch of eight reads. One is enormous, the rest are one-liners; cutting all
+    // of them equally would lose the small answers the model is actually working from.
+    const small = "정리의 사용 범위: 정리!A1:B6"
+    const huge = "가".repeat(20_000)
+
+    const bounded = boundRound([small, huge], { ...DEFAULT_BUDGET, roundChars: 6_000 })
+
+    expect(bounded).toContain(small)
+    expect(bounded).toContain("… (생략됨)")
+    expect(bounded.length).toBeLessThan(huge.length / 2)
+  })
+
+  it("leaves a round that fits exactly as it was", () => {
+    expect(boundRound(["[1] 시트 만들기", "[2] 표 입력"])).toBe("[1] 시트 만들기\n\n[2] 표 입력")
   })
 })
 
@@ -1006,7 +1305,7 @@ describe("carrying observations forward", () => {
       ...Array.from({ length: 9 }, (_, index) => observation(index)),
     ]
 
-    const trimmed = trimObservations(messages)
+    const trimmed = trimObservations(messages, { ...DEFAULT_BUDGET, keptObservations: 6 })
 
     expect(trimmed[0]?.content).toBe("규칙")
     // The three oldest of nine are stubs; the six it is actually working from survive.
@@ -1023,5 +1322,31 @@ describe("carrying observations forward", () => {
     const messages: ChatMessage[] = [observation(1), observation(2)]
 
     expect(trimObservations(messages)).toEqual(messages)
+  })
+
+  it("carries the newest result whole even when six of them would not fit", () => {
+    // Given: a survey that read big ranges every round. Counting results was not enough on
+    // its own — six of these is thirty-six thousand characters on top of a system prompt of
+    // twelve thousand, and the request stops fitting somewhere past round ten.
+    const big = (index: number): ChatMessage => ({
+      role: "user",
+      content: `실행 결과:\n${`${index}`.repeat(6_000)}`,
+    })
+    const messages: ChatMessage[] = [
+      { role: "system", content: "규칙" },
+      ...Array.from({ length: 5 }, (_, index) => big(index)),
+    ]
+
+    const trimmed = trimObservations(messages, { ...DEFAULT_BUDGET, observationChars: 12_000 })
+
+    // The one the model is acting on survives; what it can no longer afford is stubbed.
+    expect(trimmed.at(-1)?.content).toBe(messages.at(-1)?.content)
+    const carried = trimmed.reduce((sum, message) => sum + message.content.length, 0)
+    expect(carried).toBeLessThan(20_000)
+
+    // And on a window with room for all of it, nothing is stubbed at all.
+    expect(trimObservations(messages, { ...DEFAULT_BUDGET, observationChars: 120_000 })).toEqual(
+      messages,
+    )
   })
 })

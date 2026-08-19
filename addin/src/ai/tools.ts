@@ -94,13 +94,24 @@ const jsonBlocks = (reply: string): readonly string[] => {
 const isAttemptedCall = (candidate: unknown): candidate is { readonly tool: unknown } =>
   typeof candidate === "object" && candidate !== null && "tool" in candidate
 
-/** What went wrong, in enough detail for the model to write the call again correctly. */
-const rejection = (candidate: { readonly tool: unknown }, error: ZodError): string => {
+/**
+ * What went wrong, in enough detail for the model to write the call again correctly.
+ *
+ * A batch stops at its first broken element, so everything behind it never ran either.
+ * Naming only the bad call let the model assume the rest of the batch had landed, which is
+ * how a five-step build ends up two steps applied and reported as finished.
+ */
+const rejection = (
+  candidate: { readonly tool: unknown },
+  error: ZodError,
+  behind: number,
+): string => {
   const issues = error.issues
     .slice(0, 3)
     .map((issue) => `${issue.path.join(".") || "(최상위)"} — ${issue.message}`)
   const more = error.issues.length > 3 ? ` 외 ${error.issues.length - 3}건` : ""
-  return `${String(candidate.tool)} 호출은 형식이 맞지 않아 실행하지 못했습니다: ${issues.join(", ")}${more}. 고쳐서 다시 보내세요.`
+  const dropped = behind > 0 ? ` 뒤의 ${behind}개도 실행되지 않았으니 함께 다시 보내세요.` : ""
+  return `${String(candidate.tool)} 호출은 형식이 맞지 않아 실행하지 못했습니다: ${issues.join(", ")}${more}. 고쳐서 다시 보내세요.${dropped}`
 }
 
 /** A block that stops mid-value ran out of room; one that closes was merely written wrong. */
@@ -142,7 +153,8 @@ export const readSteps = (reply: string): ModelStep => {
       continue
     }
     // A plan (`{"edits":[…]}`) is not a failed tool call, it is the other reply shape.
-    if (isAttemptedCall(candidate)) rejected = rejection(candidate, call.error)
+    if (isAttemptedCall(candidate))
+      rejected = rejection(candidate, call.error, candidates.length - calls.length - 1)
     break
   }
   if (overflow > 0) {
@@ -164,6 +176,32 @@ export const readSteps = (reply: string): ModelStep => {
 export const containsToolCall = (reply: string): boolean => {
   const widest = jsonBlocks(reply)[0]
   return widest !== undefined && TOOL_KEY.test(widest)
+}
+
+const FENCED_BLOCK = /```(?:json)?[\s\S]*?```/g
+
+/**
+ * The reply with the tool call taken out of it, and the words kept.
+ *
+ * A model that has just finished a build says so and then, out of the habit of a whole
+ * turn spent writing JSON, signs the answer with one more call. `parsePlan` rescues the
+ * prose when that call is a lone object — an object parses as an empty plan and the block
+ * is cut out — but an array does not parse as a plan at all, so the reply reached
+ * `containsToolCall` whole and the user was told to ask again, after the work had landed.
+ *
+ * Prose before the JSON is what a model writes; prose after it is rare and kept too. What
+ * is cut is everything from the first opening bracket to the last closing one, which is
+ * the same span `jsonBlocks` reads the call out of.
+ */
+export const withoutToolCall = (reply: string): string => {
+  const unfenced = reply.replace(FENCED_BLOCK, "").trim()
+  if (!containsToolCall(unfenced)) return unfenced
+  const close = Math.max(unfenced.lastIndexOf("}"), unfenced.lastIndexOf("]"))
+  const opens = [unfenced.indexOf("{"), unfenced.indexOf("[")].filter((at) => at >= 0 && at < close)
+  const open = Math.min(...opens)
+  return opens.length === 0
+    ? unfenced
+    : `${unfenced.slice(0, open)}\n${unfenced.slice(close + 1)}`.trim()
 }
 
 const place = (sheet: string | undefined, address: string): string =>
@@ -272,7 +310,3 @@ export const describeCall = (call: ToolCall): string => {
       return `${place(call.sheet, call.address)} 단위 변환`
   }
 }
-
-/** Cap on what one tool answer may carry back into the conversation. */
-export const MAX_TOOL_CELLS = 500
-export const MAX_TOOL_CHARS = 4_000

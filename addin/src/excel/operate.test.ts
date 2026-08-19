@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 import { createHistory } from "./history"
 import type { OperateContext } from "./office-shapes"
 import { runWrite } from "./operate"
+import { changedWorkbook } from "./write-outcome"
 
 /**
  * Excel is handed in, never reached for. With no approval step in front of these calls, the
@@ -525,7 +526,9 @@ describe("runWrite", () => {
       address: "A1:C9",
     })
 
-    expect(answer).toContain("수행하지 못했습니다")
+    // The reply carries the marker that says the workbook is unchanged, in the same words
+    // the prompt teaches the model for a failed call.
+    expect(changedWorkbook(answer)).toBe(false)
     expect(answer).toContain("보호되어")
   })
 })

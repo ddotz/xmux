@@ -11,6 +11,17 @@ import { z } from "zod"
  * workbook — and is only ever sent to the endpoint the user named.
  */
 
+/**
+ * How much of the model's own deliberation to ask for.
+ *
+ * A thinking model spends its reply budget arguing with itself before it answers, which on
+ * a workbook task is mostly latency: the tools are the reasoning. It is a setting rather
+ * than a constant because the same pane talks to servers where thinking is on by default
+ * and servers where it cannot be turned on at all.
+ */
+export const REASONING_LEVELS = ["off", "low", "medium", "high"] as const
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number]
+
 export const aiSettingsSchema = z.object({
   /** An OpenAI-compatible base URL; the request path is appended to it. */
   baseUrl: z.string(),
@@ -18,15 +29,38 @@ export const aiSettingsSchema = z.object({
   model: z.string(),
   temperature: z.number(),
   maxTokens: z.number().int(),
+  reasoning: z.enum(REASONING_LEVELS),
+  /** The server's context window, in tokens. Every harness budget is derived from it. */
+  contextTokens: z.number().int(),
 })
 
 export type AiSettings = z.infer<typeof aiSettingsSchema>
 
 const LEGACY_DEFAULT_MAX_TOKENS = 1_200
-const STORAGE_VERSION = 2
+const STORAGE_VERSION = 3
 const storedSettingsSchema = z.object({
   version: z.literal(STORAGE_VERSION),
   settings: aiSettingsSchema,
+})
+
+/**
+ * A stored blob from before the window and the thinking switch were settings.
+ *
+ * It is read rather than discarded: the key, the server and the model in it are what the
+ * user typed, and losing them to a version bump means setting the pane up again.
+ */
+const olderSettingsSchema = aiSettingsSchema.omit({ reasoning: true, contextTokens: true }).extend({
+  reasoning: z.enum(REASONING_LEVELS).optional(),
+  contextTokens: z.number().int().optional(),
+})
+const olderStoredSchema = z.object({ version: z.number().int(), settings: olderSettingsSchema })
+
+/** An older blob read as current settings: what it holds, and the defaults for what it lacks. */
+const withDefaults = (older: z.infer<typeof olderSettingsSchema>): AiSettings => ({
+  ...DEFAULT_SETTINGS,
+  ...older,
+  reasoning: older.reasoning ?? DEFAULT_SETTINGS.reasoning,
+  contextTokens: older.contextTokens ?? DEFAULT_SETTINGS.contextTokens,
 })
 
 /** The KDB AI server findr already talks to; the key is the user's to enter. */
@@ -36,7 +70,13 @@ export const DEFAULT_SETTINGS: AiSettings = {
   model: "qwen3.6_27b",
   temperature: 0.2,
   maxTokens: 4_096,
+  // What the server is actually run with: a 128k window with thinking turned off.
+  reasoning: "off",
+  contextTokens: 128_000,
 }
+
+/** A window smaller than this cannot hold the instructions, let alone a working session. */
+const MIN_CONTEXT_TOKENS = 4_000
 
 /** What is wrong with these settings, in the words the user needs, or null when usable. */
 export const settingsProblem = (settings: AiSettings): string | null => {
@@ -45,6 +85,12 @@ export const settingsProblem = (settings: AiSettings): string | null => {
   const url = URL.parse(settings.baseUrl.trim())
   if (url === null || !["http:", "https:"].includes(url.protocol))
     return "AI 서버 URL은 http 또는 https URL이어야 합니다."
+  if (!Number.isFinite(settings.contextTokens) || settings.contextTokens < MIN_CONTEXT_TOKENS)
+    return `컨텍스트 길이는 ${MIN_CONTEXT_TOKENS.toLocaleString("en-US")} 토큰 이상이어야 합니다.`
+  // A window that cannot hold its own reply leaves nothing for the workbook, and the
+  // failure surfaces as a truncated answer rather than as the setting that caused it.
+  if (settings.contextTokens <= settings.maxTokens)
+    return "컨텍스트 길이는 응답 최대 길이보다 커야 합니다."
   return null
 }
 
@@ -84,11 +130,16 @@ export const loadSettings = (store: SettingsStore): AiSettings => {
     const stored: unknown = JSON.parse(raw)
     const current = storedSettingsSchema.safeParse(stored)
     if (current.success) return current.data.settings
-    const legacy = aiSettingsSchema.safeParse(stored)
+    // A versioned blob from before these fields existed keeps everything the user typed and
+    // takes the new defaults for the rest.
+    const older = olderStoredSchema.safeParse(stored)
+    if (older.success) return withDefaults(older.data.settings)
+    const legacy = olderSettingsSchema.safeParse(stored)
     if (!legacy.success) return DEFAULT_SETTINGS
-    return legacy.data.maxTokens === LEGACY_DEFAULT_MAX_TOKENS
-      ? { ...legacy.data, maxTokens: DEFAULT_SETTINGS.maxTokens }
-      : legacy.data
+    const settings = withDefaults(legacy.data)
+    return settings.maxTokens === LEGACY_DEFAULT_MAX_TOKENS
+      ? { ...settings, maxTokens: DEFAULT_SETTINGS.maxTokens }
+      : settings
   } catch (error) {
     // Storage that is not JSON at all is not worth taking the pane down for.
     if (error instanceof SyntaxError) return DEFAULT_SETTINGS

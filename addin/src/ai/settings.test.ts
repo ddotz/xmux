@@ -28,7 +28,31 @@ describe("AI response budget", () => {
       model: "gpt-model",
       temperature: 0.4,
       maxTokens: 4_096,
+      reasoning: "off",
+      contextTokens: 128_000,
     })
+  })
+
+  it("keeps a v2 connection and takes the new defaults for the window and thinking", () => {
+    // Given: what is in storage for anyone who used the pane before the window was a
+    // setting. Throwing it away means typing the key and the server back in.
+    const loaded = loadSettings(
+      storeWith({
+        version: 2,
+        settings: {
+          baseUrl: "https://example.test/v1",
+          apiKey: "secret",
+          model: "gpt-model",
+          temperature: 0.4,
+          maxTokens: 8_192,
+        },
+      }),
+    )
+
+    expect(loaded.apiKey).toBe("secret")
+    expect(loaded.maxTokens).toBe(8_192)
+    expect(loaded.contextTokens).toBe(128_000)
+    expect(loaded.reasoning).toBe("off")
   })
 
   it("preserves an intentional 1200-token choice after the versioned save path", () => {

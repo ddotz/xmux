@@ -79,6 +79,13 @@ AI settings are stored per user in the add-in origin. The default completion bud
 the former 1,200-token default migrate once to the versioned format; a later explicit
 1,200-token choice is preserved.
 
+Two of those settings describe the server rather than the request, and the pane cannot
+guess either: **추론 수준** (default 끄기, matching how the model is actually run) and
+**컨텍스트 길이** (default 128,000 tokens). The window is not decoration — every budget the
+assistant works inside is derived from it: how many cells one read may answer with, how
+much one round of tool results may carry, how much of the session stays whole, and how many
+turns of the thread survive. The settings form shows the read cap the entered window buys.
+
 ## 외부 통합문서 참조
 
 Windows 데스크톱 Excel의 Office.js 애드인에서는 다른 통합문서의 임의 범위를 직접

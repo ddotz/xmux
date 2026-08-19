@@ -7,6 +7,7 @@ import { snapshotLayout, snapshotRange } from "./history"
 import type { OperateContext, OperateRange, OperateSheet } from "./office-shapes"
 import { splitQualified } from "./resolve"
 import { areaWritten, selfReference } from "./self-reference"
+import { refused } from "./write-outcome"
 
 /**
  * Carrying out the assistant's writes.
@@ -99,13 +100,13 @@ export const runWrite = async (
   history: History,
   call: ToolCall,
 ): Promise<string> => {
-  if (!isWrite(call)) return "쓰기 작업이 아닙니다."
+  if (!isWrite(call)) return refused("쓰기 작업이 아닙니다.")
   try {
     if (call.tool === "create_sheet") {
       const existing = context.workbook.worksheets.getItemOrNullObject(call.name)
       existing.load("isNullObject")
       await context.sync()
-      if (!existing.isNullObject) return `${call.name} 시트는 이미 있습니다.`
+      if (!existing.isNullObject) return refused(`${call.name} 시트는 이미 있습니다.`)
       context.workbook.worksheets.add(call.name)
       await context.sync()
       // A sheet that did not exist has no prior state; undo covers the cells written into it.
@@ -116,7 +117,7 @@ export const runWrite = async (
       const doomed = context.workbook.worksheets.getItemOrNullObject(call.name)
       doomed.load("isNullObject")
       await context.sync()
-      if (doomed.isNullObject) return `${call.name} 시트가 없습니다.`
+      if (doomed.isNullObject) return refused(`${call.name} 시트가 없습니다.`)
       doomed.delete()
       await context.sync()
       // Deleting a sheet cannot be undone through the cell history; say so plainly.
@@ -125,7 +126,7 @@ export const runWrite = async (
 
     if (call.tool === "rename_sheet") {
       const named = await sheetFor(context, call.sheet)
-      if (named === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+      if (named === null) return refused(`시트를 찾을 수 없습니다: ${call.sheet ?? ""}`)
       const before = named.name
       named.name = call.name
       await context.sync()
@@ -134,7 +135,7 @@ export const runWrite = async (
 
     if (call.tool === "freeze_panes") {
       const frozen = await sheetFor(context, call.sheet)
-      if (frozen === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+      if (frozen === null) return refused(`시트를 찾을 수 없습니다: ${call.sheet ?? ""}`)
       if (call.rows !== undefined) frozen.freezePanes.freezeRows(call.rows)
       if (call.columns !== undefined) frozen.freezePanes.freezeColumns(call.columns)
       await context.sync()
@@ -145,7 +146,7 @@ export const runWrite = async (
     // `add_table_column`); they carry no sheet name and do not use the one resolved here.
     const named = "sheet" in call ? call.sheet : undefined
     const sheet = await sheetFor(context, named)
-    if (sheet === null) return `시트를 찾을 수 없습니다: ${named ?? ""}`
+    if (sheet === null) return refused(`시트를 찾을 수 없습니다: ${named ?? ""}`)
 
     // Filters, tables, validation, names, pivots, visibility, sheet copies and protection
     // are Excel's own operations rather than cell edits; `data-tools.ts` runs them and
@@ -155,7 +156,7 @@ export const runWrite = async (
     // Everything `data-tools.ts` declined works on a rectangle. A tool that carries no
     // address and no handler is a gap in this file, and the model is told so rather than
     // watching the turn die on an undefined address.
-    if (!("address" in call)) return `${call.tool}을(를) 처리하지 못했습니다.`
+    if (!("address" in call)) return refused(`${call.tool}을(를) 처리하지 못했습니다.`)
 
     const target = sheet.getRange(call.address)
 
@@ -169,7 +170,9 @@ export const runWrite = async (
         for (const written of row) {
           const circular = selfReference(written, sheet.name, covered)
           if (circular === null) continue
-          return `${written}은 자기 자신이 들어갈 자리(${circular})를 참조해 순환참조가 됩니다. 기존 값을 그 자리에서 바꾸려면 계산된 값을 쓰거나 scale_values를 쓰고, 수식을 남기려면 다른 열에 씁니다.`
+          return refused(
+            `${written}은 자기 자신이 들어갈 자리(${circular})를 참조해 순환참조가 됩니다. 기존 값을 그 자리에서 바꾸려면 계산된 값을 쓰거나 scale_values를 쓰고, 수식을 남기려면 다른 열에 씁니다.`,
+          )
         }
       }
       const area = target.getResizedRange(rows.length - 1, (rows[0]?.length ?? 1) - 1)
@@ -191,7 +194,8 @@ export const runWrite = async (
       await context.sync()
       const destinationSheet =
         call.targetSheet === undefined ? sheet : await sheetFor(context, call.targetSheet)
-      if (destinationSheet === null) return `시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`
+      if (destinationSheet === null)
+        return refused(`시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`)
       const anchor = destinationSheet.getRange(call.target)
       const area = anchor.getResizedRange(target.rowCount - 1, target.columnCount - 1)
       area.load("address")
@@ -325,7 +329,9 @@ export const runWrite = async (
     if (call.tool === "fill_formula") {
       const circular = selfReference(call.formula, sheet.name, parseArea(call.address))
       if (circular !== null) {
-        return `${call.formula}은 채울 범위 안(${circular})을 참조해 순환참조가 됩니다. 결과를 다른 열에 채우거나, 기존 값을 바꾸려면 scale_values를 쓰세요.`
+        return refused(
+          `${call.formula}은 채울 범위 안(${circular})을 참조해 순환참조가 됩니다. 결과를 다른 열에 채우거나, 기존 값을 바꾸려면 scale_values를 쓰세요.`,
+        )
       }
       // Excel shifts the relative references itself, so the model writes the formula once.
       const anchor = sheet.getRange(call.anchor)
@@ -416,7 +422,9 @@ export const runWrite = async (
       // Zero replacements used to read exactly like fifty: the model reported the change
       // done and the user found the old text still there. The count is the answer.
       if (replaced.value === 0) {
-        return `${sheet.name}!${call.address}에서 "${call.find}"을 찾지 못해 아무것도 바꾸지 않았습니다. 철자와 범위를 확인하세요.`
+        return refused(
+          `${sheet.name}!${call.address}에서 "${call.find}"을 찾지 못해 아무것도 바꾸지 않았습니다. 철자와 범위를 확인하세요.`,
+        )
       }
       history.push({ label: `${sheet.name}!${call.address} 바꾸기`, cells: [], ranges: held })
       return `${sheet.name}!${call.address}에서 "${call.find}"을 "${call.replace}"로 ${replaced.value}건 바꿨습니다.`
@@ -429,6 +437,6 @@ export const runWrite = async (
     return `${sheet.name}!${call.address} 너비를 맞췄습니다. (되돌리기로 원래 너비가 복구됩니다)`
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return `작업을 수행하지 못했습니다: ${detail}`
+    return refused(detail)
   }
 }

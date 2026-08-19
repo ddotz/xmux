@@ -646,6 +646,41 @@ const WRITE_TOOL_NAMES = [
 
 export const WRITE_TOOLS: ReadonlySet<string> = new Set(WRITE_TOOL_NAMES)
 
+/**
+ * Which operations the pane's undo history cannot put back.
+ *
+ * The history holds cells, and column widths. It does not hold colour, borders, charts,
+ * tables, pivots, defined names, filters, protection, or a sheet that is gone — each of
+ * those tools says so in its own reply to the model, but a user who watched a twelve-call
+ * build land has no way to know 되돌리기 will restore only half of it. One line at the end
+ * of the turn is the difference between a safe undo and a surprised user.
+ */
+const UNDO_BLIND_TOOL_NAMES = [
+  "format_range",
+  "set_borders",
+  "conditional_format",
+  "add_chart",
+  "freeze_panes",
+  "rename_sheet",
+  "delete_sheet",
+  "filter_range",
+  "create_table",
+  "data_validation",
+  "define_name",
+  "set_visibility",
+  "copy_sheet",
+  "protect_sheet",
+  "add_pivot",
+  "set_print_layout",
+  "add_table_column",
+  "unmerge_cells",
+] as const satisfies readonly ToolCall["tool"][]
+
+export const UNDO_BLIND_TOOLS: ReadonlySet<string> = new Set(UNDO_BLIND_TOOL_NAMES)
+
+/** Whether running this call leaves something 되돌리기 will not take back. */
+export const outsideUndo = (call: ToolCall): boolean => UNDO_BLIND_TOOLS.has(call.tool)
+
 export type ToolCall = z.infer<typeof toolCallSchema>
 
 /** A call that operates on the workbook, as opposed to one that asks it something. */

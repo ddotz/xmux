@@ -2,6 +2,7 @@ import type { ToolCall } from "../ai/tool-schemas"
 import type { History } from "./history"
 import { snapshotRange } from "./history"
 import type { OperateContext, OperateSheet } from "./office-shapes"
+import { refused } from "./write-outcome"
 
 /**
  * The operations a person reaches for through Excel's ribbon rather than by typing in cells.
@@ -110,7 +111,9 @@ export const runDataTool = async (
     const noValues = call.values === undefined || call.values.length === 0
     const noCriterion = call.criterion === undefined || call.criterion.trim() === ""
     if (noValues && noCriterion && call.top === undefined) {
-      return "filter_range에는 values, criterion, top 중 하나가 필요합니다. 필터를 지우려면 clear_filter를 쓰세요."
+      return refused(
+        "filter_range에는 values, criterion, top 중 하나가 필요합니다. 필터를 지우려면 clear_filter를 쓰세요.",
+      )
     }
     const target = sheet.getRange(call.address)
     sheet.autoFilter.apply(target, call.column - 1, criteriaFor(call))
@@ -136,7 +139,7 @@ export const runDataTool = async (
     // Excel takes the list as one comma-separated string, so a choice holding a comma
     // would silently become two. Refuse rather than write a list nobody asked for.
     const bad = call.values.find((value) => value.includes(","))
-    if (bad !== undefined) return `목록 값에 쉼표가 있어 쓸 수 없습니다: ${bad}`
+    if (bad !== undefined) return refused(`목록 값에 쉼표가 있어 쓸 수 없습니다: ${bad}`)
     target.dataValidation.rule = {
       list: { inCellDropDown: true, source: call.values.join(",") },
     }
@@ -186,7 +189,7 @@ export const runDataTool = async (
     const table = context.workbook.tables.getItemOrNullObject(call.table)
     table.load("isNullObject, name")
     await context.sync()
-    if (table.isNullObject) return `표를 찾을 수 없습니다: ${call.table}`
+    if (table.isNullObject) return refused(`표를 찾을 수 없습니다: ${call.table}`)
 
     const column = table.columns.add(undefined, undefined, call.name)
     const body = column.getDataBodyRange()
@@ -208,7 +211,9 @@ export const runDataTool = async (
     target.load("address, cellCount, formulas")
     await context.sync()
     if (target.cellCount > MAX_SCALED_CELLS) {
-      return `${target.address}는 ${target.cellCount}칸이라 한 번에 바꾸기에 너무 넓습니다. ${MAX_SCALED_CELLS}칸 이하로 나눠서 요청하세요.`
+      return refused(
+        `${target.address}는 ${target.cellCount}칸이라 한 번에 바꾸기에 너무 넓습니다. ${MAX_SCALED_CELLS}칸 이하로 나눠서 요청하세요.`,
+      )
     }
 
     const held = await snapshotRange(context as never, [
@@ -262,7 +267,8 @@ export const runDataTool = async (
         : context.workbook.worksheets.getItemOrNullObject(call.targetSheet.trim())
     destinationSheet.load("isNullObject, name")
     await context.sync()
-    if (destinationSheet.isNullObject) return `시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`
+    if (destinationSheet.isNullObject)
+      return refused(`시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`)
 
     const pivot = destinationSheet.pivotTables.add(
       call.name,

@@ -1,4 +1,4 @@
-import { MAX_TOOL_CELLS, MAX_TOOL_CHARS } from "../ai/tools"
+import { type Budget, DEFAULT_BUDGET } from "../ai/budget"
 import { columnLetters, type GridArea } from "./address"
 
 /**
@@ -38,6 +38,7 @@ export const renderGrid = (
   address: string,
   values: readonly (readonly unknown[])[],
   anchor: Pick<GridArea, "top" | "left"> | null = null,
+  budget: Pick<Budget, "readCells" | "readChars"> = DEFAULT_BUDGET,
 ): string => {
   const width = Math.max(0, ...values.map((row) => row.length))
   const blanks = blankCells(values)
@@ -53,7 +54,7 @@ export const renderGrid = (
   let cells = 0
   let characters = 0
   for (const [offset, row] of values.entries()) {
-    if (cells >= MAX_TOOL_CELLS || characters >= MAX_TOOL_CHARS) {
+    if (cells >= budget.readCells || characters >= budget.readChars) {
       lines.push("… (생략됨)")
       break
     }

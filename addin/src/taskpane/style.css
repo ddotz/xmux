@@ -1022,6 +1022,13 @@ body {
   font-size: 12px;
 }
 
+/* What the window buys, under the field that sets it. */
+.settings-hint {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .settings-actions {
   display: flex;
   align-items: center;

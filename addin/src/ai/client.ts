@@ -1,4 +1,5 @@
-import type { AiSettings } from "./settings"
+import { visibleReply } from "./reply"
+import type { AiSettings, ReasoningLevel } from "./settings"
 import { endpointFor, redactKey, settingsProblem } from "./settings"
 
 /**
@@ -82,6 +83,38 @@ export const conversationFor = (messages: readonly ChatMessage[]): readonly Chat
   return [...head, ...merged]
 }
 
+/**
+ * Turning the model's deliberation off, or asking for more of it.
+ *
+ * Two mechanisms, because no single one works everywhere. `/no_think` is Qwen's own soft
+ * switch, understood by the model itself and costing nothing on a server that has never
+ * heard of it — which is why it is what the default carries. `reasoning_effort` is the
+ * OpenAI-shaped parameter the gateways read, and it is sent **only** when the user asks
+ * for thinking: an unknown field in the body is a 400 on a strict server, and the setting
+ * that must never break the connection is the one everybody runs.
+ *
+ * Whatever the server does with either, `visibleReply` still takes the block out of the
+ * answer. This changes what is spent, not what is trusted.
+ */
+const SWITCH: Record<ReasoningLevel, string> = {
+  off: "/no_think",
+  low: "/think",
+  medium: "/think",
+  high: "/think",
+}
+
+/** The turn the switch rides on: the last thing the model reads before it answers. */
+const switched = (
+  messages: readonly ChatMessage[],
+  reasoning: ReasoningLevel,
+): readonly ChatMessage[] => {
+  const at = messages.map((message) => message.role).lastIndexOf("user")
+  if (at < 0) return messages
+  return messages.map((message, index) =>
+    index === at ? { ...message, content: `${message.content}\n\n${SWITCH[reasoning]}` } : message,
+  )
+}
+
 const textOf = (body: unknown): string | null => {
   if (typeof body !== "object" || body === null) return null
   const choices = (body as { choices?: unknown }).choices
@@ -120,13 +153,14 @@ export const askModel = async (
       },
       body: JSON.stringify({
         model: settings.model.trim(),
-        messages: conversationFor(messages).map((message) => ({
+        messages: switched(conversationFor(messages), settings.reasoning).map((message) => ({
           role: message.role,
           content: message.content,
         })),
         temperature: settings.temperature,
         max_tokens: settings.maxTokens,
         stream: false,
+        ...(settings.reasoning === "off" ? {} : { reasoning_effort: settings.reasoning }),
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     })
@@ -149,7 +183,10 @@ export const askModel = async (
   }
   const text = textOf(body)
   if (text === null) throw new AiError("AI 응답을 이해하지 못했습니다.")
-  return text.trim()
+  // A thinking model's deliberation arrives inside `content` on a server that does not
+  // split it out. It is not an answer and it is not work — it is cut here so that nothing
+  // downstream can mistake a draft call inside it for the call the model settled on.
+  return visibleReply(text)
 }
 
 /** Verify URL, credentials, and model with the smallest real request the legacy API accepts. */

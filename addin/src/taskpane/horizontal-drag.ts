@@ -23,7 +23,7 @@ export const attachHorizontalDrag = (
     if (!active.moved && Math.abs(distance) < DRAG_THRESHOLD) return
     active.moved = true
     suppressClick = true
-    rail.dataset["dragging"] = "true"
+    rail.setAttribute("data-dragging", "true")
     rail.scrollLeft = active.startScrollLeft - distance
     onScroll(rail.scrollLeft)
     event.preventDefault()
@@ -35,7 +35,7 @@ export const attachHorizontalDrag = (
 
     suppressClick = event.type === "pointerup" && active.moved
     drag = null
-    delete rail.dataset["dragging"]
+    rail.removeAttribute("data-dragging")
     window.removeEventListener("pointermove", move)
     window.removeEventListener("pointerup", stop)
     window.removeEventListener("pointercancel", stop)

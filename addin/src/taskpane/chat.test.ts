@@ -268,9 +268,28 @@ describe("the compact chat screen", () => {
     const root = mount(
       state({ settingsOpen: true, settings: { ...DEFAULT_SETTINGS, apiKey: "sk-abcdefghijkl" } }),
     )
-    expect(root.querySelectorAll(".settings-input")).toHaveLength(3)
+    // Key, server, model, reasoning level, context window.
+    expect(root.querySelectorAll(".settings-input")).toHaveLength(5)
     expect(root.textContent).not.toContain("sk-abcdefghijkl")
     expect(root.querySelector<HTMLInputElement>('[aria-label="API 키"]')?.value).toBe("")
+  })
+
+  it("exposes the window and the thinking switch, and says what the window buys", () => {
+    // Given: the deployment in use — a 128k window with thinking turned off. Both are
+    // server facts the pane cannot guess, and every harness budget follows the first.
+    const root = mount(
+      state({
+        settingsOpen: true,
+        settings: { ...DEFAULT_SETTINGS, apiKey: "sk-abcdefghijkl", contextTokens: 128_000 },
+      }),
+    )
+
+    expect(root.querySelector<HTMLSelectElement>('[aria-label="추론 수준"]')?.value).toBe("off")
+    expect(root.querySelector<HTMLInputElement>('[aria-label="컨텍스트 길이"]')?.value).toBe(
+      "128000",
+    )
+    // The number is meaningless on its own; what it buys is not.
+    expect(root.querySelector(".settings-hint")?.textContent).toContain("한 번에 읽는 셀")
   })
 })
 

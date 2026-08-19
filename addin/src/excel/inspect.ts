@@ -1,5 +1,5 @@
+import { type Budget, DEFAULT_BUDGET } from "../ai/budget"
 import type { ToolCall } from "../ai/tool-schemas"
-import { MAX_TOOL_CELLS } from "../ai/tools"
 import { parseArea } from "./address"
 import { runAuditTool } from "./audit"
 import { renderGrid } from "./grid"
@@ -32,7 +32,11 @@ const sheetFor = async (
   return sheet.isNullObject ? null : sheet
 }
 
-const readRange = async (context: InspectContext, call: ToolCall): Promise<string> => {
+const readRange = async (
+  context: InspectContext,
+  call: ToolCall,
+  budget: Budget,
+): Promise<string> => {
   if (call.tool !== "read_range") throw new Error("read_range expected")
   const sheet = await sheetFor(context, call.sheet)
   if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
@@ -40,15 +44,20 @@ const readRange = async (context: InspectContext, call: ToolCall): Promise<strin
   const range = sheet.getRange(call.address)
   range.load("address, cellCount")
   await context.sync()
-  if (range.cellCount > MAX_TOOL_CELLS) {
-    return `${range.address}는 ${range.cellCount}칸이라 한 번에 읽기에 너무 넓습니다. ${MAX_TOOL_CELLS}칸 이하로 나눠서 요청하세요.`
+  if (range.cellCount > budget.readCells) {
+    return `${range.address}는 ${range.cellCount}칸이라 한 번에 읽기에 너무 넓습니다. ${budget.readCells}칸 이하로 나눠서 요청하세요.`
   }
 
   range.load(call.formulas === true ? "formulas" : "values")
   await context.sync()
   // Where the rectangle starts, so every row can carry the sheet row it actually is.
   const anchor = parseArea(splitQualified(range.address).local)
-  return renderGrid(range.address, call.formulas === true ? range.formulas : range.values, anchor)
+  return renderGrid(
+    range.address,
+    call.formulas === true ? range.formulas : range.values,
+    anchor,
+    budget,
+  )
 }
 
 const listSheetNames = async (context: InspectContext): Promise<string> => {
@@ -132,9 +141,13 @@ const find = async (
  * A failure comes back as text rather than throwing: the model can recover from "that sheet
  * does not exist" by asking again, but it cannot recover from the chat dying underneath it.
  */
-export const runTool = async (context: InspectContext, call: ToolCall): Promise<string> => {
+export const runTool = async (
+  context: InspectContext,
+  call: ToolCall,
+  budget: Budget = DEFAULT_BUDGET,
+): Promise<string> => {
   try {
-    if (call.tool === "read_range") return await readRange(context, call)
+    if (call.tool === "read_range") return await readRange(context, call, budget)
     if (call.tool === "used_range") return await usedRange(context, call)
     if (call.tool === "list_sheets") return await listSheetNames(context)
 

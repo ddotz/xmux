@@ -41,6 +41,20 @@ describe("readSteps", () => {
     expect(step.calls).toEqual([{ tool: "used_range" }])
   })
 
+  it("says how many calls it dropped behind the broken one", () => {
+    // Given: a batch of three whose middle element the schema rejects. The two after the
+    // break never ran either — a model told only about the bad one reports the rest as
+    // done, which is exactly how a build ends up half-applied and claimed finished.
+    const step = readSteps('[{"tool":"used_range"},{"tool":"read_range"},{"tool":"list_sheets"}]')
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([{ tool: "used_range" }])
+    expect(step.rejected).toContain("read_range")
+    // The one behind it is unrun work the model has to send again.
+    expect(step.rejected).toContain("뒤의 1개")
+  })
+
   it("stops a runaway batch at the cap", () => {
     const many = Array.from({ length: MAX_CALLS_PER_REPLY + 5 }, () => ({
       tool: "used_range",
