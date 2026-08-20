@@ -102,6 +102,35 @@ const fold = (answer: string): string => {
   return [...kept, `외 ${folded}줄 생략`].join("\n")
 }
 
+/**
+ * Does this answer announce work instead of reporting it?
+ *
+ * A reply of "이제 정리 시트를 만들겠습니다." carries no tool call, so the loop reads it as
+ * the final answer and the turn ends: the user reads a promise and nothing happens. The
+ * loop uses this to send such a reply back once — do the work now, or restate what was
+ * actually done.
+ *
+ * Only declarative future forms count. A question is the sanctioned path for confirming an
+ * irreversible action; an offer conditioned on the user wanting more is a finished answer;
+ * announcing what one is about to *say* is followed by the saying in the same reply.
+ */
+const ANNOUNCED = /겠습니다|겠어요|[가-힐]게요|[가-힐]께요/
+/** A follow-up offered on condition ("필요하시면 서식도 적용하겠습니다") is an answer. */
+const CONDITIONAL = /필요하|원하|괜찮|말씀해\s*주시|요청하시|알려\s*주시/
+/** Announcing speech ("설명드리겠습니다"), which the same reply then delivers. */
+const SPEECH = /(말씀|설명|안내|답변|알려)\s*(해\s*)?드리/
+
+export const announcesWork = (answer: string): boolean =>
+  answer.split("\n").some((line) => {
+    const trimmed = line.trim()
+    return (
+      ANNOUNCED.test(trimmed) &&
+      !trimmed.endsWith("?") &&
+      !CONDITIONAL.test(trimmed) &&
+      !SPEECH.test(trimmed)
+    )
+  })
+
 export const plainText = (answer: string): string =>
   fold(
     flattenTables(

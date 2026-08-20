@@ -9,7 +9,7 @@ Six pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-s
 | File | Exports | Role |
 |---|---|---|
 | `client.ts` | 5 | `askModel`, `testConnection`, `conversationFor`, `AiError`, `ChatMessage` |
-| `reply.ts` | 3 | `visibleReply` cuts a thinking model's deliberation off at the wire; `plainText` takes the markdown off an answer the pane renders literally, flattens markdown tables to plain columns, and folds anything past `ANSWER_LINES` (12) into a stated count so the conclusion never scrolls out of the pane |
+| `reply.ts` | 4 | `visibleReply` cuts a thinking model's deliberation off at the wire; `plainText` takes the markdown off an answer the pane renders literally, flattens markdown tables to plain columns, and folds anything past `ANSWER_LINES` (12) into a stated count so the conclusion never scrolls out of the pane; `announcesWork` catches the reply that promises work ("이제 시트를 만들겠습니다") instead of doing it, excluding questions, conditional offers and announcements of speech |
 | `budget.ts` | 5 | `budgetFor` turns the configured window into every limit the harness spends; `SYSTEM_PROMPT_CHARS` + `reservedTokensFor` reserve what the instructions measurably cost (a flat 8,000 under-reserved by ~3,600 tokens while the prompt alone was 8,500), and `chat-prompt.test.ts` fails when the prompt outgrows the number: `readCells`, `readChars`, `roundChars`, `observationChars`, `keptObservations`, `carriedTurns` |
 | `tool-schemas.ts` | 40+ | one zod schema per operation, `toolCallSchema`, `WRITE_TOOLS`, `isWrite`, `ToolCall` |
 | `loose-json.ts` | 2 | `parseLoose`, `repairJson`: strict JSON first, then the dialect models actually write |

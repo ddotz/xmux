@@ -7,7 +7,7 @@ import {
   planTouchesWorkbook,
   resolveEdits,
 } from "../ai/plan"
-import { plainText } from "../ai/reply"
+import { announcesWork, plainText } from "../ai/reply"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
 import { isWrite, outsideUndo, type ToolCall } from "../ai/tool-schemas"
 import {
@@ -166,6 +166,17 @@ const MAX_REPEATS = 2
  * done. Told the count, it can land the work and answer instead.
  */
 const BUDGET_WARNING_ROUNDS = 4
+
+/**
+ * Shown to the model when its "answer" was a promise of work instead of the work.
+ *
+ * A reply of "이제 정리 시트를 만들겠습니다." carries no tool call, so the loop used to end the
+ * turn on it: the user read a promise and nothing happened. It goes back once — either the
+ * work runs now, or the model restates what actually happened. A second such reply stands;
+ * arguing with a model that will not act spends rounds the user is waiting on.
+ */
+const ANNOUNCED_NOT_DONE =
+  "하겠다고 말만 하고 아무 도구도 실행하지 않았습니다. 그 작업을 지금 이 차례에 도구 JSON으로 실행하세요. 이미 끝난 작업이면 완료형으로 결과만 다시 쓰고, 할 수 없는 작업이면 그 이유를 답하세요."
 
 /**
  * Shown when the tool phase ended and the model still will not answer in words.
@@ -423,10 +434,23 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
       let repeats = 0
       let lastBatch: string | null = null
+      let nudged = false
 
       let reply = await askModel(state.settings, turns)
       let step = readSteps(reply)
-      for (let round = 0; round < MAX_TOOL_ROUNDS && step.kind === "calls"; round += 1) {
+      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+        if (step.kind === "answer") {
+          // A reply that promises the work instead of doing it — "이제 시트를 만들겠습니다" —
+          // used to end the turn here. It is sent back once, to be done or restated as
+          // done; a second promise stands rather than spending the user's rounds arguing.
+          if (nudged || !announcesWork(reply)) break
+          nudged = true
+          turns.push({ role: "assistant", content: reply })
+          turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${ANNOUNCED_NOT_DONE}` })
+          reply = await askModel(state.settings, trimObservations(turns, budget))
+          step = readSteps(reply)
+          continue
+        }
         // A model that cannot see why its call did nothing sends it again, unchanged, until
         // the round budget runs out and the user gets nothing for the wait. The second
         // identical batch is answered without running it; the third ends the tool phase.

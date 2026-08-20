@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { ANSWER_LINES, plainText, visibleReply } from "./reply"
+import { ANSWER_LINES, announcesWork, plainText, visibleReply } from "./reply"
 
 describe("visibleReply", () => {
   it("drops a closed reasoning block and keeps the call after it", () => {
@@ -33,6 +33,38 @@ describe("visibleReply", () => {
     const raw = "정리!A1:B6에 지점별 합계를 넣었습니다.\n오류 셀은 없습니다."
 
     expect(visibleReply(raw)).toBe(raw)
+  })
+})
+
+describe("announcesWork", () => {
+  it("catches an answer that promises the work instead of doing it", () => {
+    expect(announcesWork("이제 정리 시트를 만들겠습니다.")).toBe(true)
+    expect(announcesWork("먼저 사용 범위를 확인해 보겠습니다.")).toBe(true)
+    expect(announcesWork("B열에 수식을 채울게요.")).toBe(true)
+  })
+
+  it("leaves a finished answer alone", () => {
+    expect(announcesWork("정리 시트를 만들었습니다.\n정리!A1:B6: 지점별 합계")).toBe(false)
+  })
+
+  it("leaves a question alone — confirming an irreversible action is the sanctioned path", () => {
+    expect(announcesWork("임시 시트를 삭제할까요?")).toBe(false)
+    expect(announcesWork("원본을 덮어쓰는 작업이라 확인이 필요합니다. 진행하겠습니다?")).toBe(false)
+  })
+
+  it("leaves a conditional follow-up offer alone", () => {
+    expect(announcesWork("합계를 넣었습니다. 필요하시면 서식도 적용하겠습니다.")).toBe(false)
+    expect(announcesWork("완료했습니다. 원하시면 차트도 만들어 드릴게요.")).toBe(false)
+  })
+
+  it("leaves an announcement of speech alone — the same reply delivers it", () => {
+    expect(announcesWork("계산 근거를 설명드리겠습니다.\nD10은 =SUM(B2:B9)로 계산됩니다.")).toBe(
+      false,
+    )
+  })
+
+  it("catches the one promising line inside an otherwise finished answer", () => {
+    expect(announcesWork("합계를 넣었습니다.\n이어서 오류 셀을 점검하겠습니다.")).toBe(true)
   })
 })
 

@@ -347,6 +347,110 @@ describe("workbook lookups before answering", () => {
   })
 })
 
+describe("acting on announced work", () => {
+  /** The lookup context from above, for a turn that has to reach the workbook after a nudge. */
+  const lookupContext = (looked: string[]) => ({
+    workbook: {
+      worksheets: {
+        getActiveWorksheet: () => ({
+          isNullObject: false,
+          name: "Main",
+          getRange: (address: string) => {
+            looked.push(address)
+            return {
+              isNullObject: false,
+              address: `Main!${address}`,
+              values: [["대출채권", 1200]],
+              cellCount: 2,
+              worksheet: { name: "Main" },
+              load: () => {},
+            }
+          },
+          getUsedRangeOrNullObject: () => ({
+            isNullObject: true,
+            address: "",
+            values: [],
+            cellCount: 0,
+            worksheet: { name: "Main" },
+            load: () => {},
+          }),
+          load: () => {},
+        }),
+        getItemOrNullObject: () => ({
+          isNullObject: true,
+          name: "",
+          getRange: () => {
+            throw new Error("unused")
+          },
+          getUsedRangeOrNullObject: () => {
+            throw new Error("unused")
+          },
+          load: () => {},
+        }),
+      },
+      getSelectedRange: () => {
+        throw new Error("unused")
+      },
+    },
+    sync: async () => {},
+  })
+
+  it("sends a promise-only reply back and runs the work it was promising", async () => {
+    // Given: a model that announces the lookup in prose, is nudged, then actually calls it.
+    const looked: string[] = []
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("이제 A1:B1을 확인하겠습니다.")
+      .mockResolvedValueOnce('{"tool":"read_range","address":"A1:B1"}')
+      .mockResolvedValueOnce("대출채권은 1200입니다.")
+
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(lookupContext(looked) as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("대출채권 얼마야?")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // Then: the nudge went back as an observation, the lookup really ran, and only the
+    // finished answer reached the screen — never the promise.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(3)
+    const second = JSON.stringify(vi.mocked(askModel).mock.calls[1]?.[1] ?? [])
+    expect(second).toContain("실행하지 않았습니다")
+    expect(looked).toEqual(["A1:B1"])
+    expect(chatting.state().turns.at(-1)?.text).toBe("대출채권은 1200입니다.")
+    expect(chatting.state().turns.some((turn) => turn.text.includes("확인하겠습니다"))).toBe(false)
+  })
+
+  it("lets a second promise stand instead of arguing with the model", async () => {
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("정리하겠습니다.")
+      .mockResolvedValueOnce("공유문서 승인이 나면 정리하겠습니다.")
+
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("정리해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    expect(chatting.state().turns.at(-1)?.text).toBe("공유문서 승인이 나면 정리하겠습니다.")
+  })
+
+  it("does not nudge a finished answer that offers a conditional follow-up", async () => {
+    vi.mocked(askModel).mockResolvedValue("합계를 넣었습니다. 필요하시면 서식도 적용하겠습니다.")
+
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("합계 넣어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe("message order the server accepts", () => {
   it("sends exactly one system message, first", async () => {
     // Given: the server rejects anything else with
