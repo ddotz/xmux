@@ -23,6 +23,9 @@ export type OperateRange = {
     wrapText: boolean
     autofitColumns: () => void
     autofitRows: () => void
+    readonly borders: {
+      readonly getItem: (index: string) => { style: string; color: string }
+    }
   }
   numberFormat: unknown[][]
   formulas: unknown[][]
@@ -64,7 +67,6 @@ export type OperateRange = {
       dataBar: Record<string, unknown>
     }
   }
-  readonly getBorder: (index: string) => { style: string; color: string }
   /** Returns Excel's own count of replacements; `value` is valid after the next sync. */
   readonly replaceAll: (
     find: string,
@@ -97,7 +99,6 @@ export type OperateSheet = {
   readonly freezePanes: {
     freezeRows: (count: number) => void
     freezeColumns: (count: number) => void
-    freeze: (range: OperateRange) => void
   }
   readonly charts: {
     add: (type: string, source: OperateRange, seriesBy?: string) => { title: { text: string } }
@@ -165,6 +166,19 @@ export type OperateTable = {
 export type OperateTableColumn = {
   readonly getDataBodyRange: () => OperateRange
 }
+
+/** Compile-time ownership checks tying the testable slice back to installed Office.js. */
+type Assert<T extends true> = T
+type KeysFit<Custom, Office> = Exclude<keyof Custom, keyof Office> extends never ? true : false
+export type OfficeRangeSurfaceParity = Assert<KeysFit<OperateRange, Excel.Range>>
+export type OfficeFormatSurfaceParity = Assert<KeysFit<OperateRange["format"], Excel.RangeFormat>>
+export type OfficeBorderSurfaceParity = Assert<
+  KeysFit<OperateRange["format"]["borders"], Excel.RangeBorderCollection>
+>
+export type OfficeSheetSurfaceParity = Assert<KeysFit<OperateSheet, Excel.Worksheet>>
+export type OfficeFreezeSurfaceParity = Assert<
+  KeysFit<OperateSheet["freezePanes"], Excel.WorksheetFreezePanes>
+>
 
 /**
  * The reading side. `values` is what the sheet shows, `formulas` is what is written in it,

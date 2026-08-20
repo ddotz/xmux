@@ -51,6 +51,13 @@ const key = (node: Element, value: string): void => {
 }
 
 describe("the compact chat screen", () => {
+  it("shows an Office navigation error inside the chat tab", () => {
+    const root = document.createElement("main")
+    root.replaceChildren(...renderChat(state(), handlers(), null, "ItemNotFound: 시트 없음"))
+
+    expect(root.querySelector('[role="alert"]')?.textContent).toContain("ItemNotFound")
+  })
+
   it("renders assistant Markdown and navigates when a reported cell is clicked", () => {
     const onRange = vi.fn()
     const root = mount(
@@ -69,6 +76,22 @@ describe("the compact chat screen", () => {
     expect(cell?.textContent).toBe("Main!B2:B5")
     cell?.click()
     expect(onRange).toHaveBeenCalledWith("Main", "B2:B5")
+  })
+
+  it("keeps a bare cell link bound to the sheet where that answer was produced", () => {
+    const onRange = vi.fn()
+    const root = mount(
+      state({
+        sheet: "Later Sheet",
+        turns: [{ role: "assistant", text: "A1을 확인했습니다.", sheet: "Original Sheet" }],
+      }),
+      handlers(),
+      { onRange },
+    )
+
+    root.querySelector<HTMLButtonElement>(".chat-cell-link")?.click()
+
+    expect(onRange).toHaveBeenCalledWith("Original Sheet", "A1")
   })
 
   it("has no role picker or role-selection state surface", () => {

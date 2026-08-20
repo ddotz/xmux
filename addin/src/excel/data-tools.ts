@@ -1,4 +1,7 @@
 import type { ToolCall } from "../ai/tool-schemas"
+import { quoteSheetName } from "../formula/reference"
+import { scanReferences } from "../formula/scanner"
+import { columnLetters, type GridArea, intersectArea, parseArea, parseSpan } from "./address"
 import type { History } from "./history"
 import { snapshotRange } from "./history"
 import type { OperateContext, OperateSheet } from "./office-shapes"
@@ -19,6 +22,8 @@ import { refused } from "./write-outcome"
 /** Only removing duplicates destroys cell content; the rest change how a sheet behaves. */
 const NOT_UNDOABLE = "(되돌리기에 포함되지 않습니다)"
 const localAddress = (address: string): string => address.slice(address.lastIndexOf("!") + 1)
+const place = (sheet: string, address: string): string =>
+  `${quoteSheetName(sheet)}!${localAddress(address)}`
 
 /** Converting values reads and rewrites every cell, so it is bounded like a read is. */
 const MAX_SCALED_CELLS = 5_000
@@ -32,6 +37,61 @@ const round = (value: number, decimals: number): number => {
 const scaled = (expression: string, factor: number, decimals: number | undefined): string => {
   const body = factor === 1 ? expression : `${expression}*${factor}`
   return decimals === undefined ? `=${body}` : `=ROUND(${body},${decimals})`
+}
+
+type FormulaClass = "source" | "derived" | "already-scaled" | "ambiguous"
+
+/** Classify before mutation: totals over converted cells must not be divided a second time. */
+const formulaClass = (
+  formula: string,
+  sheet: string,
+  scaledArea: GridArea | null,
+  factor: number,
+  divideBy: number | undefined,
+): FormulaClass => {
+  const factorText = String(factor)
+  const compact = formula.replaceAll(/\s+/g, "")
+  if (
+    formula.includes(`)*${factorText}`) ||
+    (divideBy !== undefined && compact.includes(`/${divideBy}`))
+  ) {
+    return "already-scaled"
+  }
+  if (/\b(?:INDIRECT|OFFSET)\s*\(/i.test(formula)) return "ambiguous"
+
+  let internal = 0
+  let outside = 0
+  let ambiguous = 0
+  for (const token of scanReferences(formula)) {
+    if (token.target.kind === "table" || token.target.kind === "name") {
+      ambiguous += 1
+      continue
+    }
+    if (token.target.kind === "external") {
+      outside += 1
+      continue
+    }
+    if (token.target.kind !== "local") {
+      ambiguous += 1
+      continue
+    }
+    const referenced =
+      parseArea(token.target.address.replaceAll("$", "")) ??
+      parseSpan(token.target.address.replaceAll("$", ""))
+    const sameSheet = token.target.sheet === null || token.target.sheet === sheet
+    if (
+      sameSheet &&
+      scaledArea !== null &&
+      referenced !== null &&
+      intersectArea(referenced, scaledArea) !== null
+    ) {
+      internal += 1
+    } else {
+      outside += 1
+    }
+  }
+  if (ambiguous > 0 || (internal > 0 && outside > 0)) return "ambiguous"
+  return internal > 0 ? "derived" : "source"
 }
 
 type FilterCall = Extract<ToolCall, { tool: "filter_range" }>
@@ -181,7 +241,7 @@ export const runDataTool = async (
     sheet.activate()
     sheet.getRange(call.address).select()
     await context.sync()
-    return `${sheet.name}!${call.address}을 선택했습니다.`
+    return `${place(sheet.name, call.address)}을 선택했습니다.`
   }
 
   if (call.tool === "set_visibility") {
@@ -248,10 +308,30 @@ export const runDataTool = async (
     ])
     let numbers = 0
     let wrapped = 0
-    const converted = target.formulas.map((row) =>
-      row.map((cell) => {
+    let derived = 0
+    let alreadyScaled = 0
+    let ambiguous = 0
+    const ambiguousCells: string[] = []
+    const scaledArea =
+      parseArea(localAddress(target.address).replaceAll("$", "")) ??
+      parseSpan(localAddress(target.address).replaceAll("$", ""))
+    const converted = target.formulas.map((row, rowOffset) =>
+      row.map((cell, columnOffset) => {
         // A formula keeps recalculating: it is wrapped, not replaced by its current result.
         if (typeof cell === "string" && cell.startsWith("=")) {
+          const kind = formulaClass(cell, sheet.name, scaledArea, factor, call.divideBy)
+          if (kind !== "source") {
+            if (kind === "derived") derived += 1
+            if (kind === "already-scaled") alreadyScaled += 1
+            if (kind === "ambiguous") {
+              ambiguous += 1
+              if (scaledArea !== null && ambiguousCells.length < 20)
+                ambiguousCells.push(
+                  `${columnLetters(scaledArea.left + columnOffset)}${scaledArea.top + rowOffset}`,
+                )
+            }
+            return cell
+          }
           wrapped += 1
           return scaled(`(${cell.slice(1)})`, factor, call.decimals)
         }
@@ -264,7 +344,7 @@ export const runDataTool = async (
     target.formulas = converted
     await context.sync()
     history.push({ label: `${sheet.name}!${call.address} 단위 변환`, cells: [], ranges: held })
-    return `${sheet.name}!${localAddress(target.address)}의 숫자 ${numbers}칸을 바꿨습니다${wrapped > 0 ? `, 수식 ${wrapped}칸은 계산식을 유지한 채 감쌌습니다` : ""}. 값과 글자가 아닌 칸은 그대로입니다.`
+    return `${place(sheet.name, target.address)}의 숫자 ${numbers}칸을 바꿨습니다${wrapped > 0 ? `, 범위 밖 원본 참조 수식 ${wrapped}칸은 계산식을 유지한 채 감쌌습니다` : ""}${derived > 0 ? `, 내부 합계·소계 수식 ${derived}칸은 중복 축소하지 않도록 유지했습니다` : ""}${alreadyScaled > 0 ? `, 이미 같은 단위로 변환된 수식 ${alreadyScaled}칸은 그대로 뒀습니다` : ""}${ambiguous > 0 ? `, 참조 관계를 확정할 수 없는 ${ambiguousCells.join(", ")}${ambiguous > ambiguousCells.length ? ` 외 ${ambiguous - ambiguousCells.length}칸` : ""}은 변경하지 않았습니다` : ""}. 텍스트와 빈칸은 그대로입니다.`
   }
 
   if (call.tool === "set_print_layout") {

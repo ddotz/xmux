@@ -9,6 +9,8 @@ import { renderMarkdown } from "./markdown"
 export type ChatTurn = {
   readonly role: "user" | "assistant"
   readonly text: string
+  /** Sheet in force when this answer was produced; bare A1 links must never drift later. */
+  readonly sheet?: string
 }
 
 export type SelectionAttachment = {
@@ -108,7 +110,7 @@ const renderConversation = (state: ChatState, navigation: ChatNavigation | null)
     assistant.setAttribute("aria-label", "AI")
     assistant.append(
       renderMarkdown(turn.text, {
-        defaultSheet: state.sheet,
+        defaultSheet: turn.sheet ?? state.sheet,
         onNavigate: navigation?.onRange ?? null,
       }),
     )
@@ -130,6 +132,7 @@ export const renderChat = (
   state: ChatState,
   handlers: ChatHandlers,
   navigation: ChatNavigation | null = null,
+  hostError: string | null = null,
 ): readonly HTMLElement[] => {
   const layout = element("section", "chat-layout")
   layout.setAttribute("data-chat-layout", "compact")
@@ -155,6 +158,11 @@ export const renderChat = (
       ),
     )
   if (state.error !== null) layout.append(text("div", "chat-error", state.error))
+  if (hostError !== null && hostError !== state.error) {
+    const error = text("div", "chat-error", hostError)
+    error.setAttribute("role", "alert")
+    layout.append(error)
+  }
   layout.append(renderComposer(state, handlers))
   return [layout]
 }

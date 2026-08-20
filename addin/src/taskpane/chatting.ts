@@ -17,12 +17,14 @@ import {
   readSteps,
   withoutToolCall,
 } from "../ai/tools"
+import { formatArea, parseArea } from "../excel/address"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
 import { runTool } from "../excel/inspect"
 import type { InspectContext, OperateContext } from "../excel/office-shapes"
 import { runWrite } from "../excel/operate"
-import { changedWorkbook } from "../excel/write-outcome"
+import { splitQualified } from "../excel/resolve"
+import { changedWorkbook, refused } from "../excel/write-outcome"
 import type { ChatHandlers, ChatState, ChatTurn, SelectionAttachment } from "./chat"
 import { serializeWorkbookContext } from "./chat-context"
 import { systemPrompt } from "./chat-prompt"
@@ -130,6 +132,11 @@ const receipt = (performed: readonly ToolCall[]): string => {
 /** Said once at the end of a turn that changed something 되돌리기 will not change back. */
 const UNDO_NOTE = "(서식·표·피벗·차트처럼 되돌리기로 복구되지 않는 작업이 포함되어 있습니다.)"
 
+type WriteAttempt = {
+  readonly call: ToolCall
+  readonly observation: string
+}
+
 /**
  * The reply the user reads: what the model said, plus what only the pane knows.
  *
@@ -137,12 +144,25 @@ const UNDO_NOTE = "(서식·표·피벗·차트처럼 되돌리기로 복구되�
  * so in its own result — and it still forgets to pass that on. The pane does not forget,
  * and it stays quiet when the answer already covers it.
  */
-const withReceipt = (answer: string, performed: readonly ToolCall[]): string => {
+const withReceipt = (
+  answer: string,
+  performed: readonly ToolCall[],
+  attempts: readonly WriteAttempt[] = [],
+): string => {
   const generated = answer.trim() === ""
-  const said = generated ? receipt(performed) : answer
+  const said =
+    generated && unresolvedAttempts(attempts).length > 0
+      ? "일부 작업만 반영되었습니다."
+      : generated
+        ? receipt(performed)
+        : answer
   if (performed.length === 0) return said
-  const verified = `실행 확인:\n${performed.map((call) => `- ${describeCall(call)}`).join("\n")}`
-  const accounted = generated || said.includes("실행 확인:") ? said : `${said}\n\n${verified}`
+  const successful = attempts.filter(({ observation }) => completedObservation(observation))
+  const verified =
+    successful.length === 0
+      ? `실행 확인:\n${performed.map((call) => `- ${describeCall(call)}`).join("\n")}`
+      : `실행 확인:\n${successful.map(({ observation }) => `- ${observation}`).join("\n")}`
+  const accounted = said.includes("실행 확인:") ? said : `${said}\n\n${verified}`
   return performed.some(outsideUndo) && !accounted.includes("되돌리기")
     ? `${accounted}\n\n${UNDO_NOTE}`
     : accounted
@@ -188,23 +208,163 @@ const NOT_PERFORMED =
   "요청한 워크북 작업을 실행하지 못했습니다. 완료했다고 보고하지 않고 여기서 멈춥니다."
 
 const VERIFY_WRITES =
-  "방금 쓴 결과를 아직 확인하지 않았습니다. 결과 시트의 헤더·첫 행·마지막 행·수식 누락·원본 필드 대응을 read_range(formulas:true), used_range 또는 점검 도구로 확인하고, 누락이 있으면 지금 보충한 뒤 답하세요."
+  "방금 쓴 결과 범위를 아직 확인하지 않았습니다. 쓴 시트와 범위 전체를 덮는 read_range(formulas:true)로 헤더·첫 행·마지막 행·수식 누락·원본 필드 대응을 확인하고, 누락이 있으면 지금 보충한 뒤 답하세요."
 
 const CLAIMS_CHANGE =
   /(?:만들|쓰|채우|적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정)(?:했|됐|하였)/
 const AMBIGUOUS_CONTINUATION = /^(?:계속|이어서|마저|그대로)(?:해|하|진행|작업)?/
 
-const VERIFY_TOOLS = new Set<ToolCall["tool"]>([
-  "read_range",
-  "used_range",
-  "find",
-  "find_errors",
-  "find_hardcoded",
-  "check_sum",
-  "list_tables",
-])
-
 const ABANDONED = Symbol("abandoned chat generation")
+const PARTIAL_OUTCOME =
+  /(?:했지만|썼지만|넣었지만|만들었지만|복제했지만)[^\n]*(?:못했습니다|실패했습니다)/
+
+const completedObservation = (observation: string): boolean =>
+  changedWorkbook(observation) && !PARTIAL_OUTCOME.test(observation)
+
+const writeEffect = (call: ToolCall): string => {
+  if (call.tool === "write_range" || call.tool === "copy_range" || call.tool === "move_range")
+    return "contents"
+  if (call.tool === "fill_formula" || call.tool === "scale_values") return "values"
+  if (call.tool === "format_range") return "format"
+  if (call.tool === "conditional_format") return "conditional-format"
+  if (call.tool === "autofit") return "size"
+  if (call.tool === "set_borders") return "borders"
+  if (call.tool === "select_range") return "selection"
+  return call.tool
+}
+
+/** The effect and destination a later successful retry can genuinely recover. */
+const writeTarget = (call: ToolCall): string => {
+  if (call.tool === "write_range") {
+    const anchor = parseArea(call.address)
+    const width = Math.max(0, ...call.rows.map((row) => row.length))
+    const address =
+      anchor === null || width === 0
+        ? call.address
+        : formatArea({ top: anchor.top, left: anchor.left, height: call.rows.length, width })
+    return `${writeEffect(call)}|${call.sheet ?? ""}|${address.replaceAll("$", "")}`
+  }
+  if (call.tool === "copy_range" || call.tool === "move_range") {
+    const source = parseArea(call.address)
+    const target = parseArea(call.target)
+    const transposed = call.tool === "copy_range" && call.transpose === true
+    const destination =
+      source === null || target === null
+        ? `${call.target}|from:${call.address}`
+        : formatArea({
+            top: target.top,
+            left: target.left,
+            height: transposed ? source.width : source.height,
+            width: transposed ? source.height : source.width,
+          })
+    return `${writeEffect(call)}|${call.targetSheet ?? call.sheet ?? ""}|${destination.replaceAll("$", "")}`
+  }
+  if (call.tool === "add_pivot")
+    return `${writeEffect(call)}|${call.targetSheet ?? call.sheet ?? ""}|${call.target.replaceAll("$", "")}`
+  if ("address" in call && typeof call.address === "string")
+    return `${writeEffect(call)}|${"sheet" in call ? (call.sheet ?? "") : ""}|${call.address.replaceAll("$", "")}`
+  if (call.tool === "create_sheet" || call.tool === "delete_sheet")
+    return `${writeEffect(call)}|${call.name}`
+  return `${writeEffect(call)}|${JSON.stringify(call)}`
+}
+
+const unresolvedAttempts = (attempts: readonly WriteAttempt[]): readonly WriteAttempt[] =>
+  attempts.filter((attempt, index) => {
+    if (completedObservation(attempt.observation)) return false
+    const target = writeTarget(attempt.call)
+    return !attempts
+      .slice(index + 1)
+      .some(
+        (later) => completedObservation(later.observation) && writeTarget(later.call) === target,
+      )
+  })
+
+const withFailures = (answer: string, attempts: readonly WriteAttempt[]): string => {
+  const failed = unresolvedAttempts(attempts)
+  return failed.length === 0
+    ? answer
+    : `${answer}\n\n실행 실패 확인:\n${failed
+        .map(({ call, observation }) => `- ${describeCall(call)}: ${observation}`)
+        .join("\n")}`.trim()
+}
+
+type VerificationTarget = { readonly sheet: string; readonly address: string }
+
+const destinationArea = (
+  sourceAddress: string,
+  targetAddress: string,
+  transpose: boolean,
+): string => {
+  const source = parseArea(sourceAddress)
+  const target = parseArea(targetAddress)
+  if (source === null || target === null) return targetAddress
+  return formatArea({
+    top: target.top,
+    left: target.left,
+    height: transpose ? source.width : source.height,
+    width: transpose ? source.height : source.width,
+  })
+}
+
+const verificationTargets = (call: ToolCall): readonly VerificationTarget[] => {
+  if (call.tool === "write_range") {
+    const anchor = parseArea(call.address)
+    const width = Math.max(0, ...call.rows.map((row) => row.length))
+    return anchor === null || width === 0
+      ? []
+      : [
+          {
+            sheet: call.sheet ?? "",
+            address: formatArea({
+              top: anchor.top,
+              left: anchor.left,
+              height: call.rows.length,
+              width,
+            }),
+          },
+        ]
+  }
+  if (call.tool === "copy_range" || call.tool === "move_range") {
+    const destination = {
+      sheet: call.targetSheet ?? call.sheet ?? "",
+      address: destinationArea(
+        call.address,
+        call.target,
+        call.tool === "copy_range" && call.transpose === true,
+      ),
+    }
+    return call.tool === "move_range"
+      ? [{ sheet: call.sheet ?? "", address: call.address }, destination]
+      : [destination]
+  }
+  if (
+    call.tool === "fill_formula" ||
+    call.tool === "scale_values" ||
+    call.tool === "clear_range" ||
+    call.tool === "delete_range"
+  ) {
+    return [{ sheet: call.sheet ?? "", address: call.address }]
+  }
+  return []
+}
+
+const containsArea = (outerText: string, innerText: string): boolean => {
+  const outer = parseArea(outerText)
+  const inner = parseArea(innerText)
+  if (outer === null || inner === null) return false
+  return (
+    outer.top <= inner.top &&
+    outer.left <= inner.left &&
+    outer.top + outer.height >= inner.top + inner.height &&
+    outer.left + outer.width >= inner.left + inner.width
+  )
+}
+
+const verifiedBy = (call: ToolCall, target: VerificationTarget): boolean =>
+  call.tool === "read_range" &&
+  call.formulas === true &&
+  (call.sheet ?? "") === target.sheet &&
+  containsArea(call.address, target.address)
 
 /**
  * Shown when the tool phase ended and the model still will not answer in words.
@@ -296,12 +456,10 @@ export const compactTurns = (
 }
 
 const sheetOf = (address: string): string => {
-  const cut = address.lastIndexOf("!")
-  return cut < 0 ? "" : address.slice(0, cut)
+  return address.includes("!") ? splitQualified(address).sheet : ""
 }
 const localAddress = (address: string): string => {
-  const cut = address.lastIndexOf("!")
-  return cut < 0 ? address : address.slice(cut + 1)
+  return address.includes("!") ? splitQualified(address).local : address
 }
 const selectionKey = (selection: SelectionAttachment): string =>
   `${selection.sheet}!${localAddress(selection.address)}`
@@ -318,8 +476,147 @@ const GLOBAL_TOOLS = new Set<ToolCall["tool"]>([
 
 const bindCallSheet = (call: ToolCall, sheet: string): ToolCall => {
   if (GLOBAL_TOOLS.has(call.tool) || sheet.trim() === "") return call
-  if ("sheet" in call && call.sheet !== undefined) return call
+  if ("sheet" in call && call.sheet !== undefined && call.sheet.trim() !== "") return call
   return { ...call, sheet } as ToolCall
+}
+
+const normalizeSheetName = (sheet: string): string => {
+  const trimmed = sheet.trim()
+  return trimmed.startsWith("'") && trimmed.endsWith("'")
+    ? trimmed.slice(1, -1).replaceAll("''", "'")
+    : trimmed
+}
+
+const localSheetName = (sheet: string): boolean => !/[[\]:]/.test(sheet)
+
+/**
+ * Models often send both `sheet:"Sheet1"` and `address:"Sheet1!A1:G900"`. Excel's
+ * worksheet-scoped `getRange` needs the local half; leaving both produced
+ * `Sheet1!Sheet1!A1:G900` in reports and an invalid runtime argument.
+ */
+const normalizeCallAddresses = (
+  call: ToolCall,
+  fallbackSheet: string,
+): { readonly call: ToolCall; readonly rejected: string | null } => {
+  let normalized = call
+  let addressSheet: string | null = null
+  let conflict: string | null = null
+  if ("sheet" in normalized && normalized.sheet !== undefined) {
+    const clean = normalizeSheetName(normalized.sheet)
+    normalized = { ...normalized, sheet: clean } as ToolCall
+    if (!localSheetName(clean))
+      conflict = `외부 통합 문서 또는 여러 시트 주소는 실행할 수 없습니다: ${clean}`
+  }
+  if (
+    "address" in normalized &&
+    typeof normalized.address === "string" &&
+    normalized.address.includes("!")
+  ) {
+    const qualified = splitQualified(normalized.address)
+    addressSheet = qualified.sheet
+    if (!localSheetName(qualified.sheet))
+      conflict = `외부 통합 문서 또는 여러 시트 주소는 실행할 수 없습니다: ${qualified.sheet}`
+    normalized = { ...normalized, address: qualified.local } as ToolCall
+  }
+  if (normalized.tool === "fill_formula" && normalized.anchor.includes("!")) {
+    const anchor = splitQualified(normalized.anchor)
+    if (!localSheetName(anchor.sheet))
+      conflict = `외부 통합 문서 또는 여러 시트 주소는 실행할 수 없습니다: ${anchor.sheet}`
+    if (addressSheet !== null && addressSheet !== anchor.sheet)
+      conflict = `채울 범위와 기준 셀의 시트가 서로 다릅니다: ${addressSheet} / ${anchor.sheet}`
+    addressSheet ??= anchor.sheet
+    normalized = { ...normalized, anchor: anchor.local }
+  }
+  if (normalized.tool === "check_sum" && normalized.total.includes("!")) {
+    const total = splitQualified(normalized.total)
+    if (!localSheetName(total.sheet))
+      conflict = `외부 통합 문서 또는 여러 시트 주소는 실행할 수 없습니다: ${total.sheet}`
+    if (addressSheet !== null && addressSheet !== total.sheet)
+      conflict = `합계 범위와 합계 셀의 시트가 서로 다릅니다: ${addressSheet} / ${total.sheet}`
+    addressSheet ??= total.sheet
+    normalized = { ...normalized, total: total.local }
+  }
+  if (
+    (normalized.tool === "copy_range" ||
+      normalized.tool === "move_range" ||
+      normalized.tool === "add_pivot") &&
+    normalized.targetSheet !== undefined
+  ) {
+    const clean = normalizeSheetName(normalized.targetSheet)
+    if (clean === "") {
+      const { targetSheet: _targetSheet, ...withoutTargetSheet } = normalized
+      normalized = withoutTargetSheet as ToolCall
+    } else {
+      normalized = { ...normalized, targetSheet: clean }
+    }
+  }
+  if (
+    (normalized.tool === "copy_range" || normalized.tool === "move_range") &&
+    normalized.target.includes("!")
+  ) {
+    const target = splitQualified(normalized.target)
+    if (!localSheetName(target.sheet))
+      conflict = `외부 통합 문서 또는 여러 시트 주소는 실행할 수 없습니다: ${target.sheet}`
+    if (normalized.targetSheet !== undefined && normalized.targetSheet.trim() !== target.sheet) {
+      conflict = `대상 시트가 서로 다릅니다: ${normalized.targetSheet} / ${target.sheet}`
+    }
+    normalized = {
+      ...normalized,
+      target: target.local,
+      ...(normalized.targetSheet === undefined ? { targetSheet: target.sheet } : {}),
+    }
+  }
+  if (normalized.tool === "add_pivot" && normalized.target.includes("!")) {
+    const target = splitQualified(normalized.target)
+    if (!localSheetName(target.sheet))
+      conflict = `외부 통합 문서 또는 여러 시트 주소는 실행할 수 없습니다: ${target.sheet}`
+    if (normalized.targetSheet !== undefined && normalized.targetSheet.trim() !== target.sheet) {
+      conflict = `피벗 대상 시트가 서로 다릅니다: ${normalized.targetSheet} / ${target.sheet}`
+    }
+    normalized = {
+      ...normalized,
+      target: target.local,
+      ...(normalized.targetSheet === undefined ? { targetSheet: target.sheet } : {}),
+    }
+  }
+  const explicitSheet =
+    "sheet" in normalized && normalized.sheet !== undefined ? normalized.sheet.trim() : null
+  if (explicitSheet !== null && addressSheet !== null && explicitSheet !== addressSheet) {
+    conflict = `작업 시트와 주소의 시트가 서로 다릅니다: ${explicitSheet} / ${addressSheet}`
+  }
+  return {
+    call: bindCallSheet(normalized, addressSheet ?? fallbackSheet),
+    rejected: conflict,
+  }
+}
+
+const signatureCall = (call: ToolCall): ToolCall => {
+  let canonical = call
+  if ("address" in canonical && typeof canonical.address === "string")
+    canonical = { ...canonical, address: canonical.address.replaceAll("$", "") } as ToolCall
+  if (canonical.tool === "fill_formula")
+    canonical = { ...canonical, anchor: canonical.anchor.replaceAll("$", "") }
+  if (canonical.tool === "check_sum")
+    canonical = { ...canonical, total: canonical.total.replaceAll("$", "") }
+  if (
+    canonical.tool === "copy_range" ||
+    canonical.tool === "move_range" ||
+    canonical.tool === "add_pivot"
+  ) {
+    canonical = { ...canonical, target: canonical.target.replaceAll("$", "") }
+  }
+  return canonical
+}
+
+const stableValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(stableValue)
+  if (typeof value !== "object" || value === null) return value
+  const record = value as Record<string, unknown>
+  return Object.fromEntries(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, stableValue(record[key])]),
+  )
 }
 
 export const createChatting = (deps: ChattingDeps): Chatting => {
@@ -442,7 +739,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     // than no account at all. It lives out here because a turn that dies upstream still
     // has to say what it changed.
     const performedSoFar: ToolCall[] = []
-    const attemptedWrites: { readonly call: ToolCall; readonly observation: string }[] = []
+    const attemptedWrites: WriteAttempt[] = []
     try {
       if (hadCompaction && AMBIGUOUS_CONTINUATION.test(request.trim())) {
         commit({
@@ -452,6 +749,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             {
               role: "assistant",
               text: "대화가 길어 이전 작업 조건 일부가 압축됐습니다. 수정할 시트·범위와 반드시 보존할 조건을 한 번만 다시 적어 주세요. 확인 전에는 워크북을 변경하지 않았습니다.",
+              sheet: targetSheet,
             },
           ],
           pending: false,
@@ -514,7 +812,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       let nudged = false
       let planNudged = false
       let verificationNudged = false
-      let writesNeedVerification = false
+      let pendingVerification: VerificationTarget[] = []
 
       let reply = await askCurrent(turns)
       let step = readSteps(reply)
@@ -545,7 +843,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             step = readSteps(reply)
             continue
           }
-          if (writesNeedVerification) {
+          if (pendingVerification.length > 0) {
             if (verificationNudged) break
             verificationNudged = true
             turns.push({ role: "assistant", content: reply })
@@ -556,10 +854,21 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           }
           break
         }
+        const normalizedBatch = step.calls.map((call) => normalizeCallAddresses(call, targetSheet))
         // A model that cannot see why its call did nothing sends it again, unchanged, until
         // the round budget runs out and the user gets nothing for the wait. The second
         // identical batch is answered without running it; the third ends the tool phase.
-        const signature = step.calls.length === 0 ? null : JSON.stringify(step.calls)
+        const signature =
+          normalizedBatch.length === 0
+            ? null
+            : JSON.stringify(
+                stableValue(
+                  normalizedBatch.map(({ call, rejected }) => ({
+                    call: signatureCall(call),
+                    rejected,
+                  })),
+                ),
+              )
         if (signature !== null && signature === lastBatch) {
           repeats += 1
           if (repeats >= MAX_REPEATS) break
@@ -574,22 +883,28 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
         const observations: string[] = []
         let batchChanged = false
-        for (const [index, unbound] of step.calls.entries()) {
-          const call = bindCallSheet(unbound, targetSheet)
-          const observation = await runCall(call)
+        for (const [index, normalized] of normalizedBatch.entries()) {
+          const call = normalized.call
+          const observation =
+            normalized.rejected === null
+              ? await runCall(call)
+              : refused(`${normalized.rejected}. 호출을 실행하지 않았습니다.`)
+          if (normalized.rejected !== null && isWrite(call))
+            attemptedWrites.push({ call, observation })
           if (isWrite(call) && changedWorkbook(observation)) {
-            writesNeedVerification = true
             batchChanged = true
+            for (const target of verificationTargets(call)) {
+              if (
+                !pendingVerification.some(
+                  (pending) => pending.sheet === target.sheet && pending.address === target.address,
+                )
+              ) {
+                pendingVerification.push(target)
+              }
+            }
           }
-          if (
-            !isWrite(call) &&
-            VERIFY_TOOLS.has(call.tool) &&
-            !/^(실행하지 못했습니다|요청을 처리하지 못했습니다|시트를 찾을 수 없습니다)/.test(
-              observation,
-            )
-          ) {
-            writesNeedVerification = false
-          }
+          if (!isWrite(call) && changedWorkbook(observation))
+            pendingVerification = pendingVerification.filter((target) => !verifiedBy(call, target))
           observations.push(
             step.calls.length === 1 && step.rejected === null
               ? observation
@@ -661,15 +976,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           ? UNRUNNABLE_CALL
           : displayReply(spoken)
       if (performed.length === 0 && CLAIMS_CHANGE.test(answer)) answer = NOT_PERFORMED
-      const failed = attemptedWrites.filter(({ observation }) => !changedWorkbook(observation))
-      if (failed.length > 0) {
-        answer = `${answer}\n\n실행 실패 확인:\n${failed
-          .map(({ call, observation }) => `- ${describeCall(call)}: ${observation}`)
-          .join("\n")}`.trim()
-      }
-      if (writesNeedVerification)
+      answer = withFailures(answer, attemptedWrites)
+      if (pendingVerification.length > 0)
         answer = `${answer}\n\n검증 상태: 마지막 변경 범위를 다시 읽어 확인하지 못했습니다.`.trim()
-      const said = withReceipt(answer, performed)
+      const said = withReceipt(answer, performed, attemptedWrites)
       const skillPlan: Plan | null =
         plan.skill === undefined
           ? null
@@ -681,7 +991,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               skill: plan.skill,
             }
       commit({
-        turns: [...state.turns, { role: "assistant", text: said }],
+        turns: [...state.turns, { role: "assistant", text: said, sheet: targetSheet }],
         plan: skillPlan,
         pending: false,
         activity: [],
@@ -691,10 +1001,14 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // Whatever went wrong upstream, the writes that already landed are the user's
       // problem now: they are looking at a changed workbook and deciding whether to press
       // 되돌리기. The error explains the turn; only this explains the sheet.
+      const accounted = withFailures(
+        performedSoFar.length === 0 ? "" : withReceipt("", performedSoFar, attemptedWrites),
+        attemptedWrites,
+      )
       const done =
-        performedSoFar.length === 0
+        accounted === ""
           ? []
-          : [{ role: "assistant" as const, text: withReceipt("", performedSoFar) }]
+          : [{ role: "assistant" as const, text: accounted, sheet: targetSheet }]
       if (error instanceof AiError) {
         commit({
           turns: [...state.turns, ...done],

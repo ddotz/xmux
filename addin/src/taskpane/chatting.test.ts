@@ -300,7 +300,9 @@ describe("workbook lookups before answering", () => {
       sync: async () => {},
     }
     vi.mocked(askModel)
-      .mockResolvedValueOnce('```json\n{"tool":"read_range","address":"A1:B1"}\n```')
+      .mockResolvedValueOnce(
+        '```json\n{"tool":"read_range","sheet":"Main","address":"Main!A1:B1"}\n```',
+      )
       .mockResolvedValueOnce("대출채권은 1200입니다.")
 
     const chatting = createChatting({
@@ -321,6 +323,43 @@ describe("workbook lookups before answering", () => {
     const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
     expect(JSON.stringify(second)).toContain("대출채권")
     expect(chatting.state().turns.at(-1)?.text).toBe("대출채권은 1200입니다.")
+  })
+
+  it("refuses conflicting sheet and qualified-address targets before Excel", async () => {
+    const looked: string[] = []
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"Other!A1:B1"}')
+      .mockResolvedValueOnce("대상 시트를 다시 확인해 주세요.")
+    const context = {
+      workbook: {
+        worksheets: {
+          getActiveWorksheet: () => {
+            throw new Error("must not reach Excel")
+          },
+          getItemOrNullObject: () => {
+            looked.push("lookup")
+            throw new Error("must not reach Excel")
+          },
+        },
+      },
+      sync: async () => {},
+    }
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+
+    chatting.handlers.onSend("확인해")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(looked).toEqual([])
+    const second = vi.mocked(askModel).mock.calls[1]?.[1].at(-1)?.content ?? ""
+    expect(second).toContain("서로 다릅니다")
   })
 
   it("answers straight away when the model asks for nothing", async () => {
@@ -822,6 +861,7 @@ describe("operating without approval", () => {
     const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).toContain("정리 시트에 표를 만들었습니다.")
     expect(said).toContain("실행 확인")
+    expect(said).toContain("'정리'!A1:B2")
   })
 })
 
@@ -876,6 +916,7 @@ describe("working through a batch of tool calls", () => {
     const added: string[] = []
     const written: unknown[] = []
     const lookedUp: string[] = []
+    const inserted: string[] = []
     let missing = true
     const range = (address: string) => {
       const node = {
@@ -901,7 +942,7 @@ describe("working through a batch of tool calls", () => {
         getResizedRange: () => range(`${address}#`),
         getUsedRangeOrNullObject: () => range("정리!A1:A19"),
         autoFill: () => {},
-        insert: () => {},
+        insert: (shift: string) => inserted.push(`${address}:${shift}`),
         delete: () => {},
         clear: () => {},
         sort: { apply: () => {} },
@@ -943,7 +984,7 @@ describe("working through a batch of tool calls", () => {
       },
       sync: async () => {},
     }
-    return { context, added, written, lookedUp }
+    return { context, added, written, lookedUp, inserted }
   }
 
   const chattingOver = (context: unknown): Chatting => {
@@ -1039,6 +1080,47 @@ describe("working through a batch of tool calls", () => {
     // And the fill that started below its data came back as something to fix.
     const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
     expect(second.at(-1)?.content).toContain("A1의 결과가 없고")
+  })
+
+  it("does not report a failed attempt that a later successful call recovered", async () => {
+    const book = workbook()
+    book.context.workbook.worksheets.add("Main")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '[{"tool":"fill_formula","sheet":"Main","anchor":"E2","address":"Main!E2:E3","formula":"=ROUND(E2/1000000,0)"},' +
+          '{"tool":"scale_values","sheet":"Main","address":"Main!E2:E3","divideBy":1000000,"decimals":0}]',
+      )
+      .mockResolvedValueOnce("백만 단위 변환을 마쳤습니다.")
+      .mockResolvedValueOnce(
+        '{"tool":"read_range","sheet":"Main","address":"Main!E2:E3","formulas":true}',
+      )
+      .mockResolvedValueOnce("백만 단위 변환을 확인했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("E열을 백만 단위로 바꿔줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).not.toContain("실행 실패 확인")
+    expect(said).toContain("단위 변환")
+  })
+
+  it("does not let an unrelated read clear verification for a written range", async () => {
+    const book = workbook()
+    book.context.workbook.worksheets.add("Main")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"Main","address":"A1","rows":[["값"],["합계"]]}',
+      )
+      .mockResolvedValueOnce("입력을 마쳤습니다.")
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Other","address":"Z1","formulas":true}')
+      .mockResolvedValueOnce("확인했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("Main A1:A2를 채워줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toContain("검증 상태")
   })
 
   it("never puts a tool call on screen, and tells the model how to fix it", async () => {
@@ -1146,6 +1228,22 @@ describe("working through a batch of tool calls", () => {
     expect(chatting.state().turns.at(-1)?.text ?? "").not.toContain('"tool"')
   })
 
+  it("deduplicates equivalent absolute and qualified destructive calls", async () => {
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"insert_rows","sheet":"정리","address":"$3:$3"}')
+      .mockResolvedValueOnce('{"tool":"insert_rows","address":"\'정리\'!3:3"}')
+      .mockResolvedValueOnce("행은 한 번만 삽입했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "정리", address: "A1", cellCount: 1 })
+    chatting.handlers.onSend("3행을 한 번 삽입해")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.inserted).toEqual(["$3:$3:Down"])
+  })
+
   it("says what it did when the model finishes without a word about it", async () => {
     // Given: a thinking model that spent its last tokens deliberating. The answer is empty,
     // and "요청하신 작업을 마쳤습니다" after a build the user cannot see is worse than silence.
@@ -1168,7 +1266,7 @@ describe("working through a batch of tool calls", () => {
     expect(said).toContain("표 입력")
     expect(said).toContain("서식 적용")
     // And formatting is not in the undo history, which only the pane knows to say.
-    expect(said).toContain("되돌리기로 복구되지 않는")
+    expect(said).toContain("되돌리기에 포함되지")
   })
 
   it("does not credit a write the workbook refused or failed", async () => {
@@ -1192,11 +1290,11 @@ describe("working through a batch of tool calls", () => {
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     const said = chatting.state().turns.at(-1)?.text ?? ""
-    // What landed is named.
-    expect(said).toContain("표 입력")
-    // What was refused, and what threw, are not.
-    expect(said).not.toContain("시트 만들기")
-    expect(said).not.toContain("차트 추가")
+    // What landed is named by the exact rectangle.
+    expect(said).toContain("1행 × 1열을 썼습니다")
+    // What was refused, and what threw, remain explicit unresolved failures.
+    expect(said).toContain("시트 만들기")
+    expect(said).toContain("차트 추가")
     // And no undo warning for a chart that was never added.
     expect(said).not.toContain("되돌리기로 복구되지 않는")
   })

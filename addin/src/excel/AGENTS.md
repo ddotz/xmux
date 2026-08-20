@@ -15,7 +15,7 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `sheets.ts` | 4 | `listSheets` (2 round trips) + `readWindow` for the second viewport. |
 | `history.ts` | 9 | Pane-local undo/redo + `snapshot`/`recordWrite`/`restore`. |
 | `linked-workbooks.ts` | 8 | Runtime-gated list/refresh of linked workbooks. |
-| `office-shapes.ts` | 5 | The slice of Office.js the write side touches, as structural types. Method names match the real API exactly — that is what makes a typo a type error instead of a broken workbook. |
+| `office-shapes.ts` | 5 | The slice of Office.js the write side touches, as structural types. Method names match the real API exactly, including `range.format.borders.getItem`; a typo must become a type error instead of a runtime failure in the user's workbook. |
 | `data-tools.ts` | 1 | Excel's own operations: duplicates, filters, tables, pivots, validation, names, visibility, sheet copy, protection, selection. Answers `null` for anything else so `operate.ts` keeps one entry point. |
 | `reasoning.ts` | 1 | Why a number is what it is: `explain_cell` (formula, what each reference holds, numbered steps — the pane's own scanner and summaries, asked from the chat side), `check_sum` (stated total vs the sum of its parts), `find_dependents` (what moves when this cell moves, found by parsing formulas so `SUM(B1:B9)` counts as depending on `B5`). |
 | `grid.ts` | 2 | The rectangle the model reads back: real row/column labels, visible `·` blanks, escaped tabs/newlines, and `formulaAddresses` so formula locations are explicit A1 addresses rather than inferred from delimiters. |
@@ -43,7 +43,7 @@ Tests: 14 files. `sheets.ts` and `summarise.ts` have none of their own; summaris
 - `intersectArea` returns null on no overlap. `expandArea` adds margin and stops at sheet edges. `clampArea` cuts to the render window, keeping the top-left corner.
 - Excel returns qualified addresses (`Data!$B$2:$F$20`); `splitQualified` strips the sheet part and unwraps `''` in quoted names before any parse.
 - Span results are clamped to `SPAN_LIMIT` = 200 rows x 40 columns.
-- `scale_values` is the only safe answer to "백만 단위로 나눠줘": a number becomes the converted number, a formula is wrapped (`=ROUND((기존식)*배수,0)`) so it keeps recalculating, and text and blanks are left alone. Bounded at 5,000 cells because it reads and rewrites every one.
+- `scale_values` is the safe answer to "백만 단위로 나눠줘": constants are converted, formulas reading unscaled cells outside the target are wrapped (`=ROUND((기존식)*배수,0)`), while totals/subtotals reading cells inside the same target stay unchanged so they are not divided twice. Text and blanks remain untouched. Bounded at 5,000 cells.
 - A scan (`find_errors`, `find_hardcoded`, `list_links`) loads every cell's formula, so it is capped at 20,000 cells — far below a read's 500-cell answer cap, because the answer is a handful of addresses rather than the data.
 - `column_stats` goes through `workbook.functions`, the same host-side trick `summarise.ts` uses: seven numbers per column come back, no cells do.
 - Column widths and row heights **are** in the history (`snapshotLayout`/`restoreLayouts`, one number per line, capped at 64). Colour, font and number format still are not. An unrequested autofit used to be the one change nothing could take back.

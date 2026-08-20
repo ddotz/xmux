@@ -50,13 +50,20 @@ const draw = (): void => {
     elements.address.textContent = "땡땡엑셀"
     elements.badge.hidden = true
     elements.root.replaceChildren(
-      ...renderChat(chatting.state(), chatting.handlers, {
-        onRange: (sheet, address) => {
-          const area = parseArea(address)
-          if (area === null) return
-          void guarded(() => commands.jumpToArea(sheet, area))
+      ...renderChat(
+        chatting.state(),
+        chatting.handlers,
+        {
+          onRange: (sheet, address) => {
+            const area = parseArea(address)
+            if (area === null) return
+            if (pane.kind === "error") show({ kind: "idle" }, null)
+            else if (badge !== null) show(pane, null)
+            void guarded(() => commands.navigateToArea(sheet, area))
+          },
         },
-      }),
+        badge ?? (pane.kind === "error" ? pane.message : null),
+      ),
     )
     return
   }
@@ -153,6 +160,7 @@ const commands = createCommands({
   pane: () => pane,
   viewport: () => viewport.state(),
   run: (work) => guarded(() => Excel.run(work)),
+  navigateRun: (work) => Excel.run(work),
   onPane: show,
   onRefresh: async () => {
     lastKey = ""

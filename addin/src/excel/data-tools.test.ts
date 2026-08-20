@@ -12,12 +12,15 @@ import { changedWorkbook } from "./write-outcome"
 const workbook = ({
   existingWorksheetNames = [],
   failSyncAt,
+  rangeFormulas = [["기존"]],
 }: {
   existingWorksheetNames?: readonly string[]
   failSyncAt?: number
+  rangeFormulas?: unknown[][]
 } = {}) => {
   const performed: string[] = []
   const queued: string[] = []
+  const formulaWrites: unknown[][][] = []
   const validation: { rule?: unknown } = {}
   let syncs = 0
 
@@ -28,7 +31,7 @@ const workbook = ({
       columnCount: 3,
       rowHidden: false,
       columnHidden: false,
-      formulas: [["기존"]],
+      formulas: rangeFormulas,
       load: () => {},
       select: () => performed.push(`select ${address}`),
       removeDuplicates: (columns: number[], includesHeader: boolean) => {
@@ -55,6 +58,11 @@ const workbook = ({
     Object.defineProperty(node, "columnHidden", {
       get: () => false,
       set: (value: boolean) => performed.push(`columnHidden ${address} ${value}`),
+      configurable: true,
+    })
+    Object.defineProperty(node, "formulas", {
+      get: () => rangeFormulas,
+      set: (value: unknown[][]) => formulaWrites.push(value),
       configurable: true,
     })
     return node
@@ -193,6 +201,7 @@ const workbook = ({
     performed,
     table,
     validation,
+    formulaWrites,
   }
 }
 
@@ -208,6 +217,43 @@ describe("runDataTool", () => {
     } as never)
 
     expect(answer).toBeNull()
+  })
+
+  it("scales source values and external formulas once, but keeps internal totals", async () => {
+    const book = workbook({
+      rangeFormulas: [[1_000_000, -560_399_943, "=Other!A1", "=SUM(A1:C1)"]],
+    })
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "scale_values",
+      address: "A1:D1",
+      divideBy: 1_000_000,
+      decimals: 0,
+    })
+
+    expect(book.formulaWrites).toEqual([
+      [[1, -560, "=ROUND((Other!A1)*0.000001,0)", "=SUM(A1:C1)"]],
+    ])
+    expect(answer).toContain("내부 합계·소계 수식 1칸")
+  })
+
+  it("leaves mixed, dynamic, and already-scaled formulas untouched with cell addresses", async () => {
+    const already = "=ROUND((Other!A1)*0.000001,0)"
+    const book = workbook({
+      rangeFormulas: [[1_000_000, "=A1+Other!A1", already, '=INDIRECT("A1")']],
+    })
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "scale_values",
+      address: "A1:D1",
+      divideBy: 1_000_000,
+      decimals: 0,
+    })
+
+    expect(book.formulaWrites).toEqual([[[1, "=A1+Other!A1", already, '=INDIRECT("A1")']]])
+    expect(answer).toContain("이미 같은 단위로 변환된 수식 1칸")
+    expect(answer).toContain("B1, D1")
+    expect(answer).toContain("변경하지 않았습니다")
   })
 
   it("records the rectangle before Excel deletes duplicate rows", async () => {

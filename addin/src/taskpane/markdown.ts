@@ -37,11 +37,24 @@ const navigableText = (value: string, options: MarkdownOptions): DocumentFragmen
     const at = match.index
     if (address === undefined || at === undefined) continue
     const local = address.replaceAll("$", "")
+    const qualifiedSheet = match[1] ?? match[2] ?? null
+    const before = value.charAt(at - 1)
+    const after = value.charAt(at + matched.length)
+    const previousWord = value.slice(0, at).trimEnd().split(/\s+/u).at(-1) ?? ""
+    const sheet = (qualifiedSheet ?? options.defaultSheet).replaceAll("''", "'")
     // `parseArea` rejects XFE, row 0 and every token that only resembles an address.
     // A preceding `]` is `[Book.xlsx]Sheet!A1`: never jump to a same-named local sheet.
-    if (value.charAt(at - 1) === "]" || parseArea(local) === null) continue
+    if (
+      before === "]" ||
+      parseArea(local) === null ||
+      (qualifiedSheet === null && (/[A-Za-z0-9_.]/.test(before) || /[A-Za-z0-9_.]/.test(after))) ||
+      qualifiedSheet?.includes("[") === true ||
+      (qualifiedSheet !== null && /\s/u.test(before) && /\p{L}$/u.test(previousWord)) ||
+      sheet.trim() === ""
+    ) {
+      continue
+    }
     if (at > cursor) fragment.append(value.slice(cursor, at))
-    const sheet = (match[1] ?? match[2] ?? options.defaultSheet).replaceAll("''", "'")
     const button = element("button", "chat-cell-link")
     button.setAttribute("type", "button")
     button.textContent = matched

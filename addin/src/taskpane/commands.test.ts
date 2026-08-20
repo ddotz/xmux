@@ -95,6 +95,45 @@ describe("jumpToSelection", () => {
       "sync",
     ])
   })
+
+  it("navigates a chat result even when the mirrored cell has no formula", async () => {
+    const selected: string[] = []
+    const context = {
+      workbook: {
+        worksheets: {
+          getItem: (sheet: string) => ({
+            id: "sheet-result",
+            load: () => {},
+            activate: () => selected.push(`activate:${sheet}`),
+            getRange: (address: string) => ({
+              formulas: [[]],
+              load: () => {},
+              select: () => selected.push(`select:${address}`),
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    const commands = createCommands({
+      pane: () => ({ kind: "idle" }),
+      viewport: () => viewport,
+      run: async (work) => work(context),
+      onPane: () => {},
+      onRefresh: async () => {},
+      onSelectionExpected: () => {},
+      history: createHistory(),
+    })
+
+    await commands.navigateToArea("백만단위정리", {
+      top: 2,
+      left: 5,
+      height: 899,
+      width: 3,
+    })
+
+    expect(selected).toEqual(["activate:백만단위정리", "select:E2:G900"])
+  })
 })
 
 describe("appendReference", () => {

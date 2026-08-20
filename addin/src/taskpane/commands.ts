@@ -43,6 +43,8 @@ export type CommandDeps = {
   readonly pane: () => PaneState
   readonly viewport: () => ViewportState
   readonly run: (work: (context: CommandContext) => Promise<void>) => Promise<void>
+  /** Unswallowed runner for chat navigation; its failure is rendered inside the chat tab. */
+  readonly navigateRun?: (work: (context: CommandContext) => Promise<void>) => Promise<void>
   readonly onPane: (pane: PaneState, badge: string | null, expiresAfterMs?: number) => void
   readonly onRefresh: () => Promise<void>
   readonly onSelectionExpected: (selection: {
@@ -69,8 +71,13 @@ export const splitAddress = (address: string): { sheet: string; local: string } 
 }
 
 export const createCommands = (deps: CommandDeps) => {
-  const select = (sheet: string, address: string, suppressEvent = false): Promise<void> =>
-    deps.run(async (context) => {
+  const select = (
+    sheet: string,
+    address: string,
+    suppressEvent = false,
+    run = deps.run,
+  ): Promise<void> =>
+    run(async (context) => {
       const worksheet = context.workbook.worksheets.getItem(sheet)
       if (suppressEvent) {
         worksheet.load("id")
@@ -94,8 +101,9 @@ export const createCommands = (deps: CommandDeps) => {
 
   const jumpToArea = async (sheet: string, area: GridArea): Promise<void> => {
     const pane = deps.pane()
-    if (pane.kind !== "formula") return
-    deps.onPane({ ...pane, pinned: true }, "고정됨")
+    // Chat answers navigate independently of the sheet tab's formula mirror. The old
+    // guard made every link inert whenever the selected cell was a value/blank cell.
+    if (pane.kind === "formula") deps.onPane({ ...pane, pinned: true }, "고정됨")
     await select(sheet, formatArea(area), true)
   }
 
@@ -156,6 +164,10 @@ export const createCommands = (deps: CommandDeps) => {
     },
 
     jumpToArea,
+
+    /** Chat links are real user navigation, so the selection event must update chat state. */
+    navigateToArea: (sheet: string, area: GridArea): Promise<void> =>
+      select(sheet, formatArea(area), false, deps.navigateRun ?? deps.run),
 
     /** Put back what the pane last wrote. The restore is a write like any other. */
     undo: (): void => {

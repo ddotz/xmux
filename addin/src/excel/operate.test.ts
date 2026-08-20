@@ -64,6 +64,22 @@ const workbook = () => {
         wrapText: false,
         autofitColumns: () => performed.push(`autofitColumns ${address}`),
         autofitRows: () => performed.push(`autofitRows ${address}`),
+        borders: {
+          getItem: (edge: string) => ({
+            get style() {
+              return ""
+            },
+            set style(value: string) {
+              performed.push(`borderStyle ${address} ${edge} ${value}`)
+            },
+            get color() {
+              return ""
+            },
+            set color(value: string) {
+              performed.push(`borderColor ${address} ${edge} ${value}`)
+            },
+          }),
+        },
       },
       load: () => {},
       getResizedRange: (rows: number, columns: number) => {
@@ -259,6 +275,22 @@ describe("runWrite", () => {
     expect(answer).toContain("되돌리기에 포함되지 않습니다")
   })
 
+  it("uses Office RangeFormat.borders instead of a nonexistent range.getBorder", async () => {
+    const book = workbook()
+
+    const answer = await runWrite(book.context, createHistory(), {
+      tool: "set_borders",
+      address: "A1:G1",
+      edges: ["EdgeBottom"],
+      style: "Continuous",
+      color: "#000000",
+    })
+
+    expect(book.performed).toContain("borderStyle A1:G1 EdgeBottom Continuous")
+    expect(book.performed).toContain("borderColor A1:G1 EdgeBottom #000000")
+    expect(answer).toContain("테두리")
+  })
+
   it("carries out structural work and records each one", async () => {
     const book = workbook()
     const history = createHistory()
@@ -300,6 +332,22 @@ describe("runWrite", () => {
     expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values transpose=false"])
     expect(history.last()?.label).toContain("F1:H2")
     expect(answer).toContain("복사했습니다")
+  })
+
+  it("refuses a multi-cell copy target before it can overwrite beyond the snapshot", async () => {
+    const book = workbook()
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "copy_range",
+      address: "A1:B2",
+      target: "E1:J2",
+    })
+
+    expect(changedWorkbook(answer)).toBe(false)
+    expect(answer).toContain("왼쪽 위 한 셀")
+    expect(book.performed).not.toContain(expect.stringContaining("copyFrom"))
+    expect(history.last()).toBeNull()
   })
 
   it("holds both ends of a move in one undo entry", async () => {

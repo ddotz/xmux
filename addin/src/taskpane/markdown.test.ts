@@ -79,12 +79,31 @@ describe("renderMarkdown", () => {
 
   it("does not navigate to external-workbook or out-of-grid references", () => {
     const onNavigate = vi.fn()
-    const rendered = renderMarkdown("[Book.xlsx]Data!A1과 XFE1", {
+    const rendered = renderMarkdown("[Book.xlsx]Data!A1, '[Book.xlsx]Data'!B2와 XFE1", {
       defaultSheet: "Main",
       onNavigate,
     })
 
     expect(rendered.querySelector(".chat-cell-link")).toBeNull()
     expect(onNavigate).not.toHaveBeenCalled()
+  })
+
+  it("does not invent partial cell links inside words or malformed sheet names", () => {
+    const onNavigate = vi.fn()
+    const rendered = renderMarkdown("fooA1bar와 정리 시트!A1", {
+      defaultSheet: "Main",
+      onNavigate,
+    })
+
+    expect(rendered.querySelector(".chat-cell-link")).toBeNull()
+  })
+
+  it("does not link a bare address when no current sheet is known", () => {
+    const rendered = renderMarkdown("A1을 확인했습니다.", {
+      defaultSheet: "",
+      onNavigate: vi.fn(),
+    })
+
+    expect(rendered.querySelector(".chat-cell-link")).toBeNull()
   })
 })

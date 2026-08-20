@@ -1,4 +1,5 @@
 import { isWrite, type ToolCall } from "../ai/tool-schemas"
+import { quoteSheetName } from "../formula/reference"
 import { columnLetters, parseArea } from "./address"
 import { runDataTool } from "./data-tools"
 import { alignmentNote, fillSource } from "./fill-alignment"
@@ -99,6 +100,9 @@ const rectangle = (rows: readonly (readonly string[])[]): string[][] => {
 const localAddress = (address: string): string =>
   address.includes("!") ? splitQualified(address).local : address
 
+const place = (sheet: string, address: string): string =>
+  `${quoteSheetName(sheet)}!${localAddress(address)}`
+
 /** The rectangle of these dimensions beginning at an address's top-left cell. */
 const anchoredRectangle = (address: string, height: number, width: number): string | null => {
   const anchor = parseArea(localAddress(address))
@@ -194,11 +198,15 @@ export const runWrite = async (
       const held = await snapshotRange(context as never, [{ sheet: sheet.name, address }])
       area.formulas = rows
       await context.sync()
-      history.push({ label: `${sheet.name}!${address} 표 입력`, cells: [], ranges: held })
-      return `${sheet.name}!${address}에 ${rows.length}행 × ${rows[0]?.length ?? 0}열을 썼습니다.`
+      history.push({ label: `${place(sheet.name, address)} 표 입력`, cells: [], ranges: held })
+      return `${place(sheet.name, address)}에 ${rows.length}행 × ${rows[0]?.length ?? 0}열을 썼습니다.`
     }
 
     if (call.tool === "copy_range" || call.tool === "move_range") {
+      const requestedAnchor = parseArea(localAddress(call.target))
+      if (requestedAnchor === null || requestedAnchor.height !== 1 || requestedAnchor.width !== 1) {
+        return refused(`복사·이동 대상은 왼쪽 위 한 셀이어야 합니다: ${call.target}`)
+      }
       // The destination anchor grows to the source's size, so what gets snapshotted for
       // undo is the exact rectangle the paste will cover — not just the one anchor cell.
       target.load("rowCount, columnCount")
@@ -236,11 +244,11 @@ export const runWrite = async (
         anchor.copyFrom(target, copyType, false, call.transpose ?? false)
         await context.sync()
         history.push({
-          label: `${destinationSheet.name}!${destination} 붙여넣기`,
+          label: `${place(destinationSheet.name, destination)} 붙여넣기`,
           cells: [],
           ranges: held,
         })
-        return `${sheet.name}!${localAddress(call.address)}을 ${destinationSheet.name}!${destination}에 복사했습니다.`
+        return `${place(sheet.name, call.address)}을 ${place(destinationSheet.name, destination)}에 복사했습니다.`
       }
 
       // A move empties the source, so both rectangles go into the same undo entry.
@@ -251,11 +259,11 @@ export const runWrite = async (
       target.moveTo(anchor)
       await context.sync()
       history.push({
-        label: `${sheet.name}!${localAddress(call.address)} 이동`,
+        label: `${place(sheet.name, call.address)} 이동`,
         cells: [],
         ranges: held,
       })
-      return `${sheet.name}!${localAddress(call.address)}을 ${destinationSheet.name}!${destination}로 이동했습니다.`
+      return `${place(sheet.name, call.address)}을 ${place(destinationSheet.name, destination)}로 이동했습니다.`
     }
 
     if (call.tool === "fill_formula") {
@@ -314,42 +322,42 @@ export const runWrite = async (
       else if (call.rowHeight !== undefined) target.format.rowHeight = call.rowHeight
       await context.sync()
       if (layouts.length > 0) {
-        history.push({ label: `${sheet.name}!${call.address} 크기`, cells: [], layouts })
+        history.push({ label: `${place(sheet.name, call.address)} 크기`, cells: [], layouts })
       }
       // Colour and font sit outside the history; widths no longer do. Say which is which
       // rather than implying undo covers all of it.
       return resizes
-        ? `${sheet.name}!${call.address} 서식을 바꿨습니다. (열 너비·행 높이는 되돌리기로 복구되고, 색과 글꼴은 복구되지 않습니다)`
-        : `${sheet.name}!${call.address} 서식을 바꿨습니다. (서식은 되돌리기에 포함되지 않습니다)`
+        ? `${place(sheet.name, call.address)} 서식을 바꿨습니다. (열 너비·행 높이는 되돌리기로 복구되고, 색과 글꼴은 복구되지 않습니다)`
+        : `${place(sheet.name, call.address)} 서식을 바꿨습니다. (서식은 되돌리기에 포함되지 않습니다)`
     }
 
     if (call.tool === "insert_rows") {
       target.insert("Down")
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 행 삽입`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}에 행을 삽입했습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 행 삽입`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}에 행을 삽입했습니다.`
     }
 
     if (call.tool === "insert_columns") {
       target.insert("Right")
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 열 삽입`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}에 열을 삽입했습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 열 삽입`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}에 열을 삽입했습니다.`
     }
 
     if (call.tool === "delete_range") {
       target.delete(call.shift === "left" ? "Left" : "Up")
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 삭제`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}을 삭제했습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 삭제`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}을 삭제했습니다.`
     }
 
     if (call.tool === "clear_range") {
       const applyTo = call.what === "formats" ? "Formats" : call.what === "all" ? "All" : "Contents"
       target.clear(applyTo)
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 지우기`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}을 지웠습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 지우기`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}을 지웠습니다.`
     }
 
     if (call.tool === "sort_range") {
@@ -361,8 +369,8 @@ export const runWrite = async (
         call.hasHeaders ?? true,
       )
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 정렬`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}을 ${call.column}열 기준으로 정렬했습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 정렬`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}을 ${call.column}열 기준으로 정렬했습니다.`
     }
 
     if (call.tool === "fill_formula") {
@@ -386,34 +394,34 @@ export const runWrite = async (
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
         history.push({
-          label: `${sheet.name}!${localAddress(call.address)} 수식 채우기`,
+          label: `${place(sheet.name, call.address)} 수식 채우기`,
           cells: [],
           ranges: held,
         })
-        return `${sheet.name}!${localAddress(call.address)}에 ${call.formula}을 썼지만 나머지 채우기에 실패했습니다: ${detail}. 기준 셀은 변경되었고 되돌리기로 복구할 수 있습니다.`
+        return `${place(sheet.name, call.address)}에 ${call.formula}을 썼지만 나머지 채우기에 실패했습니다: ${detail}. 기준 셀은 변경되었고 되돌리기로 복구할 수 있습니다.`
       }
       history.push({
-        label: `${sheet.name}!${localAddress(call.address)} 수식 채우기`,
+        label: `${place(sheet.name, call.address)} 수식 채우기`,
         cells: [],
         ranges: held,
       })
       // A column that skips the first row of its source looks finished and is not; what to
       // do about it is the model's call, but it has to be told.
       const note = await fillNote(context, sheet, call)
-      return `${sheet.name}!${call.address}에 ${call.formula}을 채웠습니다.${note === null ? "" : ` ${note}`}`
+      return `${place(sheet.name, call.address)}에 ${call.formula}을 채웠습니다.${note === null ? "" : ` ${note}`}`
     }
 
     if (call.tool === "merge_cells") {
       target.merge(call.across ?? false)
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 병합`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}을 병합했습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 병합`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}을 병합했습니다.`
     }
 
     if (call.tool === "unmerge_cells") {
       target.unmerge()
       await context.sync()
-      return `${sheet.name}!${call.address} 병합을 해제했습니다.`
+      return `${place(sheet.name, call.address)} 병합을 해제했습니다.`
     }
 
     if (call.tool === "set_borders") {
@@ -426,12 +434,12 @@ export const runWrite = async (
         "InsideHorizontal",
       ]
       for (const edge of edges) {
-        const border = target.getBorder(edge)
+        const border = target.format.borders.getItem(edge)
         border.style = call.style ?? "Continuous"
         if (call.color !== undefined) border.color = call.color
       }
       await context.sync()
-      return `${sheet.name}!${call.address}에 테두리를 넣었습니다. (되돌리기에 포함되지 않습니다)`
+      return `${place(sheet.name, call.address)}에 테두리를 넣었습니다. (되돌리기에 포함되지 않습니다)`
     }
 
     if (call.tool === "conditional_format") {
@@ -460,7 +468,7 @@ export const runWrite = async (
         }
       }
       await context.sync()
-      return `${sheet.name}!${call.address}에 조건부 서식을 넣었습니다. (되돌리기에 포함되지 않습니다)`
+      return `${place(sheet.name, call.address)}에 조건부 서식을 넣었습니다. (되돌리기에 포함되지 않습니다)`
     }
 
     if (call.tool === "add_chart") {
@@ -480,18 +488,18 @@ export const runWrite = async (
       // done and the user found the old text still there. The count is the answer.
       if (replaced.value === 0) {
         return refused(
-          `${sheet.name}!${call.address}에서 "${call.find}"을 찾지 못해 아무것도 바꾸지 않았습니다. 철자와 범위를 확인하세요.`,
+          `${place(sheet.name, call.address)}에서 "${call.find}"을 찾지 못해 아무것도 바꾸지 않았습니다. 철자와 범위를 확인하세요.`,
         )
       }
-      history.push({ label: `${sheet.name}!${call.address} 바꾸기`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}에서 "${call.find}"을 "${call.replace}"로 ${replaced.value}건 바꿨습니다.`
+      history.push({ label: `${place(sheet.name, call.address)} 바꾸기`, cells: [], ranges: held })
+      return `${place(sheet.name, call.address)}에서 "${call.find}"을 "${call.replace}"로 ${replaced.value}건 바꿨습니다.`
     }
 
     target.format.autofitColumns()
     target.format.autofitRows()
     await context.sync()
-    history.push({ label: `${sheet.name}!${call.address} 크기 맞춤`, cells: [], layouts })
-    return `${sheet.name}!${call.address} 너비를 맞췄습니다. (되돌리기로 원래 너비가 복구됩니다)`
+    history.push({ label: `${place(sheet.name, call.address)} 크기 맞춤`, cells: [], layouts })
+    return `${place(sheet.name, call.address)} 너비를 맞췄습니다. (되돌리기로 원래 너비가 복구됩니다)`
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     return refused(detail)
