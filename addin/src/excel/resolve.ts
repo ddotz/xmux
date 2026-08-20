@@ -100,12 +100,12 @@ const queueReference = (
       const range = context.workbook.tables.getItemOrNullObject(target.table).getRange()
       return { kind: "pendingTable", range: loadAddress(range), table: target.table }
     }
+    case "external":
+      return cachedResult === null
+        ? { kind: "unavailable", reason: "외부 참조 · 캐시된 계산 결과 없음" }
+        : { kind: "pendingExternal", range: cachedResult, originSheet }
     case "unresolvable":
       switch (target.reason) {
-        case "external":
-          return cachedResult === null
-            ? { kind: "unavailable", reason: "외부 참조 · 캐시된 계산 결과 없음" }
-            : { kind: "pendingExternal", range: cachedResult, originSheet }
         case "refError":
           return { kind: "unavailable", reason: "잘못된 참조" }
         case "threeD":
@@ -140,7 +140,7 @@ const finishPending = (pending: Pending): Resolved => {
         ? { kind: "unavailable", reason: "외부 참조 · 캐시된 계산 결과 없음" }
         : {
             kind: "unavailable",
-            reason: `외부 참조 · 현재 셀의 Excel 캐시 계산 결과 ${value} · 외부 범위는 열거나 수정할 수 없음`,
+            reason: `외부 참조 · 현재 셀의 Excel 캐시 계산 결과 ${value}`,
           }
     }
     case "pendingSpan": {
@@ -171,9 +171,7 @@ export const resolveReferences = async (
   tokens: readonly RefToken[],
   originSheet: string,
 ): Promise<readonly Resolved[]> => {
-  const hasExternal = tokens.some(
-    (token) => token.target.kind === "unresolvable" && token.target.reason === "external",
-  )
+  const hasExternal = tokens.some((token) => token.target.kind === "external")
   const cachedResult = hasExternal ? (context.workbook.getSelectedRange?.() ?? null) : null
   cachedResult?.load("address, text")
   const queued = tokens.map((token) => queueReference(context, token, originSheet, cachedResult))

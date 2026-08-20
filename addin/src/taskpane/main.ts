@@ -3,7 +3,9 @@ import { createHistory } from "../excel/history"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
 import { summariseReferences } from "../excel/summarise"
-import type { PaneState } from "../model"
+import { fetchExternalWindow } from "../external-workbook"
+import type { RefToken } from "../formula/types"
+import type { ExternalPreview, PaneState } from "../model"
 import { renderChat } from "./chat"
 import { createChatting } from "./chatting"
 import { createCommands, splitAddress } from "./commands"
@@ -37,6 +39,7 @@ const history = createHistory()
 
 let pane: PaneState = { kind: "idle" }
 let badge: string | null = null
+let externalPreview: ExternalPreview | null = null
 let lastKey = ""
 const sheetTabScroll = { left: 0 }
 
@@ -53,6 +56,7 @@ const draw = (): void => {
     pane,
     viewport: viewport.state(),
     badge,
+    external: externalPreview,
     onReference: (index) => interactWithReference(index, "open"),
     onReferenceJump: (index) => interactWithReference(index, "jump"),
     onReferenceContext: (index) => interactWithReference(index, "chat"),
@@ -179,6 +183,11 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
   const opened = pane
   const token = opened.tokens[index]
   if (token === undefined) return
+  externalPreview = null
+  if (token.target.kind === "external") {
+    void openExternalReference(opened, index, token)
+    return
+  }
   const { sheet } = splitAddress(opened.address)
   show({ ...opened, activeIndex: index }, badge)
 
@@ -209,6 +218,37 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
   })
 }
 
+/**
+ * A reference into another workbook: read its saved file through the local service and
+ * show the range read-only. When the file cannot be read, fall back to what Excel still
+ * knows — the cached computed value of the origin cell.
+ */
+async function openExternalReference(
+  opened: Extract<PaneState, { kind: "formula" }>,
+  index: number,
+  token: RefToken,
+): Promise<void> {
+  const target = token.target
+  if (target.kind !== "external") return
+  show({ ...opened, activeIndex: index }, "외부 파일 읽는 중…")
+  const read = await fetchExternalWindow(target, Office.context.document.url ?? "")
+  if (pane.kind !== "formula" || pane.address !== opened.address) return
+  if (read.kind === "window") {
+    externalPreview = { label: token.text, source: read.source, window: read.window }
+    show(pane, null)
+    return
+  }
+  await guarded(async () => {
+    const { sheet } = splitAddress(opened.address)
+    const resolved = await Excel.run(async (context) => resolveReference(context, token, sheet))
+    if (pane.kind !== "formula" || pane.address !== opened.address) return
+    show(
+      pane,
+      resolved.kind === "unavailable" ? `${resolved.reason} · ${read.reason}` : read.reason,
+    )
+  })
+}
+
 async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
   if (pane.kind === "formula" && pane.pinned) return
 
@@ -232,6 +272,7 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
         return null
       }
       lastKey = mirrored.key
+      externalPreview = null
       show(mirrored.pane, null)
 
       if (mirrored.pane.kind === "multiCell") {

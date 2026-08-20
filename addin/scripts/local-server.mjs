@@ -5,6 +5,8 @@ import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:
 import { createServer } from "node:https"
 import { extname, join, resolve, sep } from "node:path"
 
+import { externalRangeResponse } from "./external-range.mjs"
+
 const valueFlags = new Set([
   "--cert",
   "--host",
@@ -115,6 +117,13 @@ const server = createServer(tls, (request, response) => {
   }
   if (pathname === "/xmux/state") {
     send(response, 200, "application/json; charset=utf-8", '{"editing":false}', method)
+    return
+  }
+  if (pathname === "/xmux/external") {
+    const result = externalRangeResponse(
+      new URL(request.url ?? "/", "https://localhost").searchParams,
+    )
+    send(response, result.status, "application/json; charset=utf-8", result.body, method)
     return
   }
 

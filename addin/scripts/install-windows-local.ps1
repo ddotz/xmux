@@ -27,6 +27,7 @@ $requiredFiles = @(
     (Join-Path $packageApp "dist\index.html"),
     (Join-Path $packageApp "manifest.xml"),
     (Join-Path $packageApp "local-server.mjs"),
+    (Join-Path $packageApp "external-range.mjs"),
     (Join-Path $packageRuntime "node.exe"),
     (Join-Path $PSScriptRoot "manage.ps1"),
     (Join-Path $PSScriptRoot "start-hidden.vbs"),
@@ -86,6 +87,7 @@ New-Item -ItemType Directory -Path $appRoot, $runtimeRoot, $certificateRoot | Ou
 Copy-Item -LiteralPath (Join-Path $packageApp "dist") -Destination $appRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $packageApp "manifest.xml") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $packageApp "local-server.mjs") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $packageApp "external-range.mjs") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runtimeRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot

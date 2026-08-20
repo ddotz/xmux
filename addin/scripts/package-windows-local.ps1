@@ -60,6 +60,9 @@ try {
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "local-server.mjs") `
         -Destination $appRoot
+    Copy-Item `
+        -LiteralPath (Join-Path $PSScriptRoot "external-range.mjs") `
+        -Destination $appRoot
     Copy-Item -LiteralPath $nodePath -Destination $runtimeRoot
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "install-windows-local.ps1") `

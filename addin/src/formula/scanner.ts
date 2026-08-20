@@ -153,6 +153,23 @@ const readThreeDSpan = (cur: Cursor, start: number): RefToken | null => {
 }
 
 /**
+ * `'C:\dir\[Book.xlsx]Sheet 1'` — Excel packs path, book and sheet into one quoted name.
+ * Sheet names may not contain `[` or `]`, so brackets inside a name mean cross-workbook.
+ */
+const splitEmbeddedExternal = (
+  name: string,
+): { path: string | null; book: string; sheet: string } | null => {
+  const open = name.indexOf("[")
+  const close = name.indexOf("]")
+  if (open === -1 || close <= open + 1 || close === name.length - 1) return null
+  return {
+    path: open === 0 ? null : name.slice(0, open),
+    book: name.slice(open + 1, close),
+    sheet: name.slice(close + 1),
+  }
+}
+
+/**
  * Everything that starts with a sheet name, workbook prefix, table name, defined name,
  * or a bare A1-shaped identifier. Always advances the cursor.
  */
@@ -177,10 +194,14 @@ const readReferenceLike = (cur: Cursor): RefToken | null => {
   }
 
   const external = cur.src.charAt(cur.pos) === "["
+  let book: string | null = null
 
-  if (external && readBracketed(cur) === null) {
-    cur.pos = start + 1
-    return null
+  if (external) {
+    book = readBracketed(cur)
+    if (book === null) {
+      cur.pos = start + 1
+      return null
+    }
   }
 
   const quoted = cur.src.charAt(cur.pos) === "'"
@@ -199,10 +220,22 @@ const readReferenceLike = (cur: Cursor): RefToken | null => {
     cur.pos += 1
     const body = readRefBody(cur)
     if (body === null) return null
-    if (external)
+    const parts =
+      external && book !== null
+        ? { path: null, book, sheet: name }
+        : quoted
+          ? splitEmbeddedExternal(name)
+          : null
+    if (parts !== null)
       return token(cur, start, {
         kind: "external",
-        target: { kind: "unresolvable", reason: "external" },
+        target: {
+          kind: "external",
+          path: parts.path,
+          book: parts.book,
+          sheet: parts.sheet,
+          address: body.address,
+        },
       })
     if (body.kind === "refError")
       return token(cur, start, {

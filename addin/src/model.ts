@@ -33,6 +33,15 @@ export type PaneState =
     }
   | { readonly kind: "error"; readonly message: string }
 
+/** A range read out of another workbook's saved file, shown read-only under the formula. */
+export type ExternalPreview = {
+  /** The reference exactly as the formula writes it. */
+  readonly label: string
+  /** Absolute path of the file the values came from. */
+  readonly source: string
+  readonly window: SheetWindow
+}
+
 /** The live sheet under the formula: what it shows, and what the user has picked in it. */
 export type ViewportState = {
   readonly sheets: readonly SheetInfo[]

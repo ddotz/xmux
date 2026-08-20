@@ -21,10 +21,22 @@ export type RefTarget =
   | { readonly kind: "table"; readonly table: string; readonly itemSpec: string }
   /** A defined name, resolved later against the workbook's names collection. */
   | { readonly kind: "name"; readonly name: string }
+  /**
+   * A range in another workbook. The sandbox cannot touch that workbook, but the local
+   * service can read its saved file from disk; everything needed to find it is kept.
+   */
+  | {
+      readonly kind: "external"
+      /** Directory prefix exactly as written (`C:\dir\`), null when the ref names only the book. */
+      readonly path: string | null
+      readonly book: string
+      readonly sheet: string
+      readonly address: string
+    }
   /** Syntactically a reference, but nothing xmux can render. */
   | {
       readonly kind: "unresolvable"
-      readonly reason: "external" | "refError" | "threeD"
+      readonly reason: "refError" | "threeD"
     }
 
 /** The syntactic shape of the reference, independent of whether it resolves. */

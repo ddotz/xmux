@@ -114,11 +114,43 @@ describe("scanReferences", () => {
     expect(tokens.map((t) => t.kind)).toEqual(["name", "name"])
   })
 
-  it("marks a cross-workbook reference unresolvable rather than guessing", () => {
+  it("carries book, sheet and address for a cross-workbook reference", () => {
     const tokens = scanReferences("=[Book2]Sheet1!A1")
 
     expect(tokens[0]?.kind).toBe("external")
-    expect(tokens[0]?.target).toEqual({ kind: "unresolvable", reason: "external" })
+    expect(tokens[0]?.target).toEqual({
+      kind: "external",
+      path: null,
+      book: "Book2",
+      sheet: "Sheet1",
+      address: "A1",
+    })
+  })
+
+  it("reads a closed-workbook reference with the path Excel writes into it", () => {
+    // Given: the canonical form Excel stores once the source file is closed.
+    const tokens = scanReferences("='C:\\예산\\[예산.xlsx]시트 1'!$A$1:$B$5")
+
+    expect(tokens[0]?.kind).toBe("external")
+    expect(tokens[0]?.target).toEqual({
+      kind: "external",
+      path: "C:\\예산\\",
+      book: "예산.xlsx",
+      sheet: "시트 1",
+      address: "$A$1:$B$5",
+    })
+  })
+
+  it("reads a quoted open-workbook reference without a path", () => {
+    const tokens = scanReferences("=SUM('[예산.xlsx]시트 1'!A1:A9)")
+
+    expect(tokens[0]?.target).toEqual({
+      kind: "external",
+      path: null,
+      book: "예산.xlsx",
+      sheet: "시트 1",
+      address: "A1:A9",
+    })
   })
 
   it("marks a #REF! error as unresolvable", () => {

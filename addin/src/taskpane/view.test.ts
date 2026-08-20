@@ -68,6 +68,7 @@ const props = (overrides: Partial<ViewProps> = {}): ViewProps => ({
   pane: formulaPane(),
   viewport: viewportState(),
   badge: null,
+  external: null,
   onReference: noop,
   onReferenceJump: noop,
   onReferenceContext: noop,

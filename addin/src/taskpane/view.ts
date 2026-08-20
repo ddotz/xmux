@@ -6,7 +6,8 @@ import {
   formatStepContent,
   formatStepMarker,
 } from "../formula/describe"
-import type { PaneState } from "../model"
+import type { ExternalPreview, PaneState } from "../model"
+import { externalBlocks } from "./external-view"
 import { attachPointer, attachWheel } from "./grid-input"
 import { attachHorizontalDrag } from "./horizontal-drag"
 import { type ReferenceBarProps, referenceBar } from "./reference-bar"
@@ -28,6 +29,8 @@ import {
 
 export type ViewProps = ReferenceBarProps & {
   readonly badge: string | null
+  /** When set, the opened reference lives in another workbook: show its file, read-only. */
+  readonly external: ExternalPreview | null
   /** Click a reference in the formula to open it below. */
   readonly onReference: (index: number) => void
   readonly onReferenceJump: (index: number) => void
@@ -256,6 +259,10 @@ const bodyFor = (props: ViewProps): readonly HTMLElement[] => {
         return blocks
       }
       blocks.push(explanation(props))
+      if (props.external !== null) {
+        blocks.push(...externalBlocks(props.external))
+        return blocks
+      }
       if (props.viewport.message !== null)
         blocks.push(text("div", "pane-note", props.viewport.message))
       blocks.push(referenceBar(props), sheetTabs(props), grid(props))

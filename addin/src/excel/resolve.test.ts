@@ -29,9 +29,9 @@ const tokens: readonly RefToken[] = [
   },
   {
     span: { start: 27, end: 37 },
-    text: "[Old]A1",
+    text: "[Old]Data!A1",
     kind: "external",
-    target: { kind: "unresolvable", reason: "external" },
+    target: { kind: "external", path: null, book: "Old", sheet: "Data", address: "A1" },
   },
 ]
 
@@ -91,8 +91,7 @@ describe("reference resolution", () => {
       { kind: "range", sheet: "Data", area: { top: 3, left: 2, height: 18, width: 1 } },
       {
         kind: "unavailable",
-        reason:
-          "외부 참조 · 현재 셀의 Excel 캐시 계산 결과 4,766 · 외부 범위는 열거나 수정할 수 없음",
+        reason: "외부 참조 · 현재 셀의 Excel 캐시 계산 결과 4,766",
       },
     ])
     expect(syncCount).toBe(1)
