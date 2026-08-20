@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_BUDGET } from "../ai/budget"
-import { renderGrid } from "./grid"
+import { formulaAddresses, renderGrid } from "./grid"
 
 describe("renderGrid", () => {
   it("labels every row with the sheet row it actually is", () => {
@@ -32,12 +32,23 @@ describe("renderGrid", () => {
     )
 
     expect(grid.split("\n")).toEqual([
-      "Main!A1:B4 (빈 칸 2개, 아래에서 빈 자리로 표시)",
+      "Main!A1:B4 (빈 칸 2개, 아래에서 ·로 표시)",
       "\tA\tB",
       "1\t항목\t금액",
       "2\t대출채권\t1200",
       "3\t(빈 행)",
       "4\t보증금\t500",
+    ])
+  })
+
+  it("marks a blank cell visibly so columns are aligned, not counted", () => {
+    // Given: a sparse row. Invisible tab runs are how a formula in X gets reported as W.
+    const grid = renderGrid("Main!V41:X41", [["", "", "=SUM(A1:A9)"]], { top: 41, left: 22 })
+
+    expect(grid.split("\n")).toEqual([
+      "Main!V41:X41 (빈 칸 2개, 아래에서 ·로 표시)",
+      "\tV\tW\tX",
+      "41\t·\t·\t=SUM(A1:A9)",
     ])
   })
 
@@ -47,11 +58,13 @@ describe("renderGrid", () => {
       ["대출채권", 1200, ""],
     ])
 
-    expect(grid.split("\n")[0]).toBe("A1:C2 (빈 칸 1개, 아래에서 빈 자리로 표시)")
+    expect(grid.split("\n")[0]).toBe("A1:C2 (빈 칸 1개, 아래에서 ·로 표시)")
   })
 
-  it("writes empty cells as empty, not as null", () => {
-    expect(renderGrid("A1:B1", [[null, undefined]])).toContain("\n\t")
+  it("writes null and undefined as blank marks, never as the word null", () => {
+    expect(renderGrid("A1:B1", [[null, undefined]])).toBe(
+      "A1:B1 (빈 칸 2개, 아래에서 ·로 표시)\n·\t·",
+    )
   })
 
   it("renders without labels when the caller cannot say where it read from", () => {
@@ -71,6 +84,31 @@ describe("renderGrid", () => {
 
     expect(grid).toContain("… (생략됨)")
     expect(grid.split("\n").length - 2).toBeLessThanOrEqual(DEFAULT_BUDGET.readCells)
+  })
+
+  it("names the exact cells that hold formulas — X41 is X41, not W41", () => {
+    // Given: the reported failure. Formulas at X41, X42, V44 inside S2:AA52 came back as
+    // W41, W42, W44 when their positions were reconstructed by counting grid columns.
+    const rows = Array.from({ length: 51 }, (_, row) =>
+      Array.from({ length: 9 }, (_, column) => {
+        if (row === 39 && column === 5) return "=SUM(X2:X40)"
+        if (row === 40 && column === 5) return "=X41*2"
+        if (row === 42 && column === 3) return "=AVERAGE(V2:V40)"
+        return ""
+      }),
+    )
+
+    const listed = formulaAddresses(rows, { top: 2, left: 19 })
+
+    expect(listed).toEqual(["X41: =SUM(X2:X40)", "X42: =X41*2", "V44: =AVERAGE(V2:V40)"])
+  })
+
+  it("caps the formula listing instead of flooding the conversation", () => {
+    const rows = [["=A1", "=A2", "=A3"]]
+
+    const listed = formulaAddresses(rows, { top: 1, left: 1 }, 2)
+
+    expect(listed).toEqual(["A1: =A1", "B1: =A2", "외 1개"])
   })
 
   it("carries more of the sheet when the server has room for it", () => {

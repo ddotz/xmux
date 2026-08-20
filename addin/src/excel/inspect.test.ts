@@ -114,10 +114,10 @@ describe("runTool", () => {
     expect(answer).toContain("찾을 수 없습니다")
   })
 
-  it("reports where the text sits so the model can ask for that area", async () => {
+  it("reports where the text sits as a sheet address, not an offset to convert", async () => {
     const answer = await runTool(context(sheet()), { tool: "find", text: "대출채권" })
 
-    expect(answer).toContain("행 2 열 1")
+    expect(answer).toContain("A2: 대출채권")
   })
 
   it("says plainly when the text is not there", async () => {

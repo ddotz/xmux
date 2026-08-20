@@ -13,7 +13,15 @@ import { columnLetters, type GridArea } from "./address"
  * So every row carries the sheet row it actually is, the columns carry their letters, and
  * a row with nothing in it says so rather than arriving as a line of tab characters. The
  * model no longer counts anything: it reads the address off the label.
+ *
+ * Columns had the same failure one level down: a blank cell between tabs is invisible, so
+ * a row like `\t\t\t=SUM(…)` made the model guess which column the formula sits in — off
+ * by one either way (W for X, W for V). Blanks now render as a visible `·`, and formula
+ * reads get their addresses listed outright by `formulaAddresses`.
  */
+
+/** What a blank cell looks like in the grid — visible, so columns can be aligned, not counted. */
+const BLANK_MARK = "·"
 
 const cellText = (value: unknown): string =>
   value === null || value === undefined ? "" : String(value)
@@ -42,7 +50,8 @@ export const renderGrid = (
 ): string => {
   const width = Math.max(0, ...values.map((row) => row.length))
   const blanks = blankCells(values)
-  const heading = blanks === 0 ? address : `${address} (빈 칸 ${blanks}개, 아래에서 빈 자리로 표시)`
+  const heading =
+    blanks === 0 ? address : `${address} (빈 칸 ${blanks}개, 아래에서 ${BLANK_MARK}로 표시)`
 
   const lines: string[] = []
   if (anchor !== null && width > 0) {
@@ -62,10 +71,42 @@ export const renderGrid = (
     const line =
       anchor !== null && blankRow(row)
         ? `${label}(빈 행)`
-        : `${label}${row.map(cellText).join("\t")}`
+        : `${label}${row
+            .map((cell) => {
+              const text = cellText(cell)
+              return text.trim() === "" ? BLANK_MARK : text
+            })
+            .join("\t")}`
     cells += row.length
     characters += line.length
     lines.push(line)
   }
   return `${heading}\n${lines.join("\n")}`
+}
+
+/**
+ * Every formula cell with the sheet address it actually has. This is the answer to
+ * "어디에 수식이 있나" — handed over as addresses so nothing is reconstructed by counting
+ * columns across a tab-separated row.
+ */
+export const formulaAddresses = (
+  values: readonly (readonly unknown[])[],
+  anchor: Pick<GridArea, "top" | "left">,
+  limit = 30,
+): readonly string[] => {
+  const found: string[] = []
+  let more = 0
+  values.forEach((row, rowOffset) => {
+    row.forEach((cell, columnOffset) => {
+      const text = cellText(cell)
+      if (!text.startsWith("=")) return
+      if (found.length < limit) {
+        found.push(`${columnLetters(anchor.left + columnOffset)}${anchor.top + rowOffset}: ${text}`)
+      } else {
+        more += 1
+      }
+    })
+  })
+  if (more > 0) found.push(`외 ${more}개`)
+  return found
 }

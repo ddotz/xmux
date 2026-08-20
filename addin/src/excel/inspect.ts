@@ -1,8 +1,8 @@
 import { type Budget, DEFAULT_BUDGET } from "../ai/budget"
 import type { ToolCall } from "../ai/tool-schemas"
-import { parseArea } from "./address"
+import { columnLetters, parseArea } from "./address"
 import { runAuditTool } from "./audit"
-import { renderGrid } from "./grid"
+import { formulaAddresses, renderGrid } from "./grid"
 import type { InspectContext, InspectSheet } from "./office-shapes"
 import { runReasoningTool } from "./reasoning"
 import { splitQualified } from "./resolve"
@@ -52,12 +52,19 @@ const readRange = async (
   await context.sync()
   // Where the rectangle starts, so every row can carry the sheet row it actually is.
   const anchor = parseArea(splitQualified(range.address).local)
-  return renderGrid(
+  const grid = renderGrid(
     range.address,
     call.formulas === true ? range.formulas : range.values,
     anchor,
     budget,
   )
+  if (call.formulas !== true || anchor === null) return grid
+  // Which cells hold formulas is the question this mode answers; hand the addresses over
+  // outright instead of leaving them to be reconstructed by counting grid columns.
+  const listed = formulaAddresses(range.formulas, anchor)
+  return listed.length === 0
+    ? `${grid}\n수식 셀 없음: 이 범위의 값은 모두 직접 입력된 값입니다.`
+    : `${grid}\n수식 셀 (실제 주소 · 위치는 반드시 이 주소를 사용):\n${listed.join("\n")}`
 }
 
 const listSheetNames = async (context: InspectContext): Promise<string> => {
@@ -120,19 +127,22 @@ const find = async (
   }
 
   const needle = call.text.trim().toLowerCase()
+  // The used range rarely starts at A1; hits carry the sheet address they actually have.
+  const anchor = parseArea(splitQualified(used.address).local) ?? { top: 1, left: 1 }
   const hits: string[] = []
   used.values.forEach((row, rowOffset) => {
     row.forEach((value, columnOffset) => {
       if (hits.length >= 20) return
       const text = value === null || value === undefined ? "" : String(value)
       if (text.toLowerCase().includes(needle)) {
-        hits.push(`행 ${rowOffset + 1} 열 ${columnOffset + 1}: ${text.slice(0, 80)}`)
+        const address = `${columnLetters(anchor.left + columnOffset)}${anchor.top + rowOffset}`
+        hits.push(`${address}: ${text.slice(0, 80)}`)
       }
     })
   })
   return hits.length === 0
     ? `${sheet.name}에서 "${call.text}"를 찾지 못했습니다. (사용 범위 ${used.address} 기준)`
-    : `${sheet.name} ${used.address} 안에서 찾은 위치 (좌상단이 행1 열1):\n${hits.join("\n")}`
+    : `${sheet.name} ${used.address} 안에서 찾은 위치 (실제 셀 주소):\n${hits.join("\n")}`
 }
 
 /**
