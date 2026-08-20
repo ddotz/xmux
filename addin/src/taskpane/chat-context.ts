@@ -17,6 +17,11 @@ export type WorkbookContextInput = {
     readonly address: string
     readonly values: readonly (readonly unknown[])[]
   }
+  /** Top rows of a narrow used range, kept separate from the selection neighborhood. */
+  readonly headerRegion?: {
+    readonly address: string
+    readonly values: readonly (readonly unknown[])[]
+  }
   readonly references: readonly ReferenceSummary[]
 }
 
@@ -29,6 +34,7 @@ type CellValue = string | number | boolean | null
 
 type DetailedRegion = {
   readonly mode: "detail"
+  readonly label?: "selection_neighborhood" | "used_range_top_rows"
   readonly address: string
   readonly rows: readonly (readonly CellValue[])[]
   readonly headerRows: readonly number[]
@@ -36,6 +42,7 @@ type DetailedRegion = {
 
 type SummaryRegion = {
   readonly mode: "summary"
+  readonly label?: "selection_neighborhood" | "used_range_top_rows"
   readonly address: string
   readonly cells: number
   readonly nonEmpty: number
@@ -46,6 +53,9 @@ type SummaryRegion = {
 export type WorkbookContext = {
   readonly sheets: readonly ContextSheet[]
   readonly selection: WorkbookContextInput["selection"]
+  /** The exact top-of-used-range rectangle; absent when the used range is wide. */
+  readonly headerRegion?: DetailedRegion | SummaryRegion
+  /** The exact rectangle surrounding the selection, not the entire table. */
   readonly region: DetailedRegion | SummaryRegion
   readonly references: readonly ReferenceSummary[]
 }
@@ -82,25 +92,33 @@ const summary = (address: string, rows: readonly (readonly CellValue[])[]): Summ
   }
 }
 
+const compactRegion = (
+  input: { readonly address: string; readonly values: readonly (readonly unknown[])[] },
+  limits: ContextLimits,
+  label: "selection_neighborhood" | "used_range_top_rows",
+): DetailedRegion | SummaryRegion => {
+  const rows = input.values.map((row) => row.map(cellValue))
+  const cells = rows.reduce((total, row) => total + row.length, 0)
+  const characters = rows
+    .flat()
+    .reduce<number>((total, value) => total + String(value ?? "").length, 0)
+  return cells <= limits.maxCells && characters <= limits.maxCharacters
+    ? { mode: "detail", label, address: input.address, rows, headerRows: headerRows(rows) }
+    : { ...summary(input.address, rows), label }
+}
+
 /** Keep a small real grid; turn anything larger or unusually verbose into statistics. */
 export const compactWorkbookContext = (
   input: WorkbookContextInput,
   limits: ContextLimits = DEFAULT_LIMITS,
 ): WorkbookContext => {
-  const rows = input.region.values.map((row) => row.map(cellValue))
-  const cells = rows.reduce((total, row) => total + row.length, 0)
-  const characters = rows
-    .flat()
-    .reduce<number>((total, value) => total + String(value ?? "").length, 0)
-  const region: DetailedRegion | SummaryRegion =
-    cells <= limits.maxCells && characters <= limits.maxCharacters
-      ? { mode: "detail", address: input.region.address, rows, headerRows: headerRows(rows) }
-      : summary(input.region.address, rows)
-
   return {
     sheets: input.sheets,
     selection: input.selection,
-    region,
+    ...(input.headerRegion === undefined
+      ? {}
+      : { headerRegion: compactRegion(input.headerRegion, limits, "used_range_top_rows") }),
+    region: compactRegion(input.region, limits, "selection_neighborhood"),
     references: input.references,
   }
 }

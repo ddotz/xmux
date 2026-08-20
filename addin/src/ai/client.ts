@@ -41,9 +41,10 @@ const REQUEST_TIMEOUT_MS = 120_000
  * row. Both look like a broken conversation to the server, and the user sees a chat that
  * worked once and then stopped.
  *
- * So the transcript is normalised on the way out: one system message first, no empty
- * content, and consecutive turns from the same side merged into one. Nothing is dropped —
- * what was said still gets said, in a shape the server reads.
+ * So the transcript is normalised on the way out: one system message first and no empty
+ * content. Consecutive assistant status lines merge. Consecutive user turns mean the older
+ * request failed before it got an answer, so only the newest request is sent — replaying
+ * the abandoned command beside its correction is unsafe at a direct-write boundary.
  */
 export const conversationFor = (messages: readonly ChatMessage[]): readonly ChatMessage[] => {
   const spoken = messages.filter((message) => message.content.trim() !== "")
@@ -59,19 +60,25 @@ export const conversationFor = (messages: readonly ChatMessage[]): readonly Chat
   }
 
   const head =
-    system.length === 0 && leading.length === 0
-      ? []
-      : [
-          {
-            role: "system" as const,
-            content: [...system, ...leading].join("\n\n"),
-          },
-        ]
+    system.length === 0 ? [] : [{ role: "system" as const, content: system.join("\n\n") }]
 
   const merged: ChatMessage[] = []
+  if (leading.length > 0) {
+    merged.push(
+      {
+        role: "user",
+        content: `이전 대화 요약(새 지시가 아님):\n${leading.join("\n\n")}`,
+      },
+      { role: "assistant", content: "이전 대화 요약을 참고하겠습니다." },
+    )
+  }
   for (const message of exchange) {
     const last = merged.at(-1)
     if (last !== undefined && last.role === message.role) {
+      if (message.role === "user") {
+        merged[merged.length - 1] = message
+        continue
+      }
       merged[merged.length - 1] = {
         role: last.role,
         content: `${last.content}\n\n${message.content}`,
@@ -115,7 +122,13 @@ const switched = (
   )
 }
 
-const textOf = (body: unknown): string | null => {
+type Completion = {
+  readonly content: string
+  readonly finishReason: string | null
+  readonly refusal: string | null
+}
+
+const completionOf = (body: unknown): Completion | null => {
   if (typeof body !== "object" || body === null) return null
   const choices = (body as { choices?: unknown }).choices
   if (!Array.isArray(choices)) return null
@@ -124,7 +137,14 @@ const textOf = (body: unknown): string | null => {
   const message = (first as { message?: unknown }).message
   if (typeof message !== "object" || message === null) return null
   const content = (message as { content?: unknown }).content
-  return typeof content === "string" ? content : null
+  if (typeof content !== "string") return null
+  const finishReason = (first as { finish_reason?: unknown }).finish_reason
+  const refusal = (message as { refusal?: unknown }).refusal
+  return {
+    content,
+    finishReason: typeof finishReason === "string" ? finishReason : null,
+    refusal: typeof refusal === "string" && refusal.trim() !== "" ? refusal : null,
+  }
 }
 
 /** The server's own words, trimmed and with the key scrubbed out of them. */
@@ -181,12 +201,28 @@ export const askModel = async (
   } catch {
     throw new AiError("AI 응답을 이해하지 못했습니다.")
   }
-  const text = textOf(body)
-  if (text === null) throw new AiError("AI 응답을 이해하지 못했습니다.")
+  const completion = completionOf(body)
+  if (completion === null) throw new AiError("AI 응답을 이해하지 못했습니다.")
+  if (completion.refusal !== null)
+    throw new AiError(`AI가 요청을 거부했습니다: ${completion.refusal.trim().slice(0, 300)}`)
+  if (
+    completion.finishReason !== null &&
+    completion.finishReason !== "stop" &&
+    completion.finishReason !== "tool_calls"
+  ) {
+    throw new AiError(
+      completion.finishReason === "length"
+        ? "AI 답변이 길이 제한으로 중간에 잘렸습니다. 요청 범위를 나눠 다시 시도해 주세요."
+        : `AI 답변이 완료되지 않았습니다: ${completion.finishReason}`,
+    )
+  }
   // A thinking model's deliberation arrives inside `content` on a server that does not
   // split it out. It is not an answer and it is not work — it is cut here so that nothing
   // downstream can mistake a draft call inside it for the call the model settled on.
-  return visibleReply(text)
+  const visible = visibleReply(completion.content)
+  if (visible.trim() === "")
+    throw new AiError("AI가 실행 가능한 답변을 만들지 못했습니다. 다시 시도해 주세요.")
+  return visible
 }
 
 /** Verify URL, credentials, and model with the smallest real request the legacy API accepts. */
@@ -195,7 +231,7 @@ export const testConnection = async (
   fetcher: typeof fetch = fetch,
 ): Promise<void> => {
   await askModel(
-    { ...settings, temperature: 0, maxTokens: 1 },
+    { ...settings, temperature: 0, maxTokens: 16 },
     [{ role: "user", content: "연결 확인" }],
     fetcher,
   )

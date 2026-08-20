@@ -4,6 +4,7 @@ import { renderComposer, renderPlan } from "./chat-controls"
 import { renderSettings } from "./chat-settings"
 import { renderSkillProposal } from "./chat-skill-ui"
 import type { ChatSkill, ChatSkillId } from "./chat-skills"
+import { renderMarkdown } from "./markdown"
 
 export type ChatTurn = {
   readonly role: "user" | "assistant"
@@ -54,6 +55,10 @@ export type ChatHandlers = {
   readonly onTestSettings: (settings: AiSettings) => void
 }
 
+export type ChatNavigation = {
+  readonly onRange: (sheet: string, address: string) => void
+}
+
 const element = (tag: string, className: string): HTMLElement => {
   const node = document.createElement(tag)
   node.className = className
@@ -83,13 +88,35 @@ const stickToBottom = (log: HTMLElement): void => {
   })
 }
 
-const renderConversation = (state: ChatState): HTMLElement => {
+const renderConversation = (state: ChatState, navigation: ChatNavigation | null): HTMLElement => {
   const log = element("div", "chat-log")
+  log.setAttribute("role", "log")
+  log.setAttribute("aria-label", "AI 대화")
+  log.setAttribute("aria-live", "polite")
+  log.setAttribute("aria-relevant", "additions text")
+  log.setAttribute("aria-busy", String(state.pending))
   if (state.turns.length === 0)
     log.append(text("div", "pane-empty chat-empty", "Excel 작업을 자연어로 요청해 보세요."))
-  for (const turn of state.turns) log.append(text("div", `turn turn-${turn.role}`, turn.text))
+  for (const turn of state.turns) {
+    if (turn.role === "user") {
+      const user = text("article", "turn turn-user", turn.text)
+      user.setAttribute("aria-label", "사용자")
+      log.append(user)
+      continue
+    }
+    const assistant = element("article", "turn turn-assistant")
+    assistant.setAttribute("aria-label", "AI")
+    assistant.append(
+      renderMarkdown(turn.text, {
+        defaultSheet: state.sheet,
+        onNavigate: navigation?.onRange ?? null,
+      }),
+    )
+    log.append(assistant)
+  }
   if (state.pending) {
     const pending = element("div", "turn turn-assistant chat-pending")
+    pending.setAttribute("role", "status")
     pending.append(text("div", "", state.activity.length === 0 ? "답변 작성 중…" : "작업 중…"))
     // The last few steps, so a long-working turn reads as progress rather than silence.
     for (const line of state.activity.slice(-5)) pending.append(text("div", "chat-activity", line))
@@ -99,7 +126,11 @@ const renderConversation = (state: ChatState): HTMLElement => {
   return log
 }
 
-export const renderChat = (state: ChatState, handlers: ChatHandlers): readonly HTMLElement[] => {
+export const renderChat = (
+  state: ChatState,
+  handlers: ChatHandlers,
+  navigation: ChatNavigation | null = null,
+): readonly HTMLElement[] => {
   const layout = element("section", "chat-layout")
   layout.setAttribute("data-chat-layout", "compact")
 
@@ -111,7 +142,7 @@ export const renderChat = (state: ChatState, handlers: ChatHandlers): readonly H
     return [layout]
   }
 
-  layout.append(renderConversation(state))
+  layout.append(renderConversation(state, navigation))
   const plan = renderPlan(state.plan, state.sheet, handlers, describePlan)
   if (plan !== null) layout.append(plan)
   const proposedSkill = state.plan?.skill

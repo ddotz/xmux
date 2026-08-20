@@ -44,7 +44,10 @@ const parseCell = (text: string): { row: number; column: number } | null => {
   if (match === null) return null
   const [, letters, digits] = match
   if (letters === undefined || digits === undefined) return null
-  return { row: Number(digits), column: columnNumber(letters) }
+  const row = Number(digits)
+  const column = columnNumber(letters)
+  if (row < 1 || row > MAX_ROW || column < 1 || column > MAX_COLUMN) return null
+  return { row, column }
 }
 
 /**
@@ -87,6 +90,7 @@ export const parseSpan = (address: string): GridArea | null => {
   if (/^[A-Za-z]{1,3}$/.test(first) && /^[A-Za-z]{1,3}$/.test(second)) {
     const from = columnNumber(first)
     const to = columnNumber(second)
+    if (from < 1 || from > MAX_COLUMN || to < 1 || to > MAX_COLUMN) return null
     return {
       top: 1,
       left: Math.min(from, to),
@@ -97,6 +101,7 @@ export const parseSpan = (address: string): GridArea | null => {
   if (/^[0-9]{1,7}$/.test(first) && /^[0-9]{1,7}$/.test(second)) {
     const from = Number(first)
     const to = Number(second)
+    if (from < 1 || from > MAX_ROW || to < 1 || to > MAX_ROW) return null
     return {
       top: Math.min(from, to),
       left: 1,

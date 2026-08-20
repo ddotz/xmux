@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { ProposedSkill } from "../ai/plan"
 import { DEFAULT_SETTINGS } from "../ai/settings"
-import { type ChatHandlers, type ChatState, renderChat } from "./chat"
+import { type ChatHandlers, type ChatNavigation, type ChatState, renderChat } from "./chat"
 import { CHAT_SKILLS, type ChatSkill } from "./chat-skills"
 import { attachSelection } from "./selection-refresh"
 
@@ -36,9 +36,13 @@ const state = (overrides: Partial<ChatState> = {}): ChatState => ({
   activity: [],
   ...overrides,
 })
-const mount = (chat: ChatState, on: ChatHandlers = handlers()): HTMLElement => {
+const mount = (
+  chat: ChatState,
+  on: ChatHandlers = handlers(),
+  navigation: ChatNavigation | null = null,
+): HTMLElement => {
   const root = document.createElement("main")
-  root.replaceChildren(...renderChat(chat, on))
+  root.replaceChildren(...renderChat(chat, on, navigation))
   document.body.replaceChildren(root)
   return root
 }
@@ -47,6 +51,26 @@ const key = (node: Element, value: string): void => {
 }
 
 describe("the compact chat screen", () => {
+  it("renders assistant Markdown and navigates when a reported cell is clicked", () => {
+    const onRange = vi.fn()
+    const root = mount(
+      state({
+        turns: [{ role: "assistant", text: "### 결과\n**Main!B2:B5**에 합계를 넣었습니다." }],
+      }),
+      handlers(),
+      { onRange },
+    )
+
+    expect(root.querySelector("h4")?.textContent).toBe("결과")
+    expect(root.querySelector("strong")?.textContent).toBe("Main!B2:B5")
+    expect(root.querySelector('[role="log"]')?.getAttribute("aria-label")).toBe("AI 대화")
+    expect(root.querySelector(".turn-assistant")?.getAttribute("aria-label")).toBe("AI")
+    const cell = root.querySelector<HTMLButtonElement>(".chat-cell-link")
+    expect(cell?.textContent).toBe("Main!B2:B5")
+    cell?.click()
+    expect(onRange).toHaveBeenCalledWith("Main", "B2:B5")
+  })
+
   it("has no role picker or role-selection state surface", () => {
     const root = mount(state())
     expect(root.querySelector("select")).toBeNull()

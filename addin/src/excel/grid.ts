@@ -23,18 +23,20 @@ import { columnLetters, type GridArea } from "./address"
 /** What a blank cell looks like in the grid — visible, so columns can be aligned, not counted. */
 const BLANK_MARK = "·"
 
-const cellText = (value: unknown): string =>
+const rawCellText = (value: unknown): string =>
   value === null || value === undefined ? "" : String(value)
 
-const blankRow = (row: readonly unknown[]): boolean =>
-  row.every((cell) => cellText(cell).trim() === "")
+const cellText = (value: unknown): string => {
+  const raw = rawCellText(value)
+  if (raw !== "" && raw.trim() === "") return `(공백 ${raw.length}자)`
+  return raw.replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")
+}
+
+const blankRow = (row: readonly unknown[]): boolean => row.every((cell) => rawCellText(cell) === "")
 
 /** How many cells in the whole rectangle hold nothing, so the model can plan around them. */
 const blankCells = (values: readonly (readonly unknown[])[]): number =>
-  values.reduce(
-    (total, row) => total + row.filter((cell) => cellText(cell).trim() === "").length,
-    0,
-  )
+  values.reduce((total, row) => total + row.filter((cell) => rawCellText(cell) === "").length, 0)
 
 /**
  * Render a grid, bounded, so a wide sheet cannot flood the conversation.
@@ -74,7 +76,7 @@ export const renderGrid = (
         : `${label}${row
             .map((cell) => {
               const text = cellText(cell)
-              return text.trim() === "" ? BLANK_MARK : text
+              return rawCellText(cell) === "" ? BLANK_MARK : text
             })
             .join("\t")}`
     cells += row.length

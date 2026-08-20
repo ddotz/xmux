@@ -37,6 +37,13 @@ describe("parseArea", () => {
     expect(parseArea("3:7")).toBeNull()
     expect(parseArea("nonsense")).toBeNull()
   })
+
+  it("accepts Excel's outermost cell and rejects coordinates outside the grid", () => {
+    expect(parseArea("XFD1048576")).toEqual({ top: 1048576, left: 16384, height: 1, width: 1 })
+    expect(parseArea("XFE1")).toBeNull()
+    expect(parseArea("A1048577")).toBeNull()
+    expect(parseArea("A0")).toBeNull()
+  })
 })
 
 describe("formatArea", () => {
@@ -70,6 +77,14 @@ describe("parseSpan", () => {
   it("rejects anything that is not an unbounded span", () => {
     expect(parseSpan("B2:D5")).toBeNull()
     expect(parseSpan("A1")).toBeNull()
+  })
+
+  it("rejects spans outside Excel's grid", () => {
+    expect(parseSpan("XFD:XFD")).not.toBeNull()
+    expect(parseSpan("XFE:XFE")).toBeNull()
+    expect(parseSpan("1:1048576")).not.toBeNull()
+    expect(parseSpan("0:1")).toBeNull()
+    expect(parseSpan("1:1048577")).toBeNull()
   })
 })
 

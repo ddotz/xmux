@@ -32,13 +32,14 @@ describe("readSteps", () => {
     expect(step.calls.map((call) => call.tool)).toEqual(["create_sheet", "write_range", "autofit"])
   })
 
-  it("keeps the calls in front of a broken one instead of losing the batch", () => {
-    // Given: a trailing element the schema rejects. What was already understood still runs.
+  it("rejects a malformed batch atomically", () => {
+    // A corrected full retry must not execute the valid prefix twice.
     const step = readSteps('[{"tool":"used_range"},{"tool":"read_range"}]')
 
     expect(step.kind).toBe("calls")
     if (step.kind !== "calls") return
-    expect(step.calls).toEqual([{ tool: "used_range" }])
+    expect(step.calls).toEqual([])
+    expect(step.rejected).toContain("read_range")
   })
 
   it("says how many calls it dropped behind the broken one", () => {
@@ -49,7 +50,7 @@ describe("readSteps", () => {
 
     expect(step.kind).toBe("calls")
     if (step.kind !== "calls") return
-    expect(step.calls).toEqual([{ tool: "used_range" }])
+    expect(step.calls).toEqual([])
     expect(step.rejected).toContain("read_range")
     // The one behind it is unrun work the model has to send again.
     expect(step.rejected).toContain("뒤의 1개")
@@ -64,9 +65,26 @@ describe("readSteps", () => {
 
     expect(step.kind).toBe("calls")
     if (step.kind !== "calls") return
-    expect(step.calls).toHaveLength(MAX_CALLS_PER_REPLY)
-    // And the model is told the batch was cut, so it does not report unrun work as done.
-    expect(step.rejected).toContain("나머지 5개")
+    expect(step.calls).toHaveLength(0)
+    expect(step.rejected).toContain("하나도 실행하지 않았습니다")
+  })
+
+  it("rejects unknown fields instead of stripping a typo into a destructive default", () => {
+    const step = readSteps('{"tool":"clear_range","address":"A1","waht":"formats"}')
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([])
+    expect(step.rejected).toContain("정의되지 않은 필드")
+  })
+
+  it("recognises an unfenced call truncated before its closing brace", () => {
+    const step = readSteps('설명\n{"tool":"write_range","address":"A1","rows":[["값')
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.calls).toEqual([])
+    expect(step.rejected).toContain("완결되지 않아")
   })
 
   it("runs a call the model wrote in Python's dialect instead of printing it", () => {
@@ -194,9 +212,12 @@ describe("containsToolCall", () => {
 describe("describeCall", () => {
   it("says where a read is going, in the words the pane shows", () => {
     expect(describeCall({ tool: "read_range", sheet: "정리", address: "A1:B2" })).toBe(
-      "정리!A1:B2 값 읽기",
+      "'정리'!A1:B2 값 읽기",
     )
     expect(describeCall({ tool: "read_range", address: "A1", formulas: true })).toBe("A1 수식 읽기")
+    expect(describeCall({ tool: "read_range", sheet: "Bob's Sheet", address: "V41:X44" })).toBe(
+      "'Bob''s Sheet'!V41:X44 값 읽기",
+    )
   })
 
   it("names both ends of a move", () => {
@@ -207,7 +228,7 @@ describe("describeCall", () => {
         targetSheet: "정리",
         target: "A1",
       }),
-    ).toBe("A1:D20 → 정리!A1 이동")
+    ).toBe("A1:D20 → '정리'!A1 이동")
   })
 
   it("counts the rows a table write will land", () => {
@@ -289,6 +310,6 @@ describe("the tool surface", () => {
         rows: ["지점"],
         values: [{ field: "금액" }],
       }),
-    ).toBe("요약!F1 피벗 만들기")
+    ).toBe("'요약'!F1 피벗 만들기")
   })
 })

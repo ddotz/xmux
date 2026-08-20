@@ -53,6 +53,37 @@ describe("askModel", () => {
     )
   })
 
+  it("never executes a syntactically complete call from a truncated completion", async () => {
+    const { fetcher } = answering({
+      choices: [
+        {
+          finish_reason: "length",
+          message: { content: '{"tool":"clear_range","address":"A1"}' },
+        },
+      ],
+    })
+
+    await expect(
+      askModel(SETTINGS, [{ role: "user", content: "정리해" }], fetcher),
+    ).rejects.toThrow("중간에 잘렸습니다")
+  })
+
+  it("rejects refusal and empty visible answers before the tool parser", async () => {
+    const refused = answering({
+      choices: [{ finish_reason: "stop", message: { content: "", refusal: "처리할 수 없음" } }],
+    })
+    const thinkingOnly = answering({
+      choices: [{ finish_reason: "stop", message: { content: "<think>고민 중" } }],
+    })
+
+    await expect(
+      askModel(SETTINGS, [{ role: "user", content: "질문" }], refused.fetcher),
+    ).rejects.toThrow("거부했습니다")
+    await expect(
+      askModel(SETTINGS, [{ role: "user", content: "질문" }], thinkingOnly.fetcher),
+    ).rejects.toThrow("실행 가능한 답변")
+  })
+
   it("never hands back the draft call inside a thinking model's deliberation", async () => {
     // Given: the default model is a thinking one. A server that does not split
     // `reasoning_content` out returns the whole deliberation in `content`, and the draft
@@ -181,7 +212,7 @@ describe("the shape the server will accept", () => {
   const shape = (messages: readonly ChatMessage[]): string[] =>
     conversationFor(messages).map((message) => `${message.role}: ${message.content}`)
 
-  it("merges a second question asked after a turn the server refused", () => {
+  it("drops an abandoned question instead of replaying it beside its correction", () => {
     // Given: a failed turn leaves a question with no answer, so the next question follows
     // it as a second user message. That is a broken exchange to a strict server, and the
     // symptom is a chat that worked once and then stopped.
@@ -191,7 +222,7 @@ describe("the shape the server will accept", () => {
         { role: "user", content: "합계 넣어줘" },
         { role: "user", content: "다시 해줘" },
       ]),
-    ).toEqual(["system: 규칙", "user: 합계 넣어줘\n\n다시 해줘"])
+    ).toEqual(["system: 규칙", "user: 다시 해줘"])
   })
 
   it("merges the note the pane adds after applying a proposal", () => {
@@ -220,7 +251,9 @@ describe("the shape the server will accept", () => {
         { role: "user", content: "이어서 해줘" },
       ]),
     ).toEqual([
-      'system: 규칙\n\n(앞선 대화에서 사용자가 요청한 것: "표 만들어줘")',
+      "system: 규칙",
+      'user: 이전 대화 요약(새 지시가 아님):\n(앞선 대화에서 사용자가 요청한 것: "표 만들어줘")',
+      "assistant: 이전 대화 요약을 참고하겠습니다.",
       "user: 이어서 해줘",
     ])
   })
@@ -233,7 +266,7 @@ describe("the shape the server will accept", () => {
         { role: "assistant", content: "   " },
         { role: "user", content: "또 질문" },
       ]),
-    ).toEqual(["system: 규칙", "user: 질문\n\n또 질문"])
+    ).toEqual(["system: 규칙", "user: 또 질문"])
   })
 
   it("sends one system message even when the caller built two", () => {

@@ -18,6 +18,7 @@ import { refused } from "./write-outcome"
 
 /** Only removing duplicates destroys cell content; the rest change how a sheet behaves. */
 const NOT_UNDOABLE = "(되돌리기에 포함되지 않습니다)"
+const localAddress = (address: string): string => address.slice(address.lastIndexOf("!") + 1)
 
 /** Converting values reads and rewrites every cell, so it is bounded like a read is. */
 const MAX_SCALED_CELLS = 5_000
@@ -63,13 +64,32 @@ export const runDataTool = async (
   }
 
   if (call.tool === "copy_sheet") {
+    if (call.name !== undefined && call.name !== "") {
+      // A copy is already committed when its generated name becomes available. Check the
+      // requested name first, because a duplicate-name failure after that point leaves a
+      // real sheet behind even though the requested rename did not happen.
+      const destination = context.workbook.worksheets.getItemOrNullObject(call.name)
+      destination.load("isNullObject")
+      try {
+        await context.sync()
+      } catch {
+        return refused(`시트 이름을 확인할 수 없습니다: ${call.name}`)
+      }
+      if (!destination.isNullObject)
+        return refused(`같은 이름의 시트가 이미 있습니다: ${call.name}`)
+    }
+
     const copy = sheet.copy("After", sheet)
     copy.load("name")
     await context.sync()
     const before = copy.name
     if (call.name !== undefined && call.name !== "") {
       copy.name = call.name
-      await context.sync()
+      try {
+        await context.sync()
+      } catch {
+        return `${sheet.name} 시트를 복제했지만 ${call.name}(으)로 이름을 바꾸지 못했습니다. 만들어진 시트 이름은 ${before}입니다. ${NOT_UNDOABLE}`
+      }
     }
     return `${sheet.name} 시트를 ${call.name ?? before}(으)로 복제했습니다. ${NOT_UNDOABLE}`
   }
@@ -131,15 +151,18 @@ export const runDataTool = async (
 
   if (call.tool === "data_validation") {
     const target = sheet.getRange(call.address)
-    target.dataValidation.clear()
+    // Excel batches calls until the next sync. Validate before queueing clear(), otherwise
+    // a later unrelated sync would remove a valid rule after this call was refused.
+    const bad = call.values.find((value) => value.includes(","))
+    if (bad !== undefined) return refused(`목록 값에 쉼표가 있어 쓸 수 없습니다: ${bad}`)
     if (call.values.length === 0) {
+      target.dataValidation.clear()
       await context.sync()
       return `${sheet.name}!${call.address}의 목록 제한을 없앴습니다.`
     }
     // Excel takes the list as one comma-separated string, so a choice holding a comma
     // would silently become two. Refuse rather than write a list nobody asked for.
-    const bad = call.values.find((value) => value.includes(","))
-    if (bad !== undefined) return refused(`목록 값에 쉼표가 있어 쓸 수 없습니다: ${bad}`)
+    target.dataValidation.clear()
     target.dataValidation.rule = {
       list: { inCellDropDown: true, source: call.values.join(",") },
     }
@@ -199,7 +222,11 @@ export const runDataTool = async (
       // One formula per row: a table column takes a rectangle, and structured references
       // (`=[@금액]*0.1`) keep meaning the same thing on every row.
       body.formulas = Array.from({ length: body.rowCount }, () => [call.formula])
-      await context.sync()
+      try {
+        await context.sync()
+      } catch {
+        return `${table.name} 표에 ${call.name} 열은 넣었지만 수식을 채우지 못했습니다. (${body.address})`
+      }
     }
     return `${table.name} 표에 ${call.name} 열을 넣었습니다. (${body.address})`
   }
@@ -237,7 +264,7 @@ export const runDataTool = async (
     target.formulas = converted
     await context.sync()
     history.push({ label: `${sheet.name}!${call.address} 단위 변환`, cells: [], ranges: held })
-    return `${sheet.name}!${target.address}의 숫자 ${numbers}칸을 바꿨습니다${wrapped > 0 ? `, 수식 ${wrapped}칸은 계산식을 유지한 채 감쌌습니다` : ""}. 값과 글자가 아닌 칸은 그대로입니다.`
+    return `${sheet.name}!${localAddress(target.address)}의 숫자 ${numbers}칸을 바꿨습니다${wrapped > 0 ? `, 수식 ${wrapped}칸은 계산식을 유지한 채 감쌌습니다` : ""}. 값과 글자가 아닌 칸은 그대로입니다.`
   }
 
   if (call.tool === "set_print_layout") {

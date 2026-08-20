@@ -6,7 +6,7 @@ import type { History } from "./history"
 import { snapshotLayout, snapshotRange } from "./history"
 import type { OperateContext, OperateRange, OperateSheet } from "./office-shapes"
 import { splitQualified } from "./resolve"
-import { areaWritten, selfReference } from "./self-reference"
+import { selfReference } from "./self-reference"
 import { refused } from "./write-outcome"
 
 /**
@@ -95,6 +95,19 @@ const rectangle = (rows: readonly (readonly string[])[]): string[][] => {
   return rows.map((row) => [...row, ...Array.from({ length: width - row.length }, () => "")])
 }
 
+/** Excel qualifies addresses it returns; writes and history always name one local rectangle. */
+const localAddress = (address: string): string =>
+  address.includes("!") ? splitQualified(address).local : address
+
+/** The rectangle of these dimensions beginning at an address's top-left cell. */
+const anchoredRectangle = (address: string, height: number, width: number): string | null => {
+  const anchor = parseArea(localAddress(address))
+  if (anchor === null) return null
+  const first = `${columnLetters(anchor.left)}${anchor.top}`
+  if (height === 1 && width === 1) return first
+  return `${first}:${columnLetters(anchor.left + width - 1)}${anchor.top + height - 1}`
+}
+
 export const runWrite = async (
   context: OperateContext,
   history: History,
@@ -162,10 +175,13 @@ export const runWrite = async (
 
     if (call.tool === "write_range") {
       const rows = rectangle(call.rows)
+      const address = anchoredRectangle(call.address, rows.length, rows[0]?.length ?? 1)
+      if (address === null) return refused(`범위를 해석하지 못했습니다: ${call.address}`)
+      const area = sheet.getRange(address)
       // A formula written on top of what it reads is a circular reference, and Excel will
       // take it. Asked to divide a column by a million, a model writes `=B2/1000000` into
       // `B2` — the range it was asked to fix is the range it breaks.
-      const covered = areaWritten(call.address, rows.length, rows[0]?.length ?? 1)
+      const covered = parseArea(address)
       for (const row of rows) {
         for (const written of row) {
           const circular = selfReference(written, sheet.name, covered)
@@ -175,16 +191,11 @@ export const runWrite = async (
           )
         }
       }
-      const area = target.getResizedRange(rows.length - 1, (rows[0]?.length ?? 1) - 1)
-      area.load("address")
-      await context.sync()
-      const held = await snapshotRange(context as never, [
-        { sheet: sheet.name, address: area.address },
-      ])
+      const held = await snapshotRange(context as never, [{ sheet: sheet.name, address }])
       area.formulas = rows
       await context.sync()
-      history.push({ label: `${sheet.name}!${area.address} 표 입력`, cells: [], ranges: held })
-      return `${sheet.name}!${area.address}에 ${rows.length}행 × ${rows[0]?.length ?? 0}열을 썼습니다.`
+      history.push({ label: `${sheet.name}!${address} 표 입력`, cells: [], ranges: held })
+      return `${sheet.name}!${address}에 ${rows.length}행 × ${rows[0]?.length ?? 0}열을 썼습니다.`
     }
 
     if (call.tool === "copy_range" || call.tool === "move_range") {
@@ -197,13 +208,22 @@ export const runWrite = async (
       if (destinationSheet === null)
         return refused(`시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`)
       const anchor = destinationSheet.getRange(call.target)
-      const area = anchor.getResizedRange(target.rowCount - 1, target.columnCount - 1)
-      area.load("address")
+      anchor.load("address")
       await context.sync()
+      const destination = anchoredRectangle(
+        localAddress(anchor.address),
+        call.tool === "copy_range" && call.transpose === true
+          ? target.columnCount
+          : target.rowCount,
+        call.tool === "copy_range" && call.transpose === true
+          ? target.rowCount
+          : target.columnCount,
+      )
+      if (destination === null) return refused(`범위를 해석하지 못했습니다: ${anchor.address}`)
 
       if (call.tool === "copy_range") {
         const held = await snapshotRange(context as never, [
-          { sheet: destinationSheet.name, address: area.address },
+          { sheet: destinationSheet.name, address: destination },
         ])
         const copyType =
           call.what === "values"
@@ -216,27 +236,46 @@ export const runWrite = async (
         anchor.copyFrom(target, copyType, false, call.transpose ?? false)
         await context.sync()
         history.push({
-          label: `${destinationSheet.name}!${area.address} 붙여넣기`,
+          label: `${destinationSheet.name}!${destination} 붙여넣기`,
           cells: [],
           ranges: held,
         })
-        return `${sheet.name}!${call.address}을 ${destinationSheet.name}!${area.address}에 복사했습니다.`
+        return `${sheet.name}!${localAddress(call.address)}을 ${destinationSheet.name}!${destination}에 복사했습니다.`
       }
 
       // A move empties the source, so both rectangles go into the same undo entry.
       const held = await snapshotRange(context as never, [
-        { sheet: sheet.name, address: call.address },
-        { sheet: destinationSheet.name, address: area.address },
+        { sheet: sheet.name, address: localAddress(call.address) },
+        { sheet: destinationSheet.name, address: destination },
       ])
       target.moveTo(anchor)
       await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 이동`, cells: [], ranges: held })
-      return `${sheet.name}!${call.address}을 ${destinationSheet.name}!${area.address}로 이동했습니다.`
+      history.push({
+        label: `${sheet.name}!${localAddress(call.address)} 이동`,
+        cells: [],
+        ranges: held,
+      })
+      return `${sheet.name}!${localAddress(call.address)}을 ${destinationSheet.name}!${destination}로 이동했습니다.`
+    }
+
+    if (call.tool === "fill_formula") {
+      const fill = parseArea(localAddress(call.address))
+      const anchor = parseArea(localAddress(call.anchor))
+      const contained =
+        fill !== null &&
+        anchor !== null &&
+        anchor.height === 1 &&
+        anchor.width === 1 &&
+        anchor.top >= fill.top &&
+        anchor.left >= fill.left &&
+        anchor.top < fill.top + fill.height &&
+        anchor.left < fill.left + fill.width
+      if (!contained) return refused("수식 기준 셀은 채울 범위 안의 정확히 한 셀이어야 합니다.")
     }
 
     // Everything below changes cells in place, so the rectangle is captured as it stands.
     const held = await snapshotRange(context as never, [
-      { sheet: sheet.name, address: call.address },
+      { sheet: sheet.name, address: localAddress(call.address) },
     ])
 
     // Column widths and row heights are the user's layout, not the pane's output, so they
@@ -327,7 +366,11 @@ export const runWrite = async (
     }
 
     if (call.tool === "fill_formula") {
-      const circular = selfReference(call.formula, sheet.name, parseArea(call.address))
+      const circular = selfReference(
+        call.formula,
+        sheet.name,
+        parseArea(localAddress(call.address)),
+      )
       if (circular !== null) {
         return refused(
           `${call.formula}은 채울 범위 안(${circular})을 참조해 순환참조가 됩니다. 결과를 다른 열에 채우거나, 기존 값을 바꾸려면 scale_values를 쓰세요.`,
@@ -337,9 +380,23 @@ export const runWrite = async (
       const anchor = sheet.getRange(call.anchor)
       anchor.formulas = [[call.formula]]
       await context.sync()
-      anchor.autoFill(target, "FillDefault")
-      await context.sync()
-      history.push({ label: `${sheet.name}!${call.address} 수식 채우기`, cells: [], ranges: held })
+      try {
+        anchor.autoFill(target, "FillDefault")
+        await context.sync()
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        history.push({
+          label: `${sheet.name}!${localAddress(call.address)} 수식 채우기`,
+          cells: [],
+          ranges: held,
+        })
+        return `${sheet.name}!${localAddress(call.address)}에 ${call.formula}을 썼지만 나머지 채우기에 실패했습니다: ${detail}. 기준 셀은 변경되었고 되돌리기로 복구할 수 있습니다.`
+      }
+      history.push({
+        label: `${sheet.name}!${localAddress(call.address)} 수식 채우기`,
+        cells: [],
+        ranges: held,
+      })
       // A column that skips the first row of its source looks finished and is not; what to
       // do about it is the model's call, but it has to be told.
       const note = await fillNote(context, sheet, call)

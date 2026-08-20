@@ -18,7 +18,7 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `office-shapes.ts` | 5 | The slice of Office.js the write side touches, as structural types. Method names match the real API exactly — that is what makes a typo a type error instead of a broken workbook. |
 | `data-tools.ts` | 1 | Excel's own operations: duplicates, filters, tables, pivots, validation, names, visibility, sheet copy, protection, selection. Answers `null` for anything else so `operate.ts` keeps one entry point. |
 | `reasoning.ts` | 1 | Why a number is what it is: `explain_cell` (formula, what each reference holds, numbered steps — the pane's own scanner and summaries, asked from the chat side), `check_sum` (stated total vs the sum of its parts), `find_dependents` (what moves when this cell moves, found by parsing formulas so `SUM(B1:B9)` counts as depending on `B5`). |
-| `grid.ts` | 1 | The rectangle the model reads back: every row labelled with its real sheet row, columns with their letters, blank rows named as blank. Counting lines is how a write lands two rows off. |
+| `grid.ts` | 2 | The rectangle the model reads back: real row/column labels, visible `·` blanks, escaped tabs/newlines, and `formulaAddresses` so formula locations are explicit A1 addresses rather than inferred from delimiters. |
 | `self-reference.ts` | 3 | Catches a formula about to be written on top of what it reads (`=B2/1000000` into `B2`). Excel accepts the circular reference; this does not. |
 | `fill-alignment.ts` | 4 | Pure arithmetic over where a `fill_formula` landed vs. the rows its source column holds. A model that writes a header and starts the formula on row 2 over data that starts on row 1 drops the user's first line silently; the finding goes back to the model in the tool result. |
 | `audit.ts` | 1 | What a workbook gets checked for before anyone signs it: error cells, numbers typed into calculated columns, external links, defined names, and per-column totals computed inside Excel so a 200k-row table never crosses the boundary. |
@@ -34,6 +34,7 @@ Tests: 14 files. `sheets.ts` and `summarise.ts` have none of their own; summaris
 - Only `sheets.ts` names the global `Excel` namespace (`Excel.RequestContext`, `Excel.SheetVisibility`). Every other impure module declares its own minimal structural context type (`ResolveContext`, `SummariseContext<Range>`, `UndoContext`, `LinkedWorkbookRuntime`), which is why the tests need no Office mock.
 - Pure: `address.ts`, `history.ts`'s `createHistory` (arithmetic + in-memory array). Impure (needs a context + `sync`): `resolve.ts`, `summarise.ts`, `summaries.ts`, `sheets.ts`, `linked-workbooks.ts`, and history's `snapshot`/`recordWrite`/`restore`.
 - Values mostly stay in Excel: `workbook.functions` computes totals host-side, so 10k cells cost the same as 10.
+- Write/copy/fill operations derive one canonical local rectangle first; mutation, circular-reference checks, snapshots, undo and reports all use that exact rectangle. Multi-sync failures must return a changed/partial result whenever an earlier phase committed.
 
 ## INVARIANTS
 

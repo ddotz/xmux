@@ -1,6 +1,6 @@
 {
   "name": "xmux-addin",
-  "version": "1.10.3",
+  "version": "1.10.4",
   "private": true,
   "type": "module",
   "description": "Excel task pane that shows the regions a formula references, so you stop hopping between sheets.",
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@types/mdast": "^4.0.4",
     "@types/office-js": "^1.0.605",
     "happy-dom": "^20.11.2",
     "office-addin-dev-certs": "^2.0.10",
@@ -29,6 +30,9 @@
   },
   "dependencies": {
     "@microsoft/office-js": "^1.1.110",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "micromark-extension-gfm": "^3.0.0",
     "zod": "^4.4.3"
   }
 }

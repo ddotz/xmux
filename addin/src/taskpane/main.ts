@@ -1,4 +1,4 @@
-import { formatArea, type GridArea } from "../excel/address"
+import { formatArea, type GridArea, parseArea } from "../excel/address"
 import { createHistory } from "../excel/history"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
@@ -49,7 +49,15 @@ const draw = (): void => {
   if (tabs.current() === "chat") {
     elements.address.textContent = "땡땡엑셀"
     elements.badge.hidden = true
-    elements.root.replaceChildren(...renderChat(chatting.state(), chatting.handlers))
+    elements.root.replaceChildren(
+      ...renderChat(chatting.state(), chatting.handlers, {
+        onRange: (sheet, address) => {
+          const area = parseArea(address)
+          if (area === null) return
+          void guarded(() => commands.jumpToArea(sheet, area))
+        },
+      }),
+    )
     return
   }
   render(elements, {

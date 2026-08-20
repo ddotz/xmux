@@ -1,4 +1,5 @@
 import type { ZodError } from "zod"
+import { quoteSheetName } from "../formula/reference"
 import { parseLoose } from "./loose-json"
 import type { ToolCall } from "./tool-schemas"
 import { toolCallSchema } from "./tool-schemas"
@@ -122,10 +123,46 @@ const unreadable = (block: string): string => {
     : "JSON이 완결되지 않아 실행하지 못했습니다. 길이 제한에 걸린 것 같습니다. 한 번에 더 적은 행·더 적은 호출로 나눠 보내세요."
 }
 
+/** Zod must never repair a tool by silently stripping a misspelled effect field. */
+const sameShape = (source: unknown, parsed: unknown): boolean => {
+  if (Array.isArray(source) || Array.isArray(parsed)) {
+    return (
+      Array.isArray(source) &&
+      Array.isArray(parsed) &&
+      source.length === parsed.length &&
+      source.every((item, index) => sameShape(item, parsed[index]))
+    )
+  }
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    typeof parsed !== "object" ||
+    parsed === null
+  )
+    return true
+  const sourceRecord = source as Record<string, unknown>
+  const parsedRecord = parsed as Record<string, unknown>
+  const sourceKeys = Object.keys(sourceRecord).sort()
+  const parsedKeys = Object.keys(parsedRecord).sort()
+  return (
+    sourceKeys.length === parsedKeys.length &&
+    sourceKeys.every(
+      (key, index) => key === parsedKeys[index] && sameShape(sourceRecord[key], parsedRecord[key]),
+    )
+  )
+}
+
 export const readSteps = (reply: string): ModelStep => {
   const blocks = jsonBlocks(reply)
   const widest = blocks[0]
-  if (widest === undefined) return { kind: "answer" }
+  if (widest === undefined) {
+    const opening = [reply.indexOf("{"), reply.indexOf("[")]
+      .filter((at) => at >= 0)
+      .sort((left, right) => left - right)[0]
+    return opening !== undefined && TOOL_KEY.test(reply.slice(opening))
+      ? { kind: "calls", calls: [], rejected: unreadable(reply.slice(opening)) }
+      : { kind: "answer" }
+  }
   let read: { readonly value: unknown } | null = null
   for (const block of blocks) {
     read = parseLoose(block)
@@ -144,26 +181,37 @@ export const readSteps = (reply: string): ModelStep => {
   // A batch cut at the cap used to be cut silently: the model watched eight results come
   // back, assumed the rest ran too, and told the user the work was done.
   const overflow = Array.isArray(parsed) ? Math.max(0, parsed.length - MAX_CALLS_PER_REPLY) : 0
+  if (overflow > 0) {
+    return {
+      kind: "calls",
+      calls: [],
+      rejected: `호출이 ${MAX_CALLS_PER_REPLY}개를 넘어 하나도 실행하지 않았습니다. ${MAX_CALLS_PER_REPLY}개 이하의 묶음으로 나눠 보내세요.`,
+    }
+  }
   const calls: ToolCall[] = []
-  let rejected: string | null = null
-  for (const candidate of candidates) {
+  for (const [index, candidate] of candidates.entries()) {
     const call = toolCallSchema.safeParse(candidate)
     if (call.success) {
+      if (!sameShape(candidate, call.data)) {
+        return {
+          kind: "calls",
+          calls: [],
+          rejected: `${String(call.data.tool)} 호출에 정의되지 않은 필드가 있어 묶음 전체를 실행하지 않았습니다. 키 이름을 확인해 다시 보내세요.`,
+        }
+      }
       calls.push(call.data)
       continue
     }
-    // A plan (`{"edits":[…]}`) is not a failed tool call, it is the other reply shape.
-    if (isAttemptedCall(candidate))
-      rejected = rejection(candidate, call.error, candidates.length - calls.length - 1)
-    break
+    if (isAttemptedCall(candidate)) {
+      return {
+        kind: "calls",
+        calls: [],
+        rejected: rejection(candidate, call.error, candidates.length - index - 1),
+      }
+    }
+    return { kind: "answer" }
   }
-  if (overflow > 0) {
-    const cut = `호출이 ${MAX_CALLS_PER_REPLY}개를 넘어 앞의 ${MAX_CALLS_PER_REPLY}개만 실행했습니다. 나머지 ${overflow}개는 실행되지 않았으니 결과를 확인한 뒤 이어서 보내세요.`
-    rejected = rejected === null ? cut : `${rejected} ${cut}`
-  }
-  return calls.length === 0 && rejected === null
-    ? { kind: "answer" }
-    : { kind: "calls", calls, rejected }
+  return calls.length === 0 ? { kind: "answer" } : { kind: "calls", calls, rejected: null }
 }
 
 /**
@@ -175,7 +223,7 @@ export const readSteps = (reply: string): ModelStep => {
  */
 export const containsToolCall = (reply: string): boolean => {
   const widest = jsonBlocks(reply)[0]
-  return widest !== undefined && TOOL_KEY.test(widest)
+  return TOOL_KEY.test(widest ?? reply)
 }
 
 const FENCED_BLOCK = /```(?:json)?[\s\S]*?```/g
@@ -197,15 +245,17 @@ export const withoutToolCall = (reply: string): string => {
   const unfenced = reply.replace(FENCED_BLOCK, "").trim()
   if (!containsToolCall(unfenced)) return unfenced
   const close = Math.max(unfenced.lastIndexOf("}"), unfenced.lastIndexOf("]"))
-  const opens = [unfenced.indexOf("{"), unfenced.indexOf("[")].filter((at) => at >= 0 && at < close)
+  const opens = [unfenced.indexOf("{"), unfenced.indexOf("[")].filter(
+    (at) => at >= 0 && (close < 0 || at < close),
+  )
   const open = Math.min(...opens)
   return opens.length === 0
     ? unfenced
-    : `${unfenced.slice(0, open)}\n${unfenced.slice(close + 1)}`.trim()
+    : `${unfenced.slice(0, open)}\n${close < 0 ? "" : unfenced.slice(close + 1)}`.trim()
 }
 
 const place = (sheet: string | undefined, address: string): string =>
-  sheet === undefined || sheet.trim() === "" ? address : `${sheet}!${address}`
+  sheet === undefined || sheet.trim() === "" ? address : `${quoteSheetName(sheet)}!${address}`
 
 /** One short Korean line per call, shown live while the assistant works. */
 export const describeCall = (call: ToolCall): string => {

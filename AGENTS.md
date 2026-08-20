@@ -118,8 +118,8 @@ swiftc -parse-as-library -O companion/*.swift -o companion/xmux-companion && com
   server serves it at `/xmux/state`, the pane polls with exponential backoff. No IPC, no RPC.
 - The formula reference scanner exists **twice** — `formula/scanner.ts` and
   `companion/references.swift`. Change one, port the other.
-- External workbook references only ever show Excel's cached display value; the sandbox
-  cannot open or read the source workbook.
+- External workbook references fall back to Excel's cached display value in the sandbox;
+  the Windows/Vite local service can read saved `.xlsx`/`.xlsm` source ranges read-only.
 - Live-verified on Mac Excel 16.111 only. Windows paths are implemented but not live-tested.
 - No CI. `pnpm test`, `pnpm typecheck`, and `pnpm check` locally are the entire gate.
 - `probes/fake_model.mjs` mocks the OpenAI endpoint over HTTPS so the chat tab can be

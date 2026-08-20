@@ -2,15 +2,24 @@ import { describe, expect, it } from "vitest"
 import { runDataTool } from "./data-tools"
 import { createHistory } from "./history"
 import type { OperateContext, OperateSheet } from "./office-shapes"
+import { changedWorkbook } from "./write-outcome"
 
 /**
  * Excel is handed in, never reached for. Each of these calls is one ribbon command, so what
  * is worth asserting is that the right command reached Excel with the right arguments — and
  * that the one destructive command recorded the rectangle first.
  */
-const workbook = () => {
+const workbook = ({
+  existingWorksheetNames = [],
+  failSyncAt,
+}: {
+  existingWorksheetNames?: readonly string[]
+  failSyncAt?: number
+} = {}) => {
   const performed: string[] = []
+  const queued: string[] = []
   const validation: { rule?: unknown } = {}
+  let syncs = 0
 
   const range = (address: string) => {
     const node = {
@@ -29,7 +38,7 @@ const workbook = () => {
         return { removed: 2, uniqueRemaining: 7, load: () => {} }
       },
       dataValidation: {
-        clear: () => performed.push(`clearValidation ${address}`),
+        clear: () => queued.push(`clearValidation ${address}`),
         set rule(value: unknown) {
           validation.rule = value
         },
@@ -166,11 +175,16 @@ const workbook = () => {
       worksheets: {
         getActiveWorksheet: () => sheet,
         getItem: () => sheet,
-        getItemOrNullObject: () => sheet,
+        getItemOrNullObject: (name: string) =>
+          existingWorksheetNames.includes(name) ? sheet : { ...sheet, name, isNullObject: true },
         add: () => {},
       },
     },
-    sync: async () => {},
+    sync: async () => {
+      syncs += 1
+      if (syncs === failSyncAt) throw new Error("sync failed")
+      performed.push(...queued.splice(0))
+    },
   }
 
   return {
@@ -302,7 +316,7 @@ describe("runDataTool", () => {
     expect(answer).toContain("3개짜리 목록")
   })
 
-  it("refuses a choice holding a comma instead of silently splitting it", async () => {
+  it("refuses a choice holding a comma without queuing a later clear", async () => {
     // Given: Excel takes the list as one comma-separated string, so "서울, 경기" would
     // become two different choices without anyone asking for that.
     const book = workbook()
@@ -315,6 +329,8 @@ describe("runDataTool", () => {
 
     expect(answer).toContain("쉼표")
     expect(book.validation.rule).toBeUndefined()
+    await book.context.sync()
+    expect(book.performed).not.toContain("clearValidation B2:B99")
   })
 
   it("clears the rule when the list is empty", async () => {
@@ -385,6 +401,34 @@ describe("runDataTool", () => {
     expect(answer).toContain("2월")
   })
 
+  it("refuses an existing copy destination before creating a sheet", async () => {
+    const book = workbook({ existingWorksheetNames: ["2월"] })
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "copy_sheet",
+      name: "2월",
+    })
+
+    expect(answer).toContain("같은 이름")
+    expect(changedWorkbook(answer ?? "")).toBe(false)
+    expect(book.performed).not.toContain("copy Main After")
+  })
+
+  it("reports the generated sheet when renaming a committed copy fails", async () => {
+    // The destination lookup is the first sync; copy commits in the second and rename
+    // fails in the following sync.
+    const book = workbook({ failSyncAt: 3 })
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "copy_sheet",
+      name: "2월",
+    })
+
+    expect(answer).toContain("복제했지만")
+    expect(answer).toContain("Main (2)")
+    expect(changedWorkbook(answer ?? "")).toBe(true)
+  })
+
   it("protects and unprotects without inventing a password", async () => {
     const book = workbook()
 
@@ -440,6 +484,23 @@ describe("runDataTool", () => {
       'tableFormulas [["=[@금액]*0.1"],["=[@금액]*0.1"],["=[@금액]*0.1"]]',
     )
     expect(answer).toContain("세금 열을 넣었습니다")
+  })
+
+  it("reports the created column when formula fill fails after it commits", async () => {
+    // Table lookup is the first sync; the new column commits in the second and formula
+    // fill fails in the following sync.
+    const book = workbook({ failSyncAt: 3 })
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "add_table_column",
+      table: "매출",
+      name: "세금",
+      formula: "=[@금액]*0.1",
+    })
+
+    expect(answer).toContain("세금 열은 넣었지만")
+    expect(answer).toContain("매출[세금]")
+    expect(changedWorkbook(answer ?? "")).toBe(true)
   })
 
   it("names the table it could not find rather than throwing", async () => {

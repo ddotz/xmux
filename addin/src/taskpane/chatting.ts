@@ -7,7 +7,7 @@ import {
   planTouchesWorkbook,
   resolveEdits,
 } from "../ai/plan"
-import { announcesWork, plainText } from "../ai/reply"
+import { announcesWork, displayReply } from "../ai/reply"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
 import { isWrite, outsideUndo, type ToolCall } from "../ai/tool-schemas"
 import {
@@ -121,7 +121,7 @@ const RECEIPT_LINES = 6
  * are the pane's — one per call it actually ran.
  */
 const receipt = (performed: readonly ToolCall[]): string => {
-  if (performed.length === 0) return SILENT_ANSWER
+  if (performed.length === 0) return "실행되거나 확인된 작업이 없습니다."
   const named = performed.slice(0, RECEIPT_LINES).map(describeCall)
   const rest = performed.length - named.length
   return [SILENT_ANSWER, ...named, ...(rest > 0 ? [`외 ${rest}건`] : [])].join("\n")
@@ -138,10 +138,14 @@ const UNDO_NOTE = "(서식·표·피벗·차트처럼 되돌리기로 복구되�
  * and it stays quiet when the answer already covers it.
  */
 const withReceipt = (answer: string, performed: readonly ToolCall[]): string => {
-  const said = answer.trim() === "" ? receipt(performed) : answer
-  return performed.some(outsideUndo) && !said.includes("되돌리기")
-    ? `${said}\n\n${UNDO_NOTE}`
-    : said
+  const generated = answer.trim() === ""
+  const said = generated ? receipt(performed) : answer
+  if (performed.length === 0) return said
+  const verified = `실행 확인:\n${performed.map((call) => `- ${describeCall(call)}`).join("\n")}`
+  const accounted = generated || said.includes("실행 확인:") ? said : `${said}\n\n${verified}`
+  return performed.some(outsideUndo) && !accounted.includes("되돌리기")
+    ? `${accounted}\n\n${UNDO_NOTE}`
+    : accounted
 }
 
 /**
@@ -178,6 +182,30 @@ const BUDGET_WARNING_ROUNDS = 4
 const ANNOUNCED_NOT_DONE =
   "하겠다고 말만 하고 아무 도구도 실행하지 않았습니다. 그 작업을 지금 이 차례에 도구 JSON으로 실행하세요. 이미 끝난 작업이면 완료형으로 결과만 다시 쓰고, 할 수 없는 작업이면 그 이유를 답하세요."
 
+const LEGACY_PLAN_NOT_RUN =
+  "수정 제안 JSON은 실행되지 않습니다. 같은 작업을 지금 허용된 도구 호출로 실행하고, 실행 결과를 확인한 뒤 답하세요."
+const NOT_PERFORMED =
+  "요청한 워크북 작업을 실행하지 못했습니다. 완료했다고 보고하지 않고 여기서 멈춥니다."
+
+const VERIFY_WRITES =
+  "방금 쓴 결과를 아직 확인하지 않았습니다. 결과 시트의 헤더·첫 행·마지막 행·수식 누락·원본 필드 대응을 read_range(formulas:true), used_range 또는 점검 도구로 확인하고, 누락이 있으면 지금 보충한 뒤 답하세요."
+
+const CLAIMS_CHANGE =
+  /(?:만들|쓰|채우|적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정)(?:했|됐|하였)/
+const AMBIGUOUS_CONTINUATION = /^(?:계속|이어서|마저|그대로)(?:해|하|진행|작업)?/
+
+const VERIFY_TOOLS = new Set<ToolCall["tool"]>([
+  "read_range",
+  "used_range",
+  "find",
+  "find_errors",
+  "find_hardcoded",
+  "check_sum",
+  "list_tables",
+])
+
+const ABANDONED = Symbol("abandoned chat generation")
+
 /**
  * Shown when the tool phase ended and the model still will not answer in words.
  *
@@ -186,7 +214,7 @@ const ANNOUNCED_NOT_DONE =
  * the one that was hit.
  */
 const OUT_OF_ROUNDS =
-  "도구 실행을 여기서 멈추고 작업을 끝냅니다. 지금까지 반영된 변경은 되돌리기로 취소할 수 있습니다."
+  "도구 실행을 여기서 멈추고 종료합니다. 아래 실행 확인에 기록된 작업만 반영됐으며 나머지는 완료되지 않았습니다."
 
 /** Shrink all but the newest tool results so a long working session keeps fitting. */
 export const trimObservations = (
@@ -233,7 +261,7 @@ const KEPT_AFTER_COMPACTION = 10
 
 /** How much of each folded request is worth keeping. */
 const REMEMBERED_REQUESTS = 8
-const REMEMBERED_REQUEST_CHARS = 60
+const REMEMBERED_REQUEST_CHARS = 500
 
 /**
  * Fold the oldest turns into a note so the thread keeps its gist but not its bulk.
@@ -278,8 +306,25 @@ const localAddress = (address: string): string => {
 const selectionKey = (selection: SelectionAttachment): string =>
   `${selection.sheet}!${localAddress(selection.address)}`
 
+/** Omitted `sheet` means the sheet active when Send was pressed, never a later UI tab. */
+const GLOBAL_TOOLS = new Set<ToolCall["tool"]>([
+  "list_sheets",
+  "create_sheet",
+  "delete_sheet",
+  "list_names",
+  "add_table_column",
+  "recalculate",
+])
+
+const bindCallSheet = (call: ToolCall, sheet: string): ToolCall => {
+  if (GLOBAL_TOOLS.has(call.tool) || sheet.trim() === "") return call
+  if ("sheet" in call && call.sheet !== undefined) return call
+  return { ...call, sheet } as ToolCall
+}
+
 export const createChatting = (deps: ChattingDeps): Chatting => {
   let latestSelectionKey: string | null = null
+  let compactedHistory = false
   /**
    * Which thread the answer in flight belongs to.
    *
@@ -370,8 +415,19 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     // Every budget the loop spends comes from the window the user configured: how wide a
     // read may answer, how much one round carries, how much of the thread survives.
     const budget = budgetFor(state.settings)
+    const compactsNow = state.turns.length > budget.carriedTurns
+    const hadCompaction = compactedHistory || compactsNow
+    if (compactsNow) compactedHistory = true
     const previous = compactTurns(state.turns, budget)
     const attachment = state.selectionAttachment
+    const targetSheet = attachment?.sheet ?? state.sheet
+    const settings = state.settings
+    const current = (): boolean => mine === generation
+    const askCurrent = async (messages: readonly ChatMessage[]): Promise<string> => {
+      const answer = await askModel(settings, messages)
+      if (!current()) throw ABANDONED
+      return answer
+    }
     const selectedSkillId =
       resolvePromptSkill(question, state.selectedSkillId, state.skills)?.id ?? null
     // The skill reaches the model through the system prompt, so the slash command that
@@ -386,8 +442,25 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     // than no account at all. It lives out here because a turn that dies upstream still
     // has to say what it changed.
     const performedSoFar: ToolCall[] = []
+    const attemptedWrites: { readonly call: ToolCall; readonly observation: string }[] = []
     try {
+      if (hadCompaction && AMBIGUOUS_CONTINUATION.test(request.trim())) {
+        commit({
+          turns: [
+            ...previous,
+            asked,
+            {
+              role: "assistant",
+              text: "대화가 길어 이전 작업 조건 일부가 압축됐습니다. 수정할 시트·범위와 반드시 보존할 조건을 한 번만 다시 적어 주세요. 확인 전에는 워크북을 변경하지 않았습니다.",
+            },
+          ],
+          pending: false,
+          activity: [],
+        })
+        return
+      }
       const workbook = await describeWorkbook(attachment)
+      if (!current()) throw ABANDONED
       const turns = [
         ...conversation(
           request,
@@ -406,6 +479,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // round it sends one tool call or a batch of them, every call runs against the real
       // sheet as it arrives, and the results go back so it can continue — until it answers.
       const runCall = async (call: ToolCall): Promise<string> => {
+        if (!current()) throw ABANDONED
         commit({ activity: [...state.activity, describeCall(call)] })
         // The runner the pane hands in swallows a cell-edit-mode refusal and returns
         // normally (`main.ts` `guarded`), so "did the work reach Excel at all" cannot be
@@ -414,6 +488,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         let observation = UNREACHED
         try {
           await deps.run(async (context) => {
+            if (!current()) throw ABANDONED
             reached = true
             // A write lands as soon as the model asks for it. Undo is what makes that safe,
             // so every change goes through the history rather than straight at the range.
@@ -422,12 +497,14 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               : await runTool(context as unknown as InspectContext, call, budget)
           })
         } catch (error) {
+          if (error === ABANDONED) throw error
           // The loop survives a refused sync (cell edit mode, protection): the model reads
           // what went wrong and works around it, the same as any other failed call.
           const detail = error instanceof Error ? error.message : String(error)
           observation = `실행하지 못했습니다: ${detail}`
         }
         if (isWrite(call) && reached && changedWorkbook(observation)) performed.push(call)
+        if (isWrite(call)) attemptedWrites.push({ call, observation })
         if (isWrite(call)) deps.redraw()
         return observation
       }
@@ -435,21 +512,49 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       let repeats = 0
       let lastBatch: string | null = null
       let nudged = false
+      let planNudged = false
+      let verificationNudged = false
+      let writesNeedVerification = false
 
-      let reply = await askModel(state.settings, turns)
+      let reply = await askCurrent(turns)
       let step = readSteps(reply)
       for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
         if (step.kind === "answer") {
-          // A reply that promises the work instead of doing it — "이제 시트를 만들겠습니다" —
-          // used to end the turn here. It is sent back once, to be done or restated as
-          // done; a second promise stands rather than spending the user's rounds arguing.
-          if (nudged || !announcesWork(reply)) break
-          nudged = true
-          turns.push({ role: "assistant", content: reply })
-          turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${ANNOUNCED_NOT_DONE}` })
-          reply = await askModel(state.settings, trimObservations(turns, budget))
-          step = readSteps(reply)
-          continue
+          const proposed = parsePlan(reply)
+          if (planTouchesWorkbook(proposed)) {
+            if (planNudged) {
+              reply = NOT_PERFORMED
+              break
+            }
+            planNudged = true
+            turns.push({ role: "assistant", content: reply })
+            turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${LEGACY_PLAN_NOT_RUN}` })
+            reply = await askCurrent(trimObservations(turns, budget))
+            step = readSteps(reply)
+            continue
+          }
+          if (announcesWork(reply)) {
+            if (nudged) {
+              reply = NOT_PERFORMED
+              break
+            }
+            nudged = true
+            turns.push({ role: "assistant", content: reply })
+            turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${ANNOUNCED_NOT_DONE}` })
+            reply = await askCurrent(trimObservations(turns, budget))
+            step = readSteps(reply)
+            continue
+          }
+          if (writesNeedVerification) {
+            if (verificationNudged) break
+            verificationNudged = true
+            turns.push({ role: "assistant", content: reply })
+            turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${VERIFY_WRITES}` })
+            reply = await askCurrent(trimObservations(turns, budget))
+            step = readSteps(reply)
+            continue
+          }
+          break
         }
         // A model that cannot see why its call did nothing sends it again, unchanged, until
         // the round budget runs out and the user gets nothing for the wait. The second
@@ -460,7 +565,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           if (repeats >= MAX_REPEATS) break
           turns.push({ role: "assistant", content: reply })
           turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${REPEATED_CALL}` })
-          reply = await askModel(state.settings, trimObservations(turns, budget))
+          reply = await askCurrent(trimObservations(turns, budget))
           step = readSteps(reply)
           continue
         }
@@ -468,13 +573,42 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         lastBatch = signature
 
         const observations: string[] = []
-        for (const [index, call] of step.calls.entries()) {
+        let batchChanged = false
+        for (const [index, unbound] of step.calls.entries()) {
+          const call = bindCallSheet(unbound, targetSheet)
           const observation = await runCall(call)
+          if (isWrite(call) && changedWorkbook(observation)) {
+            writesNeedVerification = true
+            batchChanged = true
+          }
+          if (
+            !isWrite(call) &&
+            VERIFY_TOOLS.has(call.tool) &&
+            !/^(실행하지 못했습니다|요청을 처리하지 못했습니다|시트를 찾을 수 없습니다)/.test(
+              observation,
+            )
+          ) {
+            writesNeedVerification = false
+          }
           observations.push(
             step.calls.length === 1 && step.rejected === null
               ? observation
               : `[${index + 1}] ${describeCall(call)}\n${observation}`,
           )
+        }
+        if (batchChanged) {
+          const refreshed = await describeWorkbook(attachment)
+          if (!current()) throw ABANDONED
+          const system = conversation(
+            request,
+            refreshed,
+            selectedSkillId,
+            state.skills,
+            attachment,
+            previous,
+            budget,
+          )[0]
+          if (system?.role === "system") turns[0] = system
         }
         // A call this side refused goes back to the model to be rewritten. It is not an
         // answer, and it never reaches the screen.
@@ -486,7 +620,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           role: "user",
           content: `${OBSERVATION_PREFIX}\n${boundRound(observations, budget)}`,
         })
-        reply = await askModel(state.settings, trimObservations(turns, budget))
+        reply = await askCurrent(trimObservations(turns, budget))
         step = readSteps(reply)
       }
 
@@ -500,7 +634,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           content:
             "도구 실행을 여기서 멈춥니다. 지금까지 수행한 작업과 남은 작업을 한국어로 요약하세요. JSON은 넣지 마세요.",
         })
-        reply = await askModel(state.settings, trimObservations(turns, budget))
+        reply = await askCurrent(trimObservations(turns, budget))
         // A model that answers the summary request with yet another tool call would put a
         // raw JSON blob on screen as if it were the answer. The account it wrote alongside
         // that call is the whole point of asking, though — so the words are kept and only
@@ -522,23 +656,45 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // Nothing but a call the loop could not run, and no work behind it either: that is
       // the one case with nothing true to say, so it asks for the request again. An empty
       // reply after a build is not that — it becomes the pane's receipt below.
-      const answer =
-        carriesCall && spoken === "" && performed.length === 0 ? UNRUNNABLE_CALL : plainText(spoken)
+      let answer =
+        carriesCall && spoken === "" && performed.length === 0
+          ? UNRUNNABLE_CALL
+          : displayReply(spoken)
+      if (performed.length === 0 && CLAIMS_CHANGE.test(answer)) answer = NOT_PERFORMED
+      const failed = attemptedWrites.filter(({ observation }) => !changedWorkbook(observation))
+      if (failed.length > 0) {
+        answer = `${answer}\n\n실행 실패 확인:\n${failed
+          .map(({ call, observation }) => `- ${describeCall(call)}: ${observation}`)
+          .join("\n")}`.trim()
+      }
+      if (writesNeedVerification)
+        answer = `${answer}\n\n검증 상태: 마지막 변경 범위를 다시 읽어 확인하지 못했습니다.`.trim()
       const said = withReceipt(answer, performed)
+      const skillPlan: Plan | null =
+        plan.skill === undefined
+          ? null
+          : {
+              say: plan.say,
+              edits: [],
+              blocks: [],
+              newSheets: [],
+              skill: plan.skill,
+            }
       commit({
         turns: [...state.turns, { role: "assistant", text: said }],
-        plan: planTouchesWorkbook(plan) || plan.skill !== undefined ? plan : null,
+        plan: skillPlan,
         pending: false,
         activity: [],
       })
     } catch (error) {
+      if (error === ABANDONED) return
       // Whatever went wrong upstream, the writes that already landed are the user's
       // problem now: they are looking at a changed workbook and deciding whether to press
       // 되돌리기. The error explains the turn; only this explains the sheet.
       const done =
         performedSoFar.length === 0
           ? []
-          : [{ role: "assistant" as const, text: receipt(performedSoFar) }]
+          : [{ role: "assistant" as const, text: withReceipt("", performedSoFar) }]
       if (error instanceof AiError) {
         commit({
           turns: [...state.turns, ...done],
@@ -632,6 +788,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // works mid-answer too, which is what makes it a way out of a slow turn.
       if (question.trim() === "/new") {
         generation += 1
+        compactedHistory = false
         set({
           turns: [],
           plan: null,

@@ -59,30 +59,46 @@ export const createSheetSchema = z.object({
   name: z.string().trim().min(1).max(31),
 })
 
-export const formatRangeSchema = z.object({
-  tool: z.literal("format_range"),
-  sheet: z.string().max(120).optional(),
-  address,
-  bold: z.boolean().optional(),
-  italic: z.boolean().optional(),
-  /** `#RRGGBB`. */
-  fill: z
-    .string()
-    .regex(/^#[0-9a-fA-F]{6}$/)
-    .optional(),
-  fontColor: z
-    .string()
-    .regex(/^#[0-9a-fA-F]{6}$/)
-    .optional(),
-  /** An Excel number format, e.g. `#,##0` or `0.0%`. */
-  numberFormat: z.string().max(64).optional(),
-  horizontalAlignment: z.enum(["Left", "Center", "Right"]).optional(),
-  /** Width in points; `auto` fits the content. */
-  columnWidth: z.union([z.number().positive().max(400), z.literal("auto")]).optional(),
-  /** Height in points; `auto` fits the content. */
-  rowHeight: z.union([z.number().positive().max(400), z.literal("auto")]).optional(),
-  wrapText: z.boolean().optional(),
-})
+export const formatRangeSchema = z
+  .object({
+    tool: z.literal("format_range"),
+    sheet: z.string().max(120).optional(),
+    address,
+    bold: z.boolean().optional(),
+    italic: z.boolean().optional(),
+    /** `#RRGGBB`. */
+    fill: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .optional(),
+    fontColor: z
+      .string()
+      .regex(/^#[0-9a-fA-F]{6}$/)
+      .optional(),
+    /** An Excel number format, e.g. `#,##0` or `0.0%`. */
+    numberFormat: z.string().max(64).optional(),
+    horizontalAlignment: z.enum(["Left", "Center", "Right"]).optional(),
+    /** Width in points; `auto` fits the content. */
+    columnWidth: z.union([z.number().positive().max(400), z.literal("auto")]).optional(),
+    /** Height in points; `auto` fits the content. */
+    rowHeight: z.union([z.number().positive().max(400), z.literal("auto")]).optional(),
+    wrapText: z.boolean().optional(),
+  })
+  .refine(
+    (call) =>
+      [
+        call.bold,
+        call.italic,
+        call.fill,
+        call.fontColor,
+        call.numberFormat,
+        call.horizontalAlignment,
+        call.columnWidth,
+        call.rowHeight,
+        call.wrapText,
+      ].some((value) => value !== undefined),
+    "적용할 서식을 하나 이상 지정해야 합니다",
+  )
 
 export const insertRowsSchema = z.object({
   tool: z.literal("insert_rows"),
@@ -249,12 +265,14 @@ export const addChartSchema = z.object({
   title: z.string().max(120).optional(),
 })
 
-export const freezePanesSchema = z.object({
-  tool: z.literal("freeze_panes"),
-  sheet: z.string().max(120).optional(),
-  rows: z.number().int().min(0).max(100).optional(),
-  columns: z.number().int().min(0).max(100).optional(),
-})
+export const freezePanesSchema = z
+  .object({
+    tool: z.literal("freeze_panes"),
+    sheet: z.string().max(120).optional(),
+    rows: z.number().int().min(0).max(100).optional(),
+    columns: z.number().int().min(0).max(100).optional(),
+  })
+  .refine((call) => call.rows !== undefined || call.columns !== undefined, "고정할 행 또는 열 필요")
 
 export const findReplaceSchema = z.object({
   tool: z.literal("find_replace"),
@@ -448,19 +466,33 @@ export const columnStatsSchema = z.object({
 })
 
 /** How the sheet prints: the part of a report nobody notices until it comes out wrong. */
-export const printLayoutSchema = z.object({
-  tool: z.literal("set_print_layout"),
-  sheet: z.string().max(120).optional(),
-  orientation: z.enum(["Portrait", "Landscape"]).optional(),
-  paperSize: z.enum(["A4", "A3", "Letter", "Legal"]).optional(),
-  /** Squeeze the sheet onto this many pages across; 1 is the usual answer. */
-  fitToPagesWide: z.number().int().min(1).max(20).optional(),
-  fitToPagesTall: z.number().int().min(1).max(50).optional(),
-  /** Rows repeated at the top of every page, e.g. `$1:$2`. */
-  titleRows: z.string().max(32).optional(),
-  printGridlines: z.boolean().optional(),
-  centerHorizontally: z.boolean().optional(),
-})
+export const printLayoutSchema = z
+  .object({
+    tool: z.literal("set_print_layout"),
+    sheet: z.string().max(120).optional(),
+    orientation: z.enum(["Portrait", "Landscape"]).optional(),
+    paperSize: z.enum(["A4", "A3", "Letter", "Legal"]).optional(),
+    /** Squeeze the sheet onto this many pages across; 1 is the usual answer. */
+    fitToPagesWide: z.number().int().min(1).max(20).optional(),
+    fitToPagesTall: z.number().int().min(1).max(50).optional(),
+    /** Rows repeated at the top of every page, e.g. `$1:$2`. */
+    titleRows: z.string().max(32).optional(),
+    printGridlines: z.boolean().optional(),
+    centerHorizontally: z.boolean().optional(),
+  })
+  .refine(
+    (call) =>
+      [
+        call.orientation,
+        call.paperSize,
+        call.fitToPagesWide,
+        call.fitToPagesTall,
+        call.titleRows,
+        call.printGridlines,
+        call.centerHorizontally,
+      ].some((value) => value !== undefined),
+    "적용할 인쇄 설정을 하나 이상 지정해야 합니다",
+  )
 
 /**
  * One cell, read back: its formula, what each reference in it holds, and the calculation
@@ -531,19 +563,25 @@ export const recalculateSchema = z.object({
  * of the table. So the values are converted where they stand — a number becomes the
  * converted number, and a formula is wrapped so it keeps recalculating.
  */
-export const scaleValuesSchema = z.object({
-  tool: z.literal("scale_values"),
-  sheet: z.string().max(120).optional(),
-  address,
-  /** e.g. 1000000 for 백만 단위. */
-  divideBy: z
-    .number()
-    .refine((value) => value !== 0, "0으로는 나눌 수 없습니다")
-    .optional(),
-  multiplyBy: z.number().optional(),
-  /** Decimal places to round to; omitted leaves the precision alone. */
-  decimals: z.number().int().min(0).max(10).optional(),
-})
+export const scaleValuesSchema = z
+  .object({
+    tool: z.literal("scale_values"),
+    sheet: z.string().max(120).optional(),
+    address,
+    /** e.g. 1000000 for 백만 단위. */
+    divideBy: z
+      .number()
+      .refine((value) => value !== 0, "0으로는 나눌 수 없습니다")
+      .optional(),
+    multiplyBy: z.number().optional(),
+    /** Decimal places to round to; omitted leaves the precision alone. */
+    decimals: z.number().int().min(0).max(10).optional(),
+  })
+  .refine(
+    (call) =>
+      call.divideBy !== undefined || call.multiplyBy !== undefined || call.decimals !== undefined,
+    "배율 또는 반올림 자릿수를 지정해야 합니다",
+  )
 
 export const toolCallSchema = z.discriminatedUnion("tool", [
   readRangeSchema,

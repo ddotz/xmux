@@ -15,10 +15,18 @@ const workbook = () => {
   const performed: string[] = []
   let existingSheet = true
   let replacements = 3
+  let syncs = 0
+  let failSyncAt: number | null = null
+  let qualifiedAddresses = false
   const conditional: { criteria?: unknown } = {}
   // What a whole-column used range answers, which is how a fill learns whether it covered
   // the data it reads.
   let columnUsed: string | null = "Main!A1:A19"
+
+  const excelAddress = (address: string): string =>
+    qualifiedAddresses
+      ? `Main!${address.replace(/([A-Z]+)([0-9]+)/g, (_match, column: string, row: string) => `$${column}$${row}`)}`
+      : address
 
   // One column or row, with the width Excel would report for it.
   const sized = (label: string, size: number) => ({
@@ -41,7 +49,7 @@ const workbook = () => {
 
   const makeRange = (address: string) => {
     const range = {
-      address,
+      address: excelAddress(address),
       isNullObject: false,
       rowCount: 2,
       columnCount: 3,
@@ -150,7 +158,10 @@ const workbook = () => {
         },
       },
     },
-    sync: async () => {},
+    sync: async () => {
+      syncs += 1
+      if (syncs === failSyncAt) throw new Error("두 번째 동기화에 실패했습니다")
+    },
   }
 
   return {
@@ -167,6 +178,12 @@ const workbook = () => {
     },
     setReplacements: (count: number) => {
       replacements = count
+    },
+    failSyncAt: (count: number) => {
+      failSyncAt = count
+    },
+    setQualifiedAddresses: () => {
+      qualifiedAddresses = true
     },
     conditional,
     sheet,
@@ -281,7 +298,7 @@ describe("runWrite", () => {
     })
 
     expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values transpose=false"])
-    expect(history.last()?.label).toContain("F1:resized(1,2)")
+    expect(history.last()?.label).toContain("F1:H2")
     expect(answer).toContain("복사했습니다")
   })
 
@@ -297,10 +314,7 @@ describe("runWrite", () => {
     })
 
     expect(book.performed).toEqual(["moveTo A1:C2 -> F1"])
-    expect(history.last()?.ranges?.map((held) => held.address)).toEqual([
-      "A1:C2",
-      "F1:resized(1,2)",
-    ])
+    expect(history.last()?.ranges?.map((held) => held.address)).toEqual(["A1:C2", "F1:H2"])
   })
 
   it("transposes on paste when the model asks for it", async () => {
@@ -317,6 +331,59 @@ describe("runWrite", () => {
     })
 
     expect(book.performed).toEqual(["copyFrom A1:C2 -> F1 Values transpose=true"])
+  })
+
+  it("uses the matrix dimensions from the top-left of a multi-cell write target", async () => {
+    const book = workbook()
+    const history = createHistory()
+
+    await runWrite(book.context, history, {
+      tool: "write_range",
+      address: "A1:B2",
+      rows: [
+        ["a", "b"],
+        ["c", "d"],
+      ],
+    })
+
+    expect(book.written[0]?.address).toBe("A1:B2")
+    expect(history.last()?.ranges?.[0]?.address).toBe("A1:B2")
+  })
+
+  it("snapshots and reports the swapped rectangle of a transposed paste", async () => {
+    const book = workbook()
+    const history = createHistory()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "copy_range",
+      address: "A1:C2",
+      target: "F1",
+      what: "values",
+      transpose: true,
+    })
+
+    expect(history.last()?.ranges?.[0]?.address).toBe("F1:G3")
+    expect(history.last()?.label).toContain("F1:G3")
+    expect(answer).toContain("F1:G3")
+  })
+
+  it("keeps Excel-qualified range addresses local in snapshots and reports", async () => {
+    const book = workbook()
+    const history = createHistory()
+    book.setQualifiedAddresses()
+
+    const answer = await runWrite(book.context, history, {
+      tool: "copy_range",
+      address: "A1:C2",
+      target: "F1",
+      what: "values",
+    })
+
+    expect(history.last()?.ranges?.[0]?.address).toBe("F1:H2")
+    expect(history.last()?.label).toContain("Main!F1:H2")
+    expect(history.last()?.label).not.toContain("Main!Main!")
+    expect(answer).toContain("Main!F1:H2")
+    expect(answer).not.toContain("Main!Main!")
   })
 
   it("reports how many cells a replace actually changed", async () => {
@@ -411,6 +478,43 @@ describe("runWrite", () => {
 
     expect(book.performed).toEqual([])
     expect(answer).toContain("순환참조")
+  })
+
+  it("refuses multi-cell and out-of-range fill anchors", async () => {
+    for (const anchor of ["D2:D3", "E2"]) {
+      const book = workbook()
+      const history = createHistory()
+
+      const answer = await runWrite(book.context, history, {
+        tool: "fill_formula",
+        anchor,
+        address: "D2:D20",
+        formula: "=A2",
+      })
+
+      expect(changedWorkbook(answer)).toBe(false)
+      expect(book.written).toEqual([])
+      expect(history.last()).toBeNull()
+    }
+  })
+
+  it("records the fill range when the formula anchor committed before autofill failed", async () => {
+    const book = workbook()
+    const history = createHistory()
+    // Active-sheet lookup, snapshot, anchor write, then the autofill sync.
+    book.failSyncAt(4)
+
+    const answer = await runWrite(book.context, history, {
+      tool: "fill_formula",
+      anchor: "D2",
+      address: "D2:D20",
+      formula: "=A2",
+    })
+
+    expect(changedWorkbook(answer)).toBe(true)
+    expect(book.written).toEqual([{ address: "D2", rows: [["=A2"]] }])
+    expect(history.last()?.ranges?.[0]?.address).toBe("D2:D20")
+    expect(answer).toContain("나머지 채우기에 실패했습니다")
   })
 
   it("tells the model when a filled column skipped the first row of its data", async () => {

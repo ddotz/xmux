@@ -223,37 +223,17 @@ describe("chat safety and connection errors", () => {
     expect(chatting.state().error).toContain("unexpected shape")
   })
 
-  it("does not claim a failed proposal write was applied", async () => {
+  it("rejects legacy workbook proposals instead of claiming they ran", async () => {
     vi.mocked(askModel).mockResolvedValue(
       '합계\n```json {"edits":[{"sheet":"Main","address":"B6","value":"=SUM(B2:B5)"}]} ```',
     )
-    const writeError = new Error("write exploded")
-    let failedRun = Promise.resolve()
-    let announce = (): void => {}
-    const planReady = new Promise<void>((resolve) => {
-      announce = resolve
-    })
-    let chatting: Chatting | null = null
-    chatting = createChatting({
-      redraw: () => {
-        if (chatting?.state().plan !== null) announce()
-      },
-      run: () => {
-        failedRun = Promise.reject(writeError)
-        return failedRun
-      },
-      anchor: () => ({ address: "Main!A1", formula: "" }),
-      history: createHistory(),
-    })
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
     chatting.handlers.onSend("B6에 합계를 넣어줘")
-    await planReady
-    chatting.handlers.onApply()
-    await failedRun.catch((error: unknown) => {
-      if (error !== writeError) throw error
-    })
-    await Promise.resolve()
-    expect(chatting.state().error).toContain("write exploded")
-    expect(chatting.state().turns.map((turn) => turn.text)).not.toContain("1건을 적용했습니다.")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().plan).toBeNull()
+    expect(chatting.state().turns.at(-1)?.text).toContain("실행하지 못했습니다")
   })
 })
 
@@ -289,14 +269,27 @@ describe("workbook lookups before answering", () => {
             load: () => {},
           }),
           getItemOrNullObject: () => ({
-            isNullObject: true,
-            name: "",
-            getRange: () => {
-              throw new Error("unused")
+            isNullObject: false,
+            name: "Main",
+            getRange: (address: string) => {
+              looked.push(address)
+              return {
+                isNullObject: false,
+                address: `Main!${address}`,
+                values: [["대출채권", 1200]],
+                cellCount: 2,
+                worksheet: { name: "Main" },
+                load: () => {},
+              }
             },
-            getUsedRangeOrNullObject: () => {
-              throw new Error("unused")
-            },
+            getUsedRangeOrNullObject: () => ({
+              isNullObject: true,
+              address: "",
+              values: [],
+              cellCount: 0,
+              worksheet: { name: "Main" },
+              load: () => {},
+            }),
             load: () => {},
           }),
         },
@@ -377,14 +370,27 @@ describe("acting on announced work", () => {
           load: () => {},
         }),
         getItemOrNullObject: () => ({
-          isNullObject: true,
-          name: "",
-          getRange: () => {
-            throw new Error("unused")
+          isNullObject: false,
+          name: "Main",
+          getRange: (address: string) => {
+            looked.push(address)
+            return {
+              isNullObject: false,
+              address: `Main!${address}`,
+              values: [["대출채권", 1200]],
+              cellCount: 2,
+              worksheet: { name: "Main" },
+              load: () => {},
+            }
           },
-          getUsedRangeOrNullObject: () => {
-            throw new Error("unused")
-          },
+          getUsedRangeOrNullObject: () => ({
+            isNullObject: true,
+            address: "",
+            values: [],
+            cellCount: 0,
+            worksheet: { name: "Main" },
+            load: () => {},
+          }),
           load: () => {},
         }),
       },
@@ -425,7 +431,7 @@ describe("acting on announced work", () => {
     expect(chatting.state().turns.some((turn) => turn.text.includes("확인하겠습니다"))).toBe(false)
   })
 
-  it("lets a second promise stand instead of arguing with the model", async () => {
+  it("never presents a repeated promise as completed work", async () => {
     vi.mocked(askModel)
       .mockResolvedValueOnce("정리하겠습니다.")
       .mockResolvedValueOnce("공유문서 승인이 나면 정리하겠습니다.")
@@ -436,7 +442,7 @@ describe("acting on announced work", () => {
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
-    expect(chatting.state().turns.at(-1)?.text).toBe("공유문서 승인이 나면 정리하겠습니다.")
+    expect(chatting.state().turns.at(-1)?.text).toContain("실행하지 못했습니다")
   })
 
   it("does not nudge a finished answer that offers a conditional follow-up", async () => {
@@ -588,17 +594,26 @@ describe("one thread at a time", () => {
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
   })
 
-  it("starts a fresh thread mid-answer, and the abandoned turn stays out of it", async () => {
+  it("starts a fresh thread mid-answer and never runs its abandoned tool call", async () => {
     // Given: /new is the way out of a turn that is taking too long. The answer that was
     // still coming must not land in the thread that replaced it.
     let release = (): void => {}
     vi.mocked(askModel).mockImplementation(
       () =>
         new Promise<string>((resolve) => {
-          release = () => resolve("늦은 답변")
+          release = () => resolve('{"tool":"clear_range","address":"A1"}')
         }),
     )
-    const chatting = create()
+    let runs = 0
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        runs += 1
+        await work({} as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
     chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
 
     chatting.handlers.onSend("느린 질문")
@@ -612,6 +627,27 @@ describe("one thread at a time", () => {
     await Promise.resolve()
     await Promise.resolve()
     expect(chatting.state().turns).toEqual([])
+    // Only the initial context read ran; the abandoned clear never reached Excel.run.
+    expect(runs).toBe(1)
+  })
+
+  it("does not mutate on an ambiguous continuation after old constraints were compacted", async () => {
+    vi.mocked(askModel).mockResolvedValue("확인했습니다.")
+    const chatting = create()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    const turnsNeeded = Math.floor(DEFAULT_BUDGET.carriedTurns / 2) + 2
+    for (let index = 0; index < turnsNeeded; index += 1) {
+      chatting.handlers.onSend(`조건이 있는 요청 ${index}`)
+      await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+    }
+    const calls = vi.mocked(askModel).mock.calls.length
+
+    chatting.handlers.onSend("계속해")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(calls)
+    expect(chatting.state().turns.at(-1)?.text).toContain("조건을 한 번만 다시")
+    expect(chatting.state().turns.at(-1)?.text).toContain("변경하지 않았습니다")
   })
 
   it("says something rather than showing an empty bubble", async () => {
@@ -624,76 +660,7 @@ describe("one thread at a time", () => {
     chatting.handlers.onSend("정리해줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(chatting.state().turns.at(-1)?.text).toBe("요청하신 작업을 마쳤습니다.")
-  })
-})
-
-describe("operating on the workbook", () => {
-  it("creates the sheet, then writes the table into it as one rectangle", async () => {
-    // Given: "tidy this table onto a new sheet" — the request that could not be expressed
-    // before, because a plan could only set one existing cell at a time.
-    const added: string[] = []
-    const written: { address: string; resized: string; rows: unknown }[] = []
-    let missing = true
-    const context = {
-      workbook: {
-        worksheets: {
-          add: (name: string) => {
-            added.push(name)
-            missing = false
-          },
-          getItemOrNullObject: () => ({
-            get isNullObject() {
-              return missing
-            },
-            load: () => {},
-          }),
-          getItem: () => ({
-            getRange: (address: string) => ({
-              address,
-              getResizedRange: (rows: number, columns: number) => ({
-                set formulas(value: unknown) {
-                  written.push({ address, resized: `${rows}x${columns}`, rows: value })
-                },
-              }),
-              set formulas(_value: unknown) {},
-              load: () => {},
-            }),
-          }),
-        },
-      },
-      sync: async () => {},
-    }
-
-    vi.mocked(askModel).mockResolvedValue(
-      '정리했습니다.\n```json\n{"newSheets":[{"name":"정리"}],"blocks":[{"sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}]}\n```',
-    )
-
-    const chatting = createChatting({
-      redraw: () => {},
-      run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
-      },
-      anchor: () => ({ address: "Main!A1", formula: "" }),
-      history: createHistory(),
-    })
-    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
-    chatting.handlers.onSend("이 표를 새 시트에 정리해줘")
-    await vi.waitFor(() => expect(chatting.state().plan).not.toBeNull())
-
-    chatting.handlers.onApply()
-    await vi.waitFor(() => expect(chatting.state().plan).toBeNull())
-
-    // Then: the sheet was made before the write, and the table landed in one assignment.
-    expect(added).toEqual(["정리"])
-    expect(written).toHaveLength(1)
-    expect(written[0]?.address).toBe("A1")
-    expect(written[0]?.resized).toBe("1x1")
-    expect(written[0]?.rows).toEqual([
-      ["항목", "금액"],
-      ["대출채권", "1200"],
-    ])
-    expect(chatting.state().turns.at(-1)?.text).toContain("새 시트 1개, 표 1개(2행)")
+    expect(chatting.state().turns.at(-1)?.text).toBe("실행되거나 확인된 작업이 없습니다.")
   })
 })
 
@@ -820,6 +787,10 @@ describe("operating without approval", () => {
         '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}',
       )
       .mockResolvedValueOnce("정리 시트에 표를 만들었습니다.")
+      .mockResolvedValueOnce(
+        '{"tool":"read_range","sheet":"정리","address":"A1:B2","formulas":true}',
+      )
+      .mockResolvedValueOnce("정리 시트에 표를 만들었습니다.")
 
     const history = createHistory()
     const chatting = createChatting({
@@ -844,7 +815,13 @@ describe("operating without approval", () => {
     ])
     // And undo — the only safety net left — has something to give back.
     expect(history.last()).not.toBeNull()
-    expect(chatting.state().turns.at(-1)?.text).toBe("정리 시트에 표를 만들었습니다.")
+    // The turn-start snapshot is refreshed after each write batch before the model continues.
+    expect(vi.mocked(readWorkbookContext)).toHaveBeenCalledTimes(3)
+    const verificationRequest = vi.mocked(askModel).mock.calls[3]?.[1].at(-1)?.content ?? ""
+    expect(verificationRequest).toContain("수식 누락")
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("정리 시트에 표를 만들었습니다.")
+    expect(said).toContain("실행 확인")
   })
 })
 
@@ -898,6 +875,7 @@ describe("working through a batch of tool calls", () => {
   const workbook = () => {
     const added: string[] = []
     const written: unknown[] = []
+    const lookedUp: string[] = []
     let missing = true
     const range = (address: string) => {
       const node = {
@@ -951,9 +929,10 @@ describe("working through a batch of tool calls", () => {
           },
           getActiveWorksheet: () => sheet,
           getItem: () => sheet,
-          getItemOrNullObject: () => ({
+          getItemOrNullObject: (name: string) => ({
             ...sheet,
             get isNullObject() {
+              lookedUp.push(name)
               return missing
             },
           }),
@@ -964,7 +943,7 @@ describe("working through a batch of tool calls", () => {
       },
       sync: async () => {},
     }
-    return { context, added, written }
+    return { context, added, written, lookedUp }
   }
 
   const chattingOver = (context: unknown): Chatting => {
@@ -980,6 +959,31 @@ describe("working through a batch of tool calls", () => {
     return chatting
   }
 
+  it("binds an omitted sheet to the selection captured when Send was pressed", async () => {
+    const book = workbook()
+    book.context.workbook.worksheets.add("Main")
+    let release = (): void => {}
+    vi.mocked(askModel)
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            release = () => resolve('{"tool":"read_range","address":"A1"}')
+          }),
+      )
+      .mockResolvedValueOnce("확인했습니다.")
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "A1", cellCount: 1 })
+
+    chatting.handlers.onSend("A1 확인해")
+    await vi.waitFor(() => expect(vi.mocked(askModel)).toHaveBeenCalled())
+    chatting.updateSelection({ sheet: "Other", address: "B2", cellCount: 1 })
+    release()
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.lookedUp).toContain("Main")
+    expect(book.lookedUp).not.toContain("Other")
+  })
+
   it("runs every call in one reply before going back to the model", async () => {
     // Given: work whose steps are already decided. Against the internal server each extra
     // round trip is dead air, so an array has to cost one turn, not one turn per call.
@@ -990,30 +994,37 @@ describe("working through a batch of tool calls", () => {
           '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"]]}]',
       )
       .mockResolvedValueOnce("정리 시트를 만들고 표를 넣었습니다.")
+      .mockResolvedValueOnce(
+        '{"tool":"read_range","sheet":"정리","address":"A1:B1","formulas":true}',
+      )
+      .mockResolvedValueOnce("정리 시트를 만들고 표를 넣었습니다.")
 
     const chatting = chattingOver(book.context)
     chatting.handlers.onSend("정리 시트 만들고 표 넣어줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(4)
     expect(book.added).toEqual(["정리"])
     expect(book.written).toEqual([[["항목", "금액"]]])
     // And the model is told which result belongs to which call.
     const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
     const observation = second.at(-1)?.content ?? ""
     expect(observation).toContain("[1] 정리 시트 만들기")
-    expect(observation).toContain("[2] 정리!A1 표 입력 (1행)")
+    expect(observation).toContain("[2] '정리'!A1 표 입력 (1행)")
   })
 
   it("runs a call the model quoted in Python's dialect instead of printing it", async () => {
     // Given: the reply that reached the screen as text. Single quotes are not JSON, the
     // call was never recognised, and the user read the model's working notes.
     const book = workbook()
+    book.context.workbook.worksheets.add("Main")
     vi.mocked(askModel)
       .mockResolvedValueOnce(
         "[{'tool': 'fill_formula', 'anchor': 'B2', 'address': 'B2:B20', " +
           "'formula': '=IF(A2=\"\",\"\",MID(A2,7,LEN(A2)))'}]",
       )
+      .mockResolvedValueOnce("B열에 분리한 텍스트를 채웠습니다.")
+      .mockResolvedValueOnce('{"tool":"read_range","address":"B2:B20","formulas":true}')
       .mockResolvedValueOnce("B열에 분리한 텍스트를 채웠습니다.")
 
     const chatting = chattingOver(book.context)
@@ -1022,7 +1033,8 @@ describe("working through a batch of tool calls", () => {
 
     expect(book.written).toEqual([[['=IF(A2="","",MID(A2,7,LEN(A2)))']]])
     const said = chatting.state().turns.at(-1)?.text ?? ""
-    expect(said).toBe("B열에 분리한 텍스트를 채웠습니다.")
+    expect(said).toContain("B열에 분리한 텍스트를 채웠습니다.")
+    expect(said).toContain("실행 확인")
     expect(said).not.toContain("fill_formula")
     // And the fill that started below its data came back as something to fix.
     const second = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
@@ -1246,7 +1258,7 @@ describe("working through a batch of tool calls", () => {
     expect(said).toContain("서식 적용")
   })
 
-  it("takes the markdown off the answer before it reaches the pane", async () => {
+  it("keeps Markdown for the pane's safe renderer", async () => {
     const book = workbook()
     vi.mocked(askModel)
       .mockResolvedValueOnce('{"tool":"list_sheets"}')
@@ -1256,7 +1268,7 @@ describe("working through a batch of tool calls", () => {
     chatting.handlers.onSend("시트 뭐 있어?")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(chatting.state().turns.at(-1)?.text).toBe("결과\n정리 시트만 있습니다.")
+    expect(chatting.state().turns.at(-1)?.text).toBe("### 결과\n**정리** 시트만 있습니다.")
   })
 })
 

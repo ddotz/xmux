@@ -1,5 +1,6 @@
 import { type Budget, DEFAULT_BUDGET } from "../ai/budget"
 import type { ToolCall } from "../ai/tool-schemas"
+import { quoteSheetName } from "../formula/reference"
 import { columnLetters, parseArea } from "./address"
 import { runAuditTool } from "./audit"
 import { formulaAddresses, renderGrid } from "./grid"
@@ -64,7 +65,9 @@ const readRange = async (
   const listed = formulaAddresses(range.formulas, anchor)
   return listed.length === 0
     ? `${grid}\n수식 셀 없음: 이 범위의 값은 모두 직접 입력된 값입니다.`
-    : `${grid}\n수식 셀 (실제 주소 · 위치는 반드시 이 주소를 사용):\n${listed.join("\n")}`
+    : `${grid}\n수식 셀 (실제 주소 · 위치는 반드시 이 주소를 사용):\n${listed
+        .map((line) => `${quoteSheetName(sheet.name)}!${line}`)
+        .join("\n")}`
 }
 
 const listSheetNames = async (context: InspectContext): Promise<string> => {
@@ -127,22 +130,26 @@ const find = async (
   }
 
   const needle = call.text.trim().toLowerCase()
+  if (needle === "") return "찾을 문자열은 공백이 아닌 글자를 포함해야 합니다."
   // The used range rarely starts at A1; hits carry the sheet address they actually have.
   const anchor = parseArea(splitQualified(used.address).local) ?? { top: 1, left: 1 }
   const hits: string[] = []
+  let matches = 0
   used.values.forEach((row, rowOffset) => {
     row.forEach((value, columnOffset) => {
-      if (hits.length >= 20) return
       const text = value === null || value === undefined ? "" : String(value)
       if (text.toLowerCase().includes(needle)) {
+        matches += 1
+        if (hits.length >= 20) return
         const address = `${columnLetters(anchor.left + columnOffset)}${anchor.top + rowOffset}`
-        hits.push(`${address}: ${text.slice(0, 80)}`)
+        const visible = text.replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")
+        hits.push(`${quoteSheetName(sheet.name)}!${address}: ${visible.slice(0, 80)}`)
       }
     })
   })
   return hits.length === 0
     ? `${sheet.name}에서 "${call.text}"를 찾지 못했습니다. (사용 범위 ${used.address} 기준)`
-    : `${sheet.name} ${used.address} 안에서 찾은 위치 (실제 셀 주소):\n${hits.join("\n")}`
+    : `${sheet.name} ${used.address} 안에서 찾은 위치 (실제 셀 주소${matches > 20 ? `, 처음 20개 · 추가 ${matches - 20}개` : ""}):\n${hits.join("\n")}`
 }
 
 /**

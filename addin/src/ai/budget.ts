@@ -52,7 +52,7 @@ const CHARS_PER_TOKEN = 1.5
  * is pinned here and `chat-prompt.test.ts` fails if the prompt outgrows it. A stale
  * constant is then a red test, not a request the server rejects halfway through a build.
  */
-export const SYSTEM_PROMPT_CHARS = 13_600
+export const SYSTEM_PROMPT_CHARS = 13_800
 
 /** What the workbook context payload may add on top (`chat-context.ts` bounds it). */
 const CONTEXT_CHARS = 4_600

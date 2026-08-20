@@ -77,6 +77,16 @@ describe("parseLoose", () => {
     expect(parseLoose('{"tool":"read_range",')).toBeNull()
   })
 
+  it("preserves unknown backslash escapes instead of corrupting Windows paths", () => {
+    const raw = String.raw`{"tool":"write_range","address":"A1","rows":[["C:\Users\alice"]]}`
+
+    expect(parseLoose(raw)?.value).toEqual({
+      tool: "write_range",
+      address: "A1",
+      rows: [[String.raw`C:\Users\alice`]],
+    })
+  })
+
   it("keeps a quoted sheet name inside the formula it belongs to", () => {
     const read = parseLoose(
       "{'tool': 'fill_formula', 'anchor': 'B2', 'address': 'B2:B9', 'formula': '=SUM('1월 자료'!A2:A9)'}",

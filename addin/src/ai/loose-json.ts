@@ -116,7 +116,10 @@ const readString = (text: string, start: number, out: string[]): number => {
     if (ch === "\\") {
       const next = text[at + 1]
       if (next === undefined) return -1
-      out.push(JSON_ESCAPES.has(next) ? `\\${next}` : escaped(next))
+      // Conservative repair is lossless: an unknown escape is a literal backslash plus
+      // the following character, never permission to silently delete the backslash.
+      if (JSON_ESCAPES.has(next)) out.push(`\\${next}`)
+      else out.push("\\\\", escaped(next))
       at += 2
       continue
     }
