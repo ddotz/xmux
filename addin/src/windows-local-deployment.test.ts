@@ -20,6 +20,9 @@ const uninstallScript = readFileSync(
   new URL("../scripts/uninstall-windows-local.ps1", import.meta.url),
   "utf8",
 )
+const launcherScript = readFileSync(new URL("../scripts/start-hidden.vbs", import.meta.url), "utf8")
+const serverScript = readFileSync(new URL("../scripts/local-server.mjs", import.meta.url), "utf8")
+const manifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 
 type Response = {
   readonly body: string
@@ -74,7 +77,10 @@ const waitForPort = (stdout: NodeJS.ReadableStream): Promise<number> =>
   })
 
 describe("Windows local deployment server", () => {
+  const serverPath = resolve(import.meta.dirname, "../scripts/local-server.mjs")
   let certificate: Buffer
+  let certificatePath = ""
+  let keyPath = ""
   let port = 0
   let root = ""
   let server: ReturnType<typeof spawn>
@@ -85,18 +91,19 @@ describe("Windows local deployment server", () => {
     await writeFile(join(root, "index.html"), "<main>땡땡엑셀 로컬 서비스</main>")
     const certificates = await devCerts.getHttpsServerOptions()
     certificate = Buffer.from(certificates.ca)
-    const certificatePath = join(root, "localhost.crt")
-    const keyPath = join(root, "localhost.key")
+    certificatePath = join(root, "localhost.crt")
+    keyPath = join(root, "localhost.key")
     await Promise.all([
       writeFile(certificatePath, certificates.cert),
       writeFile(keyPath, certificates.key),
     ])
 
-    // When: the packaged server starts on an ephemeral loopback port.
+    // When: the packaged server starts on an ephemeral loopback port with the same
+    // registration flags the Windows launchers pass (a no-op off Windows).
     server = spawn(
       process.execPath,
       [
-        resolve(import.meta.dirname, "../scripts/local-server.mjs"),
+        serverPath,
         "--root",
         root,
         "--host",
@@ -107,6 +114,10 @@ describe("Windows local deployment server", () => {
         certificatePath,
         "--key",
         keyPath,
+        "--wef-guid",
+        manifestId,
+        "--wef-manifest",
+        join(root, "manifest.xml"),
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     )
@@ -155,6 +166,42 @@ describe("Windows local deployment server", () => {
       status: 200,
     })
   })
+
+  it("refuses a half-configured Office registration", async () => {
+    // Given: a start command carrying the GUID without the manifest path.
+    const half = spawn(
+      process.execPath,
+      [
+        serverPath,
+        "--root",
+        root,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        "--cert",
+        certificatePath,
+        "--key",
+        keyPath,
+        "--wef-guid",
+        manifestId,
+      ],
+      { stdio: ["ignore", "ignore", "pipe"] },
+    )
+    if (half.stderr === null) throw new Error("local server stderr is unavailable")
+    half.stderr.setEncoding("utf8")
+    let stderr = ""
+    half.stderr.on("data", (chunk: string) => {
+      stderr += chunk
+    })
+
+    // When: the server starts.
+    const [code] = await once(half, "exit")
+
+    // Then: it refuses to run rather than serving without its self-healing half.
+    expect(code).not.toBe(0)
+    expect(stderr).toContain("--wef-manifest")
+  })
 })
 
 describe("Windows local deployment lifecycle", () => {
@@ -193,10 +240,63 @@ describe("Windows local deployment lifecycle", () => {
     // Given: Office asks for https://localhost:3927 as soon as Excel opens, and drops the
     // add-in registration when nothing answers — the add-in disappears on every restart.
     // When: the autostart command is inspected.
-    // Then: it hands straight to a launcher that starts in milliseconds.
-    expect(installScript).toContain('$autoStartCommand = "wscript.exe //B //Nologo')
-    expect(installScript).not.toMatch(/\$autoStartCommand\s*=\s*\n?\s*"powershell\.exe/)
+    // Then: the default hands straight to a launcher that starts in milliseconds, and the
+    // slower PowerShell command exists only behind the script-host-disabled guard.
+    const primary = installScript.indexOf('$autoStartCommand = "wscript.exe //B //Nologo')
+    const guard = installScript.indexOf("$scriptHostDisabled")
+    const fallback = installScript.indexOf('$autoStartCommand = "powershell.exe -NoProfile')
+    expect(primary).toBeGreaterThanOrEqual(0)
+    expect(guard).toBeGreaterThan(primary)
+    expect(fallback).toBeGreaterThan(guard)
     expect(installScript).toContain("start-hidden.vbs")
+  })
+
+  it("still starts at logon when policy disables Windows Script Host", () => {
+    // Given: managed PCs where wscript.exe is blocked outright, so the wscript Run entry
+    // silently never executes and Excel deregisters the add-in at every logon.
+    // When: the installer picks the autostart command.
+    // Then: it detects the policy in both hives and swaps in a PowerShell launcher.
+    expect(installScript).toContain("Windows Script Host\\Settings")
+    expect(installScript).toContain(".Enabled -eq 0")
+    expect(installScript).toContain('-WindowStyle Hidden -File `"$managePath`" start')
+  })
+
+  it("clears a persisted startup-disable verdict on reinstall", () => {
+    // Given: Task Manager and endpoint tools persist a disabled flag in StartupApproved
+    // that survives rewriting the Run value, so a reinstall looks fine but never runs.
+    // When: the installer registers the autostart entry.
+    // Then: the stale verdict is removed, and the uninstaller cleans the same key.
+    for (const script of [installScript, uninstallScript]) {
+      expect(script).toContain("Explorer\\StartupApproved\\Run")
+      expect(script).toContain("-Name $AutoStartName")
+    }
+  })
+
+  it("re-asserts the Office registration whenever the service is up", () => {
+    // Given: Excel deletes the developer registration when a startup load fails, which
+    // otherwise turns one lost logon race into a permanent-looking uninstall.
+    // When: both start paths and the server are inspected.
+    // Then: every start hands the registration identity to the server, which rewrites it.
+    expect(launcherScript).toContain(`--wef-guid ""${manifestId}""`)
+    expect(launcherScript).toContain("--wef-manifest")
+    expect(manageScript).toContain('"--wef-guid `"$ManifestId`""')
+    expect(manageScript).toContain('"--wef-manifest `"$ManifestPath`""')
+    expect(serverScript).toContain(
+      "HKCU\\\\SOFTWARE\\\\Microsoft\\\\Office\\\\16.0\\\\Wef\\\\Developer",
+    )
+    expect(serverScript).toContain('"reg.exe"')
+  })
+
+  it("reports every link of the logon chain in status", () => {
+    // Given: a broken PC where the only question is which link failed.
+    // When: the controller's status output is inspected.
+    // Then: it names the Office registration, Run entry, StartupApproved verdict, and
+    // script-host policy instead of only saying the service is stopped.
+    expect(manageScript).toContain("Write-StartupChain")
+    expect(manageScript).toContain("Office registration:")
+    expect(manageScript).toContain("Logon autostart:")
+    expect(manageScript).toContain("Logon autostart approval:")
+    expect(manageScript).toContain("Windows Script Host\\Settings")
   })
 
   it("has one writer for the service process id", () => {

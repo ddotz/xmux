@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
+import { execFile } from "node:child_process"
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { createServer } from "node:https"
-import { extname, resolve, sep } from "node:path"
+import { extname, join, resolve, sep } from "node:path"
 
 const valueFlags = new Set([
   "--cert",
@@ -14,6 +15,8 @@ const valueFlags = new Set([
   "--port",
   "--ready-file",
   "--root",
+  "--wef-guid",
+  "--wef-manifest",
 ])
 
 const options = new Map()
@@ -42,6 +45,16 @@ const portText = options.get("--port") ?? "3927"
 const port = Number.parseInt(portText, 10)
 if (!Number.isInteger(port) || port < 0 || port > 65_535 || String(port) !== portText) {
   throw new Error(`Invalid port: ${portText}`)
+}
+
+const wefGuid = options.get("--wef-guid")
+const wefManifest = options.get("--wef-manifest")
+if ((wefGuid === undefined) !== (wefManifest === undefined)) {
+  throw new Error("--wef-guid and --wef-manifest must be provided together")
+}
+const guidShape = /^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/
+if (wefGuid !== undefined && !guidShape.test(wefGuid)) {
+  throw new Error(`Invalid Office developer registration GUID: ${wefGuid}`)
 }
 
 const pfxPath = options.get("--pfx")
@@ -131,6 +144,28 @@ const server = createServer(tls, (request, response) => {
   response.end(method === "HEAD" ? undefined : readFileSync(filePath))
 })
 
+// Excel deletes the current-user developer registration when an add-in fails to load at
+// startup — exactly what happens when Excel opens before this service is listening. While
+// the service is up it keeps re-asserting the registration, so recovering from a lost
+// logon race is "restart Excel", never "reinstall".
+const developerRegistryKey = "HKCU\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef\\Developer"
+const assertOfficeRegistration = () => {
+  if (wefGuid === undefined || wefManifest === undefined || process.platform !== "win32") return
+  if (!existsSync(wefManifest)) {
+    console.error(`Office registration skipped: manifest missing at ${wefManifest}`)
+    return
+  }
+  const regTool = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "reg.exe")
+  execFile(
+    regTool,
+    ["add", developerRegistryKey, "/v", wefGuid, "/t", "REG_SZ", "/d", wefManifest, "/f"],
+    { windowsHide: true },
+    (error) => {
+      if (error !== null) console.error(`Office registration re-assert failed: ${error.message}`)
+    },
+  )
+}
+
 const readyFile = options.get("--ready-file")
 // The service is started both by the controller and, at logon, by a launcher that cannot
 // wait around to learn the process id. Writing it here means one owner of that fact.
@@ -152,6 +187,8 @@ server.listen(port, host, () => {
   if (address === null || typeof address === "string") throw new Error("TCP address is unavailable")
   if (pidFile !== undefined) writeFileSync(pidFile, String(process.pid), { mode: 0o600 })
   if (readyFile !== undefined) writeFileSync(readyFile, String(address.port), { mode: 0o600 })
+  assertOfficeRegistration()
+  setInterval(assertOfficeRegistration, 300_000).unref()
   console.log(`LISTENING ${address.port}`)
 })
 

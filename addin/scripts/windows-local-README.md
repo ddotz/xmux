@@ -49,6 +49,13 @@ Synology Drive는 ZIP을 전달하거나 보관하는 용도로 사용할 수 �
 
 상태 확인 주소는 `https://localhost:3927/health`입니다.
 
+`status`는 서비스 상태와 함께 로그인 시작 체인(Office 등록, 시작 항목,
+작업 관리자 시작 앱 승인, Windows Script Host 정책)을 점검해 표시합니다.
+Excel이 "추가 기능 로드 중 오류 발생"을 표시하며 등록이 풀리는 경우
+[`INSTALL.md`](INSTALL.md)의 문제 해결 절차를 따릅니다. 서비스가 실행 중이면
+Office 등록은 자동으로 복원되므로 Excel 재시작으로 충분하며 재설치는 필요
+없습니다.
+
 ## 업데이트
 
 새 ZIP을 압축 해제하고 일반 PowerShell에서 `install.ps1`을 다시 실행합니다.

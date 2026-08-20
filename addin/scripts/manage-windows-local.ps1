@@ -12,6 +12,13 @@ $ReadyPath = Join-Path $InstallRoot "service.ready"
 $ProcessIdPath = Join-Path $InstallRoot "service.pid"
 $HealthUrl = "https://localhost:3927/health"
 $AppRoot = Join-Path $InstallRoot "app"
+$ManifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
+$ManifestPath = Join-Path $AppRoot "manifest.xml"
+$DeveloperRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
+$AutoStartName = "DdotExcelLocalService"
+$AutoStartRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$StartupApprovedRegistryPath =
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $NodePath = Join-Path $InstallRoot "runtime\node.exe"
 $ServerPath = Join-Path $AppRoot "local-server.mjs"
 $DistPath = Join-Path $AppRoot "dist"
@@ -87,6 +94,8 @@ function Start-LocalService {
         "--port `"3927`""
         "--ready-file `"$ReadyPath`""
         "--pid-file `"$ProcessIdPath`""
+        "--wef-guid `"$ManifestId`""
+        "--wef-manifest `"$ManifestPath`""
     ) -join " "
     $startedProcess = $null
     try {
@@ -120,6 +129,57 @@ function Start-LocalService {
     Write-Host "DdotExcel local service is running at https://localhost:3927."
 }
 
+function Write-StartupChain {
+    # Excel drops the developer registration whenever a startup load fails, and the logon
+    # chain Run entry -> StartupApproved verdict -> Windows Script Host -> node must all
+    # work before Excel asks for https://localhost:3927. Name the broken link outright.
+    $registeredManifest = Get-ItemPropertyValue `
+        -LiteralPath $DeveloperRegistryPath `
+        -Name $ManifestId `
+        -ErrorAction SilentlyContinue
+    if ($registeredManifest -eq $ManifestPath) {
+        Write-Host "Office registration: present"
+    } elseif ($null -eq $registeredManifest) {
+        Write-Host ("Office registration: MISSING - Excel dropped it after a failed load. " +
+            "It is restored while the service runs; then restart Excel.")
+    } else {
+        Write-Host "Office registration: points elsewhere ($registeredManifest)"
+    }
+
+    $autoStartCommand = Get-ItemPropertyValue `
+        -LiteralPath $AutoStartRegistryPath `
+        -Name $AutoStartName `
+        -ErrorAction SilentlyContinue
+    if ($null -eq $autoStartCommand) {
+        Write-Host "Logon autostart: MISSING - rerun install.ps1; a cleanup tool removed it."
+    } else {
+        Write-Host "Logon autostart: $autoStartCommand"
+    }
+
+    $approval = Get-ItemProperty `
+        -Path $StartupApprovedRegistryPath `
+        -ErrorAction SilentlyContinue
+    $approvalBytes = $null
+    if ($null -ne $approval) { $approvalBytes = $approval.$AutoStartName }
+    if ($null -ne $approvalBytes -and $approvalBytes.Count -gt 0 -and
+        ($approvalBytes[0] % 2) -eq 1) {
+        Write-Host ("Logon autostart approval: DISABLED - re-enable $AutoStartName in " +
+            "Task Manager > Startup apps, or rerun install.ps1.")
+    } else {
+        Write-Host "Logon autostart approval: enabled"
+    }
+
+    foreach ($hive in @("HKCU:", "HKLM:")) {
+        $scriptHostSettings = Get-ItemProperty `
+            -Path "$hive\Software\Microsoft\Windows Script Host\Settings" `
+            -ErrorAction SilentlyContinue
+        if ($null -ne $scriptHostSettings -and $scriptHostSettings.Enabled -eq 0) {
+            Write-Host ("Windows Script Host: DISABLED in $hive - the wscript logon " +
+                "launcher cannot run; rerun install.ps1 to switch to the fallback.")
+        }
+    }
+}
+
 function Stop-LocalService {
     $process = Get-ServiceProcess
     if ($null -ne $process) {
@@ -146,11 +206,19 @@ switch ($Action) {
     }
     "status" {
         $process = Get-ServiceProcess
-        if ($null -ne $process -and (Test-ServiceHealth)) {
+        $healthy = $false
+        if ($null -ne $process) {
+            $healthy = Test-ServiceHealth
+        }
+        if ($healthy) {
             Write-Host "DdotExcel local service is running at https://localhost:3927."
+        } else {
+            Write-Host "DdotExcel local service is stopped."
+        }
+        Write-StartupChain
+        if ($healthy) {
             exit 0
         }
-        Write-Host "DdotExcel local service is stopped."
         exit 1
     }
 }

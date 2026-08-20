@@ -177,6 +177,35 @@ ZIP이 부분적으로 압축 해제되었습니다. 새 로컬 폴더에 전체
 모든 Office 앱을 완전히 종료한 뒤 Excel을 다시 실행합니다. 계속 보이지 않으면
 회사 정책이 Office 개발자 추가 기능을 차단한 것입니다.
 
+### Excel 시작 시 "추가 기능 로드 중 오류 발생" · 등록이 계속 풀림
+
+Excel이 시작될 때 `https://localhost:3927`이 응답하지 않으면 Excel은 이 오류를
+표시하고 **개발자 등록을 스스로 삭제**합니다. 즉 원인은 등록이 아니라, 로그인
+시 서비스가 실행되지 못했거나 Excel보다 늦게 시작된 것입니다.
+
+일반 PowerShell에서 시작 체인을 점검합니다.
+
+```powershell
+& "$env:LOCALAPPDATA\DdotExcel\manage.ps1" status
+```
+
+| 출력 | 의미와 조치 |
+|---|---|
+| `Office registration: MISSING` | Excel이 로드 실패 후 등록을 지운 상태입니다. 서비스가 실행 중이면 자동으로 복원되므로 Excel을 완전히 종료했다가 다시 실행합니다. 재설치는 필요 없습니다. |
+| `Logon autostart: MISSING` | 보안 도구가 로그인 시작 항목을 삭제했습니다. `install.ps1`을 다시 실행합니다. |
+| `Logon autostart approval: DISABLED` | 작업 관리자 > 시작 앱에서 `DdotExcelLocalService`가 "사용 안 함"으로 바뀐 상태입니다. 다시 사용으로 바꾸거나 `install.ps1`을 다시 실행합니다. |
+| `Windows Script Host: DISABLED` | 회사 정책이 wscript 실행을 차단했습니다. `install.ps1`을 다시 실행하면 PowerShell 경유 시작으로 자동 전환됩니다. |
+
+서비스가 멈춰 있으면 시작한 뒤 Excel을 다시 실행합니다.
+
+```powershell
+& "$env:LOCALAPPDATA\DdotExcel\manage.ps1" start
+```
+
+서비스는 실행 중인 동안 Office 등록을 주기적으로 복원합니다. 이 오류를 본
+뒤에는 Excel을 다시 시작하는 것으로 충분하며, 그래도 반복되면 위 표에서
+로그인 시작이 막힌 원인을 찾아야 합니다.
+
 ### 작업창이 열리지 않거나 빈 화면
 
 ```powershell

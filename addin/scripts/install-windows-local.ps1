@@ -12,6 +12,8 @@ $CaCertificateName = "DdotExcel Local Development CA"
 $OwnershipRegistryPath = "HKCU:\Software\DdotExcel"
 $DeveloperRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
 $AutoStartRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$StartupApprovedRegistryPath =
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $LegacyCatalogRegistryPath =
     "HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{E16E7B92-0D8C-4E8A-94D4-D8267AF4A7D6}"
 
@@ -242,6 +244,24 @@ $managePath = Join-Path $InstallRoot "manage.ps1"
 # registration, which is why it vanished on every restart.
 $launcherPath = Join-Path $InstallRoot "start-hidden.vbs"
 $autoStartCommand = "wscript.exe //B //Nologo `"$launcherPath`""
+# Managed PCs regularly disable Windows Script Host outright, and a Run entry that never
+# executes leaves Excel deregistering the add-in at every logon. Prefer the fast wscript
+# launcher, but a slower PowerShell start that runs beats a fast one that cannot.
+$scriptHostDisabled = $false
+foreach ($hive in @("HKCU:", "HKLM:")) {
+    $scriptHostSettings = Get-ItemProperty `
+        -Path "$hive\Software\Microsoft\Windows Script Host\Settings" `
+        -ErrorAction SilentlyContinue
+    if ($null -ne $scriptHostSettings -and $scriptHostSettings.Enabled -eq 0) {
+        $scriptHostDisabled = $true
+    }
+}
+if ($scriptHostDisabled) {
+    Write-Warning ("Windows Script Host is disabled by policy; " +
+        "the service will start through PowerShell at logon instead.")
+    $autoStartCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass" +
+        " -WindowStyle Hidden -File `"$managePath`" start"
+}
 New-Item -Path $AutoStartRegistryPath -Force | Out-Null
 New-ItemProperty `
     -Path $AutoStartRegistryPath `
@@ -257,6 +277,14 @@ New-ItemProperty `
     -PropertyType String `
     -Force |
     Out-Null
+# Task Manager and endpoint-security tools persist a "disabled" verdict for this entry in
+# StartupApproved even after the Run value is rewritten. Clearing it makes a reinstall
+# actually re-enable the logon start instead of looking installed while never running.
+Remove-ItemProperty `
+    -LiteralPath $StartupApprovedRegistryPath `
+    -Name $AutoStartName `
+    -Force `
+    -ErrorAction SilentlyContinue
 New-ItemProperty `
     -Path $OwnershipRegistryPath `
     -Name "ManifestPath" `

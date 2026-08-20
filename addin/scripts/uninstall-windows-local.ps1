@@ -10,6 +10,8 @@ $ManifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 $OwnershipRegistryPath = "HKCU:\Software\DdotExcel"
 $DeveloperRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
 $AutoStartRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$StartupApprovedRegistryPath =
+    "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $LegacyCatalogRegistryPath =
     "HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{E16E7B92-0D8C-4E8A-94D4-D8267AF4A7D6}"
 
@@ -32,6 +34,11 @@ if ($null -ne $ownedAutoStartCommand -and
     $registeredAutoStartCommand -eq $ownedAutoStartCommand) {
     Remove-ItemProperty `
         -LiteralPath $AutoStartRegistryPath `
+        -Name $AutoStartName `
+        -Force `
+        -ErrorAction SilentlyContinue
+    Remove-ItemProperty `
+        -LiteralPath $StartupApprovedRegistryPath `
         -Name $AutoStartName `
         -Force `
         -ErrorAction SilentlyContinue

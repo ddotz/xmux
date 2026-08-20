@@ -30,7 +30,9 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 - `manifest.template.xml` holds `{{ADDIN_BASE_URL}}` / `{{ADDIN_ORIGIN}}`; the generator throws
   on any leftover `{{…}}`.
 - `scripts/local-server.mjs` is the shipped counterpart of the dev server: static HTTPS for
-  `dist/` plus `/health`, `/xmux/state`, optional `--ready-file`.
+  `dist/` plus `/health`, `/xmux/state`, optional `--ready-file`. With `--wef-guid` +
+  `--wef-manifest` it re-asserts the Office developer registration (win32 only) at listen
+  and every 5 minutes, because Excel deletes that registration whenever a startup load fails.
 
 ## SCRIPTS
 
@@ -38,11 +40,11 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 |---|---|
 | `generate-manifest.mjs` | template → manifest; `--production` rejects loopback hosts |
 | `vendor-office-js.mjs` | copies office.js + Excel desktop host bundles + en-us/ko-kr strings into `public/office/` (gitignored); runs ahead of both `dev` and `build` |
-| `local-server.mjs` | standalone HTTPS static server; `--root --host --port --cert --key --pfx --passphrase-file --ready-file` |
+| `local-server.mjs` | standalone HTTPS static server; `--root --host --port --cert --key --pfx --passphrase-file --ready-file --pid-file --wef-guid --wef-manifest` |
 | `sideload-mac.sh` | copies `manifest.xml` into Excel's container `wef/`, drops legacy `xmux.manifest.xml` |
 | `sideload-windows.ps1` | trusted SMB shared-folder catalog; needs one elevated shell |
 | `package-windows-local.ps1` | `pnpm build` + `pnpm manifest:dev`, bundles pinned Node v24.19.0 (per-arch SHA-256) into `release/*.zip` |
-| `install/manage/uninstall-windows-local.ps1` | per-user `%LOCALAPPDATA%\DdotExcel` service: HKCU developer registry, Run-key autostart, PFX cert; uninstall touches only what it owns |
+| `install/manage/uninstall-windows-local.ps1` | per-user `%LOCALAPPDATA%\DdotExcel` service: HKCU developer registry, Run-key autostart (wscript, PowerShell fallback when WSH is policy-disabled), StartupApproved cleanup, PFX cert; `manage status` prints the whole logon chain; uninstall touches only what it owns |
 | `generate-icons.py` | Playwright Chromium renders `public/assets/icon.svg` → PNG 16/32/64/80 |
 
 ## TESTS
