@@ -18,6 +18,8 @@ The pane UI: 28 modules, 106 exports, one Excel-touching file (`main.ts`), every
 
 **chat**: the AI tab.
 - `chatting.ts` is the direct-tool state machine: Send-time sheet binding, generation cancellation, atomic tool batches, exact outcome ledger, post-write context refresh and mandatory verification before the final answer. Workbook proposals are rejected; skill proposals remain reviewable. Every budget comes from `budgetFor(state.settings)`.
+- `chat-grounding.ts` is the pure final-answer trust boundary: it extracts factual A1 claims, plans exact value reads, tiles a large selected rectangle without sampling, checks citation coverage, and fails closed when all raw observations cannot fit. `chatting.ts` never shows the model's first factual draft; it reads the cited cells/complete selected range and asks for one grounded rewrite.
+- `chat-workbook.ts` loads an exact multi-cell selection only when all of it fits the 72-cell initial-context cap. Larger selections carry shape + deterministic tile metadata with `coverage: "not_loaded"` and no sampled values; missing context is unknown, never blank.
 
 Pure (no DOM, no Excel): `selection.ts`, `reference-keys.ts`, `chat-context.ts`, `chat-prompt.ts`, `chat-skills.ts`, `chat-skill-store.ts`.
 DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `chatting.ts` (which take Excel via deps).

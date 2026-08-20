@@ -1,0 +1,152 @@
+import type { ToolCall } from "../ai/tool-schemas"
+import { clampArea, formatArea, type GridArea, parseArea } from "../excel/address"
+
+export type GroundingPlan = {
+  readonly calls: readonly GroundingRead[]
+  readonly hasClaim: boolean
+  readonly complete: boolean
+}
+
+export type GroundingRead = Extract<ToolCall, { readonly tool: "read_range" }>
+
+const MAX_CALLS = 8
+const GROUNDING_CELLS = 72
+
+const CLAIM =
+  /(?:값|빈|공백|0|수식|오류|에러|입력|존재|없(?:습니다|다)|있(?:습니다|다)|비어|숫자|합계|평균|최대|최소|건수|분포|이상치|중복|[0-9]+(?:개|행|열)|formula|error|blank|zero|value|input|present)/i
+const HYPOTHETICAL =
+  /(?:넣|입력|작성|적용|설정|채우)[^\n.]{0,40}(?:으면|면)|(?:하면|할 경우|하려면)/
+const REFERENCE =
+  /(?:(?:'((?:[^']|'')+)'|(\[[^\]]+\][^!]+|[A-Za-z_][A-Za-z0-9_. ]*))!)?(\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6}(?::\$?[A-Za-z]{1,3}\$?[1-9][0-9]{0,6})?)/g
+
+const normalizeSheet = (sheet: string): string => sheet.replaceAll("''", "'").trim()
+
+const validBoundary = (answer: string, start: number, end: number): boolean => {
+  const before = answer[start - 1] ?? ""
+  const after = answer[end] ?? ""
+  return !/[A-Za-z0-9_:$[\]]/.test(before) && !/[A-Za-z0-9_]/.test(after)
+}
+
+const chunks = (
+  area: GridArea,
+  cells: number,
+  maximum: number = Number.POSITIVE_INFINITY,
+): readonly string[] => {
+  const width = Math.min(area.width, cells)
+  const height = Math.max(1, Math.floor(cells / width))
+  const result: string[] = []
+  for (let row = area.top; row < area.top + area.height; row += height) {
+    for (let column = area.left; column < area.left + area.width; column += width) {
+      result.push(
+        formatArea(
+          clampArea(
+            {
+              top: row,
+              left: column,
+              height: area.top + area.height - row,
+              width: area.left + area.width - column,
+            },
+            { rows: height, columns: width },
+          ),
+        ),
+      )
+      if (result.length > maximum) return result
+    }
+  }
+  return result
+}
+
+/**
+ * Finds factual A1 claims that can be checked on this turn's bound worksheet.
+ * External workbooks, malformed addresses, and references embedded in ordinary words are
+ * deliberately ignored: none of them is evidence that Excel can read from this workbook.
+ */
+export const groundingPlan = (answer: string, boundSheet: string): GroundingPlan => {
+  const references = new Map<string, { readonly sheet: string; readonly address: string }>()
+  let hasClaim = false
+  let incomplete = false
+  for (const match of answer.matchAll(REFERENCE)) {
+    const whole = match[0]
+    const start = match.index ?? 0
+    if (!validBoundary(answer, start, start + whole.length)) continue
+    const sentenceStart =
+      Math.max(answer.lastIndexOf(".", start - 1), answer.lastIndexOf("\n", start - 1)) + 1
+    const period = answer.indexOf(".", start + whole.length)
+    const newline = answer.indexOf("\n", start + whole.length)
+    const ends = [period, newline].filter((at) => at >= 0)
+    const sentenceEnd = ends.length === 0 ? answer.length : Math.min(...ends)
+    const sentence = answer.slice(sentenceStart, sentenceEnd)
+    if (HYPOTHETICAL.test(sentence) || !CLAIM.test(sentence)) continue
+    hasClaim = true
+    const qualified = match[1] ?? match[2]
+    if (qualified?.includes("[") || qualified?.includes("]")) {
+      incomplete = true
+      continue
+    }
+    const sheet = normalizeSheet(qualified ?? boundSheet)
+    if (sheet === "") {
+      incomplete = true
+      continue
+    }
+    const address = match[3]?.replaceAll("$", "")
+    if (address === undefined || parseArea(address) === null) {
+      incomplete = true
+      continue
+    }
+    const upper = address.toUpperCase()
+    references.set(`${sheet}\u0000${upper}`, { sheet, address: upper })
+  }
+  if (!hasClaim) return { calls: [], hasClaim: false, complete: true }
+
+  const addresses = [...references.values()].flatMap(({ sheet, address }) => {
+    const area = parseArea(address)
+    return area === null
+      ? []
+      : chunks(area, GROUNDING_CELLS).map((local) => ({ sheet, address: local }))
+  })
+  if (incomplete || addresses.length > MAX_CALLS)
+    return { calls: [], hasClaim: true, complete: false }
+  return {
+    calls: addresses.map(({ sheet, address }) => ({ tool: "read_range", sheet, address })),
+    hasClaim: true,
+    complete: true,
+  }
+}
+
+export const selectionGroundingCalls = (
+  address: string,
+  sheet: string,
+  cellsPerCall: number,
+  maximumCalls: number = MAX_CALLS,
+): readonly GroundingRead[] | null => {
+  const area = parseArea(address)
+  if (area === null) return null
+  const calls = chunks(area, cellsPerCall, maximumCalls)
+  if (calls.length > maximumCalls) return null
+  return calls.map((local) => ({ tool: "read_range", sheet, address: local }))
+}
+
+export const selectionWideClaim = (answer: string): boolean =>
+  CLAIM.test(answer) && /(?:전체|모든|선택(?:한)?\s*(?:범위|셀)|이\s*범위|범위\s*전체)/.test(answer)
+
+export const workbookClaim = (answer: string): boolean =>
+  answer.split(/[.\n]/).some((sentence) => CLAIM.test(sentence) && !HYPOTHETICAL.test(sentence))
+
+export const groundingCallsCover = (
+  calls: readonly GroundingRead[],
+  target: GroundingRead,
+): boolean => {
+  const wanted = parseArea(target.address)
+  if (wanted === null) return false
+  return calls.some((call) => {
+    if (normalizeSheet(call.sheet ?? "") !== normalizeSheet(target.sheet ?? "")) return false
+    const held = parseArea(call.address)
+    return (
+      held !== null &&
+      held.top <= wanted.top &&
+      held.left <= wanted.left &&
+      held.top + held.height >= wanted.top + wanted.height &&
+      held.left + held.width >= wanted.left + wanted.width
+    )
+  })
+}

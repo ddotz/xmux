@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_BUDGET } from "../ai/budget"
-import { formulaAddresses, renderGrid } from "./grid"
+import { formulaAddresses, renderDisplayDetails, renderGrid } from "./grid"
 
 describe("renderGrid", () => {
   it("labels every row with the sheet row it actually is", () => {
@@ -121,5 +121,38 @@ describe("renderGrid", () => {
     expect(renderGrid("A1:C300", rows, { top: 1, left: 1 }, DEFAULT_BUDGET)).not.toContain(
       "… (생략됨)",
     )
+  })
+})
+
+describe("renderDisplayDetails", () => {
+  it("names only cells whose display or format adds information", () => {
+    const details = renderDisplayDetails(
+      [[2160853836970, 45292, 0.125, 2160000, 1200]],
+      [["2,160,853,836,970", "2024-01-01", "12.5%", "2.2", "1200"]],
+      [["#,##0", "yyyy-mm-dd", "0.0%", "0.0,,", "General"]],
+      { top: 5, left: 10 },
+    )
+
+    expect(details.split("\n")).toEqual([
+      "표시 값/서식 (실제 셀 주소):",
+      'J5: 표시 "2,160,853,836,970" · 형식 "#,##0"',
+      'K5: 표시 "2024-01-01" · 형식 "yyyy-mm-dd"',
+      'L5: 표시 "12.5%" · 형식 "0.0%"',
+      'M5: 표시 "2.2" · 형식 "0.0,,"',
+    ])
+  })
+
+  it("escapes displayed text and caps sparse metadata without inventing blank cells", () => {
+    const details = renderDisplayDetails(
+      [[1, 2]],
+      [["one\ttwo", "three\nfour"]],
+      [["0", "0"]],
+      { top: 1, left: 1 },
+      { readCells: 1, readChars: 100 },
+    )
+
+    expect(details).toContain('A1: 표시 "one\\ttwo" · 형식 "0"')
+    expect(details).toContain("… (표시 정보 생략됨)")
+    expect(details).not.toContain("B1:")
   })
 })

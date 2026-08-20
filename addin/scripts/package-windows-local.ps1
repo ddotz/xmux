@@ -13,7 +13,6 @@ $NodeHashes = @{
     "arm64" = "8502f4a50b458d4cc38ed8f2001556c2cd239d464920f74017926ccb1e1c157f"
 }
 $addinRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$repoRoot = [IO.Path]::GetFullPath((Join-Path $addinRoot ".."))
 $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) "ddot-excel-$([Guid]::NewGuid())"
 $packageName = "ddot-excel-windows-$Architecture"
 $packageRoot = Join-Path $stagingRoot $packageName
@@ -64,27 +63,37 @@ try {
         -LiteralPath (Join-Path $PSScriptRoot "external-range.mjs") `
         -Destination $appRoot
     Copy-Item -LiteralPath $nodePath -Destination $runtimeRoot
+
+    # One file sits at the package root: the launcher a user double-clicks. Everything it
+    # drives lives in scripts\, so the top level cannot be mistaken for a menu of choices.
+    $scriptsRoot = Join-Path $packageRoot "scripts"
+    New-Item -ItemType Directory -Path $scriptsRoot | Out-Null
+    # cmd.exe needs CRLF, and Windows PowerShell 5.1 needs a BOM to read the menu's Korean
+    # as UTF-8 instead of ANSI. Editors and git clients rewrite line endings in the working
+    # tree, so copying these two verbatim ships whatever the last tool happened to leave.
+    # The packager writes the exact bytes Windows requires and stops depending on that.
+    $launcher = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "menu-windows-local.bat"))
+    [IO.File]::WriteAllText(
+        (Join-Path $packageRoot "땡땡엑셀 설치.bat"),
+        (($launcher -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($false))
+    $menu = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "menu-windows-local.ps1"))
+    [IO.File]::WriteAllText(
+        (Join-Path $scriptsRoot "menu.ps1"),
+        (($menu -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($true))
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "install-windows-local.ps1") `
-        -Destination (Join-Path $packageRoot "install.ps1")
+        -Destination (Join-Path $scriptsRoot "install.ps1")
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "manage-windows-local.ps1") `
-        -Destination (Join-Path $packageRoot "manage.ps1")
+        -Destination (Join-Path $scriptsRoot "manage.ps1")
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") `
-        -Destination (Join-Path $packageRoot "start-hidden.vbs")
+        -Destination (Join-Path $scriptsRoot "start-hidden.vbs")
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "uninstall-windows-local.ps1") `
-        -Destination (Join-Path $packageRoot "uninstall.ps1")
-    Copy-Item `
-        -LiteralPath (Join-Path $PSScriptRoot "windows-local-README.md") `
-        -Destination (Join-Path $packageRoot "README.md")
-    Copy-Item `
-        -LiteralPath (Join-Path $repoRoot "docs\INSTALL.md") `
-        -Destination (Join-Path $packageRoot "INSTALL.md")
-    Copy-Item `
-        -LiteralPath (Join-Path $repoRoot "docs\USER-GUIDE.md") `
-        -Destination (Join-Path $packageRoot "USER-GUIDE.md")
+        -Destination (Join-Path $scriptsRoot "uninstall.ps1")
 
     New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($archivePath)) -Force |
         Out-Null

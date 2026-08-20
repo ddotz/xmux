@@ -10,6 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ReadyPath = Join-Path $InstallRoot "service.ready"
 $ProcessIdPath = Join-Path $InstallRoot "service.pid"
+$LogPath = Join-Path $InstallRoot "service.log"
 $HealthUrl = "https://localhost:3927/health"
 $AppRoot = Join-Path $InstallRoot "app"
 $ManifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
@@ -96,6 +97,7 @@ function Start-LocalService {
         "--pid-file `"$ProcessIdPath`""
         "--wef-guid `"$ManifestId`""
         "--wef-manifest `"$ManifestPath`""
+        "--log-file `"$LogPath`""
     ) -join " "
     $startedProcess = $null
     try {
@@ -151,7 +153,7 @@ function Write-StartupChain {
         -Name $AutoStartName `
         -ErrorAction SilentlyContinue
     if ($null -eq $autoStartCommand) {
-        Write-Host "Logon autostart: MISSING - rerun install.ps1; a cleanup tool removed it."
+        Write-Host "Logon autostart: MISSING - rerun the installer; a cleanup tool removed it."
     } else {
         Write-Host "Logon autostart: $autoStartCommand"
     }
@@ -164,7 +166,7 @@ function Write-StartupChain {
     if ($null -ne $approvalBytes -and $approvalBytes.Count -gt 0 -and
         ($approvalBytes[0] % 2) -eq 1) {
         Write-Host ("Logon autostart approval: DISABLED - re-enable $AutoStartName in " +
-            "Task Manager > Startup apps, or rerun install.ps1.")
+            "Task Manager > Startup apps, or rerun the installer.")
     } else {
         Write-Host "Logon autostart approval: enabled"
     }
@@ -175,9 +177,27 @@ function Write-StartupChain {
             -ErrorAction SilentlyContinue
         if ($null -ne $scriptHostSettings -and $scriptHostSettings.Enabled -eq 0) {
             Write-Host ("Windows Script Host: DISABLED in $hive - the wscript logon " +
-                "launcher cannot run; rerun install.ps1 to switch to the fallback.")
+                "launcher cannot run; rerun the installer to switch to the fallback.")
         }
     }
+
+    # Which build is actually installed. "I reinstalled" and "the new package is running"
+    # are different claims, and only this one is checkable.
+    if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
+        $manifestXml = [xml](Get-Content -LiteralPath $ManifestPath -Raw)
+        Write-Host "Installed version: $($manifestXml.OfficeApp.Version)"
+    }
+}
+
+function Write-ServiceLog {
+    param([int]$Tail = 20)
+    Write-Host ""
+    if (-not (Test-Path -LiteralPath $LogPath -PathType Leaf)) {
+        Write-Host "Service log: none yet (no request has reached the service)"
+        return
+    }
+    Write-Host "Service log (last $Tail lines) - $LogPath"
+    Get-Content -LiteralPath $LogPath -Tail $Tail | ForEach-Object { Write-Host "  $_" }
 }
 
 function Stop-LocalService {
@@ -216,6 +236,7 @@ switch ($Action) {
             Write-Host "DdotExcel local service is stopped."
         }
         Write-StartupChain
+        Write-ServiceLog
         if ($healthy) {
             exit 0
         }

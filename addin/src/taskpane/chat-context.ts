@@ -10,17 +10,32 @@ export type WorkbookContextInput = {
   readonly sheets: readonly ContextSheet[]
   readonly selection: {
     readonly address: string
-    readonly formula: string
-    readonly value: string
+    readonly formula?: string
+    readonly value?: string
+    readonly rowCount: number
+    readonly columnCount: number
+    readonly cellCount: number
+    readonly coverage: "full" | "not_loaded"
+    readonly not_loaded?: true
+    readonly observedAddress?: string
+    readonly unobserved?: "unknown"
+    readonly tileRows?: number
+    readonly tileColumns?: number
+    readonly maxCells?: number
+    readonly tileOrder?: "row_major"
   }
-  readonly region: {
+  readonly region?: {
     readonly address: string
     readonly values: readonly (readonly unknown[])[]
+    readonly text: readonly (readonly string[])[]
+    readonly numberFormat: readonly (readonly string[])[]
   }
   /** Top rows of a narrow used range, kept separate from the selection neighborhood. */
   readonly headerRegion?: {
     readonly address: string
     readonly values: readonly (readonly unknown[])[]
+    readonly text: readonly (readonly string[])[]
+    readonly numberFormat: readonly (readonly string[])[]
   }
   readonly references: readonly ReferenceSummary[]
 }
@@ -34,20 +49,28 @@ type CellValue = string | number | boolean | null
 
 type DetailedRegion = {
   readonly mode: "detail"
-  readonly label?: "selection_neighborhood" | "used_range_top_rows"
+  readonly label?: "selection" | "selection_neighborhood" | "used_range_top_rows"
   readonly address: string
   readonly rows: readonly (readonly CellValue[])[]
   readonly headerRows: readonly number[]
+  readonly display: readonly DisplayCell[]
 }
 
 type SummaryRegion = {
   readonly mode: "summary"
-  readonly label?: "selection_neighborhood" | "used_range_top_rows"
+  readonly label?: "selection" | "selection_neighborhood" | "used_range_top_rows"
   readonly address: string
   readonly cells: number
   readonly nonEmpty: number
   readonly sum: number | null
   readonly average: number | null
+  readonly unobserved: "unknown"
+}
+
+type DisplayCell = {
+  readonly address: string
+  readonly text: string
+  readonly numberFormat: string
 }
 
 export type WorkbookContext = {
@@ -55,8 +78,8 @@ export type WorkbookContext = {
   readonly selection: WorkbookContextInput["selection"]
   /** The exact top-of-used-range rectangle; absent when the used range is wide. */
   readonly headerRegion?: DetailedRegion | SummaryRegion
-  /** The exact rectangle surrounding the selection, not the entire table. */
-  readonly region: DetailedRegion | SummaryRegion
+  /** A loaded selection or neighborhood; absent when a large selection has not been loaded. */
+  readonly region?: DetailedRegion | SummaryRegion
   readonly references: readonly ReferenceSummary[]
 }
 
@@ -89,13 +112,61 @@ const summary = (address: string, rows: readonly (readonly CellValue[])[]): Summ
     nonEmpty: populated.length,
     sum: numbers.length === 0 ? null : total,
     average: numbers.length === 0 ? null : total / numbers.length,
+    unobserved: "unknown",
   }
 }
 
+const columnName = (column: number): string => {
+  let value = column + 1
+  let name = ""
+  while (value > 0) {
+    const remainder = (value - 1) % 26
+    name = String.fromCharCode(65 + remainder) + name
+    value = Math.floor((value - 1) / 26)
+  }
+  return name
+}
+
+const displayCells = (
+  address: string,
+  values: readonly (readonly CellValue[])[],
+  text: readonly (readonly string[])[],
+  numberFormat: readonly (readonly string[])[],
+): readonly DisplayCell[] => {
+  const match = /^(.*!)(\$?[A-Z]+)\$?(\d+)/.exec(address)
+  if (match === null) return []
+  const sheet = match[1] ?? ""
+  const firstColumn = (match[2] ?? "").replace("$", "")
+  const firstRow = Number(match[3])
+  const columnIndex =
+    [...firstColumn].reduce((total, letter) => total * 26 + letter.charCodeAt(0) - 64, 0) - 1
+  return values.flatMap((row, rowIndex) =>
+    row.flatMap((value, columnOffset) => {
+      const displayed = text[rowIndex]?.[columnOffset] ?? ""
+      const format = numberFormat[rowIndex]?.[columnOffset] ?? "General"
+      const raw = value === null ? "" : String(value)
+      return displayed !== raw || format !== "General"
+        ? [
+            {
+              address: `${sheet}${columnName(columnIndex + columnOffset)}${firstRow + rowIndex}`,
+              text: displayed,
+              numberFormat: format,
+            },
+          ]
+        : []
+    }),
+  )
+}
+
 const compactRegion = (
-  input: { readonly address: string; readonly values: readonly (readonly unknown[])[] },
+  input: {
+    readonly address: string
+    readonly values: readonly (readonly unknown[])[]
+    readonly text: readonly (readonly string[])[]
+    readonly numberFormat: readonly (readonly string[])[]
+  },
   limits: ContextLimits,
-  label: "selection_neighborhood" | "used_range_top_rows",
+  label: "selection" | "selection_neighborhood" | "used_range_top_rows",
 ): DetailedRegion | SummaryRegion => {
   const rows = input.values.map((row) => row.map(cellValue))
   const cells = rows.reduce((total, row) => total + row.length, 0)
@@ -103,7 +174,14 @@ const compactRegion = (
     .flat()
     .reduce<number>((total, value) => total + String(value ?? "").length, 0)
   return cells <= limits.maxCells && characters <= limits.maxCharacters
-    ? { mode: "detail", label, address: input.address, rows, headerRows: headerRows(rows) }
+    ? {
+        mode: "detail",
+        label,
+        address: input.address,
+        rows,
+        headerRows: headerRows(rows),
+        display: displayCells(input.address, rows, input.text, input.numberFormat),
+      }
     : { ...summary(input.address, rows), label }
 }
 
@@ -118,7 +196,17 @@ export const compactWorkbookContext = (
     ...(input.headerRegion === undefined
       ? {}
       : { headerRegion: compactRegion(input.headerRegion, limits, "used_range_top_rows") }),
-    region: compactRegion(input.region, limits, "selection_neighborhood"),
+    ...(input.region === undefined
+      ? {}
+      : {
+          region: compactRegion(
+            input.region,
+            limits,
+            input.selection.rowCount * input.selection.columnCount === 1
+              ? "selection_neighborhood"
+              : "selection",
+          ),
+        }),
     references: input.references,
   }
 }

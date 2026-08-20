@@ -62,19 +62,55 @@ export const readWorkbookContext = async (
     attachment === null
       ? context.workbook.getSelectedRange()
       : context.workbook.worksheets.getItem(attachment.sheet).getRange(attachment.address)
-  const cell = selection.getCell(0, 0)
-  selection.load("address, rowIndex, columnIndex, worksheet/name")
-  cell.load("formulas, text")
+  selection.load("address, rowIndex, columnIndex, rowCount, columnCount, worksheet/name")
   await context.sync()
 
   const sheet = sheets.find((item) => item.name === selection.worksheet.name)
+  const cellCount = selection.rowCount * selection.columnCount
+  const selectionCoverage = cellCount <= CONTEXT_CELLS ? "full" : "not_loaded"
+  if (selectionCoverage === "not_loaded") {
+    const tileColumns = Math.min(selection.columnCount, 8)
+    return compactWorkbookContext({
+      sheets: sheets.map((sheet) => ({
+        name: sheet.name,
+        hidden: sheet.hidden,
+        used: sheet.used === null ? null : { height: sheet.used.height, width: sheet.used.width },
+      })),
+      selection: {
+        address: selection.address,
+        rowCount: selection.rowCount,
+        columnCount: selection.columnCount,
+        cellCount,
+        coverage: "not_loaded",
+        not_loaded: true,
+        unobserved: "unknown",
+        tileRows: Math.floor(CONTEXT_CELLS / tileColumns),
+        tileColumns,
+        maxCells: CONTEXT_CELLS,
+        tileOrder: "row_major",
+      },
+      references: [],
+    })
+  }
+
+  const cell = selection.getCell(0, 0)
+  cell.load("formulas, text")
+  await context.sync()
   const used = sheet?.used ?? null
   const headerHeight =
     used !== null && used.width <= NARROW_USED_RANGE_COLUMNS
       ? Math.min(HEADER_ROWS, used.height)
       : 0
   const headerCells = used === null ? 0 : headerHeight * used.width
-  const neighborhood = selectionNeighborhood(selection, used, CONTEXT_CELLS - headerCells)
+  const neighborhood =
+    cellCount === 1
+      ? selectionNeighborhood(selection, used, CONTEXT_CELLS - headerCells)
+      : {
+          top: selection.rowIndex,
+          left: selection.columnIndex,
+          height: selection.rowCount,
+          width: selection.columnCount,
+        }
   const region = selection.worksheet.getRangeByIndexes(
     neighborhood.top,
     neighborhood.left,
@@ -82,11 +118,11 @@ export const readWorkbookContext = async (
     neighborhood.width,
   )
   const headerRegion =
-    used === null || headerHeight === 0
+    cellCount !== 1 || used === null || headerHeight === 0
       ? null
       : selection.worksheet.getRangeByIndexes(used.top - 1, used.left - 1, headerHeight, used.width)
-  region.load("address, values")
-  headerRegion?.load("address, values")
+  region.load("address, values, text, numberFormat")
+  headerRegion?.load("address, values, text, numberFormat")
   await context.sync()
 
   const formula = firstText(cell.formulas)
@@ -110,11 +146,28 @@ export const readWorkbookContext = async (
       address: selection.address,
       formula,
       value: firstText(cell.text),
+      rowCount: selection.rowCount,
+      columnCount: selection.columnCount,
+      cellCount,
+      coverage: selectionCoverage,
+      observedAddress: region.address,
     },
     ...(headerRegion === null
       ? {}
-      : { headerRegion: { address: headerRegion.address, values: headerRegion.values } }),
-    region: { address: region.address, values: region.values },
+      : {
+          headerRegion: {
+            address: headerRegion.address,
+            values: headerRegion.values,
+            text: headerRegion.text,
+            numberFormat: headerRegion.numberFormat,
+          },
+        }),
+    region: {
+      address: region.address,
+      values: region.values,
+      text: region.text,
+      numberFormat: region.numberFormat,
+    },
     references,
   })
 }

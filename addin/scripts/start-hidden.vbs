@@ -35,7 +35,8 @@ command = """" & node & """ """ & server & """" & _
   " --ready-file """ & fso.BuildPath(root, "service.ready") & """" & _
   " --pid-file """ & fso.BuildPath(root, "service.pid") & """" & _
   " --wef-guid ""6374B2A1-D997-4BB0-B23B-17F28561827B""" & _
-  " --wef-manifest """ & manifest & """"
+  " --wef-manifest """ & manifest & """" & _
+  " --log-file """ & fso.BuildPath(root, "service.log") & """"
 
 ' 0 = hidden window, False = do not wait for it to exit.
 shell.Run command, 0, False

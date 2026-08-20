@@ -32,6 +32,9 @@ const cellText = (value: unknown): string => {
   return raw.replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")
 }
 
+const escapedText = (value: unknown): string =>
+  rawCellText(value).replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")
+
 const blankRow = (row: readonly unknown[]): boolean => row.every((cell) => rawCellText(cell) === "")
 
 /** How many cells in the whole rectangle hold nothing, so the model can plan around them. */
@@ -111,4 +114,46 @@ export const formulaAddresses = (
   })
   if (more > 0) found.push(`외 ${more}개`)
   return found
+}
+
+/**
+ * The sparse part of a read where Excel's displayed value carries information the raw grid
+ * cannot: thousands separators, dates, percentages, and other non-General formats.
+ */
+export const renderDisplayDetails = (
+  values: readonly (readonly unknown[])[],
+  text: readonly (readonly string[])[] = [],
+  numberFormat: readonly (readonly string[])[] = [],
+  anchor: Pick<GridArea, "top" | "left">,
+  budget: Pick<Budget, "readCells" | "readChars"> = DEFAULT_BUDGET,
+): string => {
+  // Test doubles and older callers may only provide raw values. Missing display matrices
+  // mean "display metadata unavailable", not that every nonblank value displays as empty.
+  if (text.length === 0 && numberFormat.length === 0) return ""
+  const lines: string[] = []
+  let cells = 0
+  let characters = 0
+  let omitted = 0
+
+  values.forEach((row, rowOffset) => {
+    row.forEach((value, columnOffset) => {
+      const displayed = text[rowOffset]?.[columnOffset] ?? ""
+      const format = numberFormat[rowOffset]?.[columnOffset] ?? "General"
+      if (rawCellText(value) === displayed && format.trim().toLowerCase() === "general") return
+
+      const address = `${columnLetters(anchor.left + columnOffset)}${anchor.top + rowOffset}`
+      const line = `${address}: 표시 "${escapedText(displayed)}" · 형식 "${escapedText(format)}"`
+      if (cells >= budget.readCells || characters + line.length > budget.readChars) {
+        omitted += 1
+        return
+      }
+      lines.push(line)
+      cells += 1
+      characters += line.length
+    })
+  })
+
+  if (lines.length === 0 && omitted === 0) return ""
+  if (omitted > 0) lines.push("… (표시 정보 생략됨)")
+  return `표시 값/서식 (실제 셀 주소):\n${lines.join("\n")}`
 }

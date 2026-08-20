@@ -11,7 +11,8 @@
 - 로컬 관리자 권한이 필요하지 않습니다.
 - Node.js나 pnpm을 별도로 설치하지 않습니다.
 - SMB 공유 폴더나 Microsoft 365 관리자 배포를 사용하지 않습니다.
-- 서비스는 IPv4 loopback에만 연결되므로 다른 PC에서는 접근할 수 없습니다.
+- 서비스는 이 PC의 loopback 주소(`127.0.0.1`, `::1`)에만 연결되므로 다른 PC에서는
+  접근할 수 없습니다.
 - Synology Drive는 ZIP 파일을 전달하고 보관하는 용도로만 사용합니다.
 
 ## 2. 지원 환경과 사전 확인
@@ -36,15 +37,21 @@ Get-NetTCPConnection -LocalPort 3927 -State Listen -ErrorAction SilentlyContinue
 1. Synology Drive에서 `ddot-excel-windows-x64.zip`을 로컬 PC로 복사합니다.
 2. ZIP을 우클릭하고 **속성 > 차단 해제 > 확인**을 선택합니다.
    **차단 해제**가 보이지 않으면 이 단계를 건너뜁니다.
-3. ZIP 전체를 로컬 폴더에 압축 해제합니다. 네트워크 드라이브에서 직접 실행하지
-   마십시오.
+3. ZIP 전체를 로컬 폴더에 압축 해제합니다. 네트워크 드라이브나 ZIP 파일 안에서
+   직접 실행하지 마십시오.
 4. 열려 있는 Excel 창을 모두 닫습니다.
-5. **일반 Windows PowerShell**을 실행합니다. 관리자 권한으로 실행하지 않아도
-   됩니다.
-6. 압축을 푼 폴더에서 다음 명령을 실행합니다.
+5. 압축을 푼 폴더에서 **`땡땡엑셀 설치.bat`을 두 번 클릭**합니다. 관리자 권한은
+   필요하지 않습니다.
+6. 메뉴에서 **1. 설치 / 업데이트**를 선택합니다.
 
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+압축을 푼 폴더의 구성은 다음과 같습니다. 사용자가 실행하는 파일은 맨 위의
+`땡땡엑셀 설치.bat` 하나뿐입니다.
+
+```text
+땡땡엑셀 설치.bat     <- 두 번 클릭
+app\                  프로그램 파일
+runtime\              내장 Node 런타임
+scripts\              설치·관리·제거 스크립트
 ```
 
 정상 설치되면 다음 주소가 표시됩니다.
@@ -59,14 +66,21 @@ Service: https://localhost:3927
    **추가 기능 가져오기**로 표시될 수 있습니다.
 9. **홈 > 땡땡엑셀** 리본 버튼을 눌러 작업창을 엽니다.
 
+메뉴 대신 PowerShell을 직접 쓰려면 압축을 푼 폴더에서 다음 명령을 실행합니다.
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
+```
+
 개발자 추가 기능에서 **추가**를 누르는 과정은 최초 1회만 필요합니다.
 
 ## 4. 설치 확인
 
-압축을 푼 폴더에서 다음 명령을 실행합니다.
+`땡땡엑셀 설치.bat`을 실행하고 **2. 상태 확인**을 선택합니다. PowerShell에서
+직접 확인하려면 압축을 푼 폴더에서 다음 명령을 실행합니다.
 
 ```powershell
-.\manage.ps1 status
+.\scripts\manage.ps1 status
 ```
 
 설치 폴더의 관리 스크립트를 직접 실행할 수도 있습니다.
@@ -105,11 +119,14 @@ DdotExcel local service is running at https://localhost:3927.
 
 ## 6. 서비스 제어
 
+`땡땡엑셀 설치.bat` 메뉴의 **3. 서비스 다시 시작**으로 대부분 해결됩니다.
+세부 제어는 압축을 푼 폴더에서 다음 명령을 사용합니다.
+
 ```powershell
-.\manage.ps1 status
-.\manage.ps1 start
-.\manage.ps1 stop
-.\manage.ps1 restart
+.\scripts\manage.ps1 status
+.\scripts\manage.ps1 start
+.\scripts\manage.ps1 stop
+.\scripts\manage.ps1 restart
 ```
 
 서비스는 Windows 로그인 시 자동으로 시작됩니다.
@@ -119,12 +136,9 @@ DdotExcel local service is running at https://localhost:3927.
 1. 새 ZIP을 내려받고 **속성 > 차단 해제**를 적용합니다.
 2. 새 로컬 폴더에 전체 압축 해제합니다.
 3. Excel을 완전히 종료합니다.
-4. 새 폴더에서 `install.ps1`을 다시 실행합니다.
+4. 새 폴더에서 `땡땡엑셀 설치.bat`을 실행하고 **1. 설치 / 업데이트**를
+   선택합니다.
 5. Excel을 다시 실행합니다.
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
 
 설치기는 기존 프로세스를 정지한 뒤 제품 소유 파일만 교체합니다. 아직 유효한
 인증서는 재사용합니다. 기존 Office 등록과 AI 연결 설정도 같은 origin을 사용하는
@@ -132,7 +146,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
 
 ## 8. 제거
 
-설치 폴더의 제거 스크립트를 실행합니다.
+`땡땡엑셀 설치.bat`을 실행하고 **4. 제거**를 선택한 뒤 확인 질문에 `y`를
+입력합니다. 압축을 푼 폴더가 없으면 설치 폴더의 제거 스크립트를 실행합니다.
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -183,6 +198,24 @@ Excel이 시작될 때 `https://localhost:3927`이 응답하지 않으면 Excel�
 표시하고 **개발자 등록을 스스로 삭제**합니다. 즉 원인은 등록이 아니라, 로그인
 시 서비스가 실행되지 못했거나 Excel보다 늦게 시작된 것입니다.
 
+**먼저 버전을 확인합니다.** 1.10.5 이전 패키지의 서비스는 IPv4(`127.0.0.1`)에만
+바인딩했습니다. Windows는 `localhost`를 `::1`(IPv6)로 먼저 해석하므로, Excel의
+시작 시 요청은 실패하고 작업창을 직접 열 때만 성공했습니다. 증상은 이렇습니다.
+
+- Excel을 껐다 켤 때마다 리본에서 땡땡엑셀 단추가 사라짐
+- 추가 기능 목록에서 한 번 오류를 보고 다시 추가해야 사용 가능
+- 그렇게 추가하면 정상 동작
+
+`manage.ps1 status`는 이 상태에서도 전부 정상으로 보입니다. 서비스와 상태 점검이
+모두 IPv4로 접속하기 때문입니다. 새 ZIP으로 다시 설치하면 서비스가 두 주소를 모두
+수신하므로 해결됩니다. 확인:
+
+```powershell
+Get-NetTCPConnection -LocalPort 3927 -State Listen | Select-Object LocalAddress
+```
+
+`127.0.0.1`과 `::1`이 함께 나오면 정상입니다. `127.0.0.1`만 나오면 예전 패키지입니다.
+
 일반 PowerShell에서 시작 체인을 점검합니다.
 
 ```powershell
@@ -192,9 +225,9 @@ Excel이 시작될 때 `https://localhost:3927`이 응답하지 않으면 Excel�
 | 출력 | 의미와 조치 |
 |---|---|
 | `Office registration: MISSING` | Excel이 로드 실패 후 등록을 지운 상태입니다. 서비스가 실행 중이면 자동으로 복원되므로 Excel을 완전히 종료했다가 다시 실행합니다. 재설치는 필요 없습니다. |
-| `Logon autostart: MISSING` | 보안 도구가 로그인 시작 항목을 삭제했습니다. `install.ps1`을 다시 실행합니다. |
-| `Logon autostart approval: DISABLED` | 작업 관리자 > 시작 앱에서 `DdotExcelLocalService`가 "사용 안 함"으로 바뀐 상태입니다. 다시 사용으로 바꾸거나 `install.ps1`을 다시 실행합니다. |
-| `Windows Script Host: DISABLED` | 회사 정책이 wscript 실행을 차단했습니다. `install.ps1`을 다시 실행하면 PowerShell 경유 시작으로 자동 전환됩니다. |
+| `Logon autostart: MISSING` | 보안 도구가 로그인 시작 항목을 삭제했습니다. `땡땡엑셀 설치.bat`에서 **1. 설치 / 업데이트**를 다시 실행합니다. |
+| `Logon autostart approval: DISABLED` | 작업 관리자 > 시작 앱에서 `DdotExcelLocalService`가 "사용 안 함"으로 바뀐 상태입니다. 다시 사용으로 바꾸거나 **1. 설치 / 업데이트**를 다시 실행합니다. |
+| `Windows Script Host: DISABLED` | 회사 정책이 wscript 실행을 차단했습니다. **1. 설치 / 업데이트**를 다시 실행하면 PowerShell 경유 시작으로 자동 전환됩니다. |
 
 서비스가 멈춰 있으면 시작한 뒤 Excel을 다시 실행합니다.
 

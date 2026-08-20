@@ -45,8 +45,24 @@ beforeEach(() => {
   vi.mocked(readWorkbookContext).mockReset()
   vi.mocked(readWorkbookContext).mockResolvedValue({
     sheets: [],
-    selection: { address: "Data!B2:D5", formula: "", value: "12" },
-    region: { mode: "detail", address: "Data!B2:D5", rows: [[12]], headerRows: [] },
+    selection: {
+      address: "Data!B2:D5",
+      formula: "",
+      value: "12",
+      rowCount: 4,
+      columnCount: 3,
+      cellCount: 12,
+      coverage: "full",
+      observedAddress: "Data!B2:D5",
+    },
+    region: {
+      mode: "detail",
+      label: "selection",
+      address: "Data!B2:D5",
+      rows: [[12]],
+      headerRows: [],
+      display: [],
+    },
     references: [],
   })
   vi.stubGlobal("localStorage", memoryStorage())
@@ -376,6 +392,185 @@ describe("workbook lookups before answering", () => {
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+  })
+
+  it("grounds a cited false blank claim before it reaches the user", async () => {
+    const looked: string[] = []
+    const values: Record<string, number> = { J5: 125, J6: 250 }
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => {
+              looked.push(address)
+              return {
+                address: `Main!${address}`,
+                cellCount: 1,
+                values: [[values[address] ?? 0]],
+                load: () => {},
+              }
+            },
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("둘 다 빈 값(0)입니다.")
+      .mockResolvedValueOnce("J5는 125이고 J6은 250입니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("J5와 J6 값을 알려줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(looked).toEqual(["J5", "J6"])
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    expect(JSON.stringify(vi.mocked(askModel).mock.calls[1]?.[1])).toContain("125")
+    expect(chatting.state().turns.at(-1)?.text).toBe("J5는 125이고 J6은 250입니다.")
+  })
+
+  it("fails closed when the grounding rewrite repeats an unsupported claim", async () => {
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("J5는 빈 값입니다.")
+      .mockResolvedValueOnce("J5는 빈 값입니다.")
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: () => ({
+              address: "Main!J5",
+              cellCount: 1,
+              values: [[125]],
+              load: () => {},
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("J5 값을 알려줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toContain("확인되지 않은 값은 알 수 없습니다")
+  })
+
+  it("tiles every cell of a large selection before accepting a range-wide claim", async () => {
+    const budget = budgetFor(DEFAULT_SETTINGS)
+    const cellsPerCall = Math.min(budget.readCells, Math.max(1, Math.floor(budget.readChars / 16)))
+    const selectedCells = cellsPerCall * 2 + 1
+    const looked: string[] = []
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => {
+              looked.push(address)
+              const [first = "A1", last = first] = address.split(":")
+              const from = Number(first.slice(1))
+              const to = Number(last.slice(1))
+              const values = Array.from({ length: to - from + 1 }, (_, at) => [from + at])
+              return {
+                address: `Main!${address}`,
+                cellCount: values.length,
+                values,
+                load: () => {},
+              }
+            },
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("선택 데이터 전체의 합계는 1입니다.")
+      .mockResolvedValueOnce(`선택 범위 전체 ${selectedCells}개 셀을 모두 확인했습니다.`)
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.updateSelection({
+      sheet: "Main",
+      address: `A1:A${selectedCells}`,
+      cellCount: selectedCells,
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위 전체를 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(looked).toEqual([
+      `A1:A${cellsPerCall}`,
+      `A${cellsPerCall + 1}:A${cellsPerCall * 2}`,
+      `A${cellsPerCall * 2 + 1}`,
+    ])
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    expect(chatting.state().turns.at(-1)?.text).toContain(`${selectedCells}개 셀`)
+  })
+
+  it("fails closed when a complete selection tile cannot fit without truncation", async () => {
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => ({
+              address: `Main!${address}`,
+              cellCount: 73,
+              values: Array.from({ length: 73 }, () => ["긴텍스트".repeat(500)]),
+              load: () => {},
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel).mockResolvedValue("선택 데이터 전체에는 빈 값이 없습니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.updateSelection({ sheet: "Main", address: "A1:A73", cellCount: 73 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위 전체를 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+    expect(chatting.state().turns.at(-1)?.text).toContain("전체 범위를 모두 읽지 못해")
+    expect(chatting.state().turns.at(-1)?.text).not.toContain("빈 값이 없습니다")
   })
 })
 

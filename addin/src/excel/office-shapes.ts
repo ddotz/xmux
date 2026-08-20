@@ -181,14 +181,17 @@ export type OfficeFreezeSurfaceParity = Assert<
 >
 
 /**
- * The reading side. `values` is what the sheet shows, `formulas` is what is written in it,
- * and `valueTypes` is the only way to tell an error cell from a cell holding the text
- * "#REF!" — which is the difference between an audit finding and a false alarm.
+ * The reading side. `values` is the raw stored value, `text` is the formatted value Excel
+ * displays, and `numberFormat` explains that display. `formulas` is what is written in a
+ * formula cell, and `valueTypes` is the only way to tell an error cell from a cell holding
+ * the text "#REF!" — which is the difference between an audit finding and a false alarm.
  */
 export type InspectRange = {
   readonly isNullObject: boolean
   readonly address: string
   readonly values: readonly (readonly unknown[])[]
+  readonly text: readonly (readonly string[])[]
+  readonly numberFormat: readonly (readonly string[])[]
   readonly formulas: readonly (readonly unknown[])[]
   readonly valueTypes: readonly (readonly string[])[]
   readonly cellCount: number

@@ -8,7 +8,7 @@
 
   <Id>6374B2A1-D997-4BB0-B23B-17F28561827B</Id>
   <!-- Office rejects anything below 1.0.0.0, regardless of the package's own version. -->
-  <Version>1.10.5.0</Version>
+  <Version>1.10.6.0</Version>
   <ProviderName>땡땡엑셀</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="땡땡엑셀" />

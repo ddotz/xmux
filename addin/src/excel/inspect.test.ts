@@ -13,6 +13,14 @@ const range = (overrides: Partial<InspectRange> = {}): InspectRange => ({
     ["항목", "금액"],
     ["대출채권", 1200],
   ],
+  text: [
+    ["항목", "금액"],
+    ["대출채권", "1,200"],
+  ],
+  numberFormat: [
+    ["General", "General"],
+    ["General", "#,##0"],
+  ],
   formulas: [
     ["항목", "금액"],
     ["대출채권", "=B1*2"],
@@ -72,6 +80,7 @@ describe("runTool", () => {
 
     expect(answer).toContain("Main!A1:B2")
     expect(answer).toContain("대출채권\t1200")
+    expect(answer).toContain('B2: 표시 "1,200" · 형식 "#,##0"')
   })
 
   it("reads the formulas as written when the model asks for them", async () => {
@@ -84,6 +93,34 @@ describe("runTool", () => {
 
     expect(answer).toContain("=B1*2")
     expect(answer).not.toContain("1200")
+    expect(answer).toContain('B2: 표시 "1,200" · 형식 "#,##0"')
+  })
+
+  it("keeps numeric constants when reading formulas and adds their display facts", async () => {
+    const numeric = sheet(
+      {},
+      range({
+        address: "Main!J5:J6",
+        values: [[2160853836970], [45292]],
+        text: [["2,160,853,836,970"], ["2024-01-01"]],
+        numberFormat: [["#,##0"], ["yyyy-mm-dd"]],
+        formulas: [[2160853836970], [45292]],
+        cellCount: 2,
+        rowCount: 2,
+        columnCount: 1,
+      }),
+    )
+
+    const answer = await runTool(context(numeric), {
+      tool: "read_range",
+      address: "J5:J6",
+      formulas: true,
+    })
+
+    expect(answer).toContain("5\t2160853836970")
+    expect(answer).toContain("6\t45292")
+    expect(answer).toContain('J5: 표시 "2,160,853,836,970" · 형식 "#,##0"')
+    expect(answer).toContain('J6: 표시 "2024-01-01" · 형식 "yyyy-mm-dd"')
   })
 
   it("lists every sheet so the model can orient itself", async () => {

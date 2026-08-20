@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { readFileSync } from "node:fs"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { request as httpsRequest } from "node:https"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -21,6 +21,12 @@ const uninstallScript = readFileSync(
   "utf8",
 )
 const launcherScript = readFileSync(new URL("../scripts/start-hidden.vbs", import.meta.url), "utf8")
+const packageScript = readFileSync(
+  new URL("../scripts/package-windows-local.ps1", import.meta.url),
+  "utf8",
+)
+const menuBatch = readFileSync(new URL("../scripts/menu-windows-local.bat", import.meta.url))
+const menuScript = readFileSync(new URL("../scripts/menu-windows-local.ps1", import.meta.url))
 const serverScript = readFileSync(new URL("../scripts/local-server.mjs", import.meta.url), "utf8")
 const manifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 
@@ -29,16 +35,22 @@ type Response = {
   readonly status: number
 }
 
-const request = (port: number, path: string, certificate: Buffer): Promise<Response> =>
+const request = (
+  port: number,
+  path: string,
+  certificate: Buffer,
+  host = "localhost",
+): Promise<Response> =>
   new Promise((resolveRequest, rejectRequest) => {
     const outgoing = httpsRequest(
       {
         ca: certificate,
-        hostname: "localhost",
+        hostname: host,
         method: "GET",
         path,
         port,
         rejectUnauthorized: true,
+        servername: "localhost",
       },
       (incoming) => {
         incoming.setEncoding("utf8")
@@ -81,6 +93,7 @@ describe("Windows local deployment server", () => {
   let certificate: Buffer
   let certificatePath = ""
   let keyPath = ""
+  let logPath = ""
   let port = 0
   let root = ""
   let server: ReturnType<typeof spawn>
@@ -93,6 +106,7 @@ describe("Windows local deployment server", () => {
     certificate = Buffer.from(certificates.ca)
     certificatePath = join(root, "localhost.crt")
     keyPath = join(root, "localhost.key")
+    logPath = join(root, "service.log")
     await Promise.all([
       writeFile(certificatePath, certificates.cert),
       writeFile(keyPath, certificates.key),
@@ -114,6 +128,8 @@ describe("Windows local deployment server", () => {
         certificatePath,
         "--key",
         keyPath,
+        "--log-file",
+        logPath,
         "--wef-guid",
         manifestId,
         "--wef-manifest",
@@ -156,6 +172,13 @@ describe("Windows local deployment server", () => {
     })
   })
 
+  it("records the address family and path Excel actually reached", async () => {
+    await request(port, "/health", certificate, "127.0.0.1")
+
+    const log = await readFile(logPath, "utf8")
+    expect(log).toContain("127.0.0.1 GET /health -> 200")
+  })
+
   it("provides the inactive companion state on Windows", async () => {
     // When: the pane requests the optional companion state.
     const response = await request(port, "/xmux/state", certificate)
@@ -166,6 +189,38 @@ describe("Windows local deployment server", () => {
       status: 200,
     })
   })
+
+  it("listens on both loopback families when no host is forced", async () => {
+    // Given: the command line the Windows launchers actually run — no --host. Windows
+    // resolves the manifest's `localhost` to ::1 before 127.0.0.1, and Excel's startup
+    // fetch failing there is what drops the ribbon registration on every restart.
+    const dual = spawn(
+      process.execPath,
+      [serverPath, "--root", root, "--port", "0", "--cert", certificatePath, "--key", keyPath],
+      { stdio: ["ignore", "pipe", "pipe"] },
+    )
+    try {
+      if (dual.stdout === null) throw new Error("local server stdout is unavailable")
+      const dualPort = await waitForPort(dual.stdout)
+
+      // When: the same service port is reached over each loopback family.
+      const ipv4 = await request(dualPort, "/health", certificate, "127.0.0.1")
+      const ipv6 = await request(dualPort, "/health", certificate, "::1")
+
+      // Then: both answer with the same health contract.
+      expect(ipv4.status).toBe(200)
+      expect(ipv6).toEqual({
+        body: '{"service":"ddot-excel","status":"running"}',
+        status: 200,
+      })
+    } finally {
+      if (dual.exitCode === null) {
+        const exited = once(dual, "exit")
+        dual.kill("SIGTERM")
+        await exited
+      }
+    }
+  }, 15_000)
 
   it("refuses a half-configured Office registration", async () => {
     // Given: a start command carrying the GUID without the manifest path.
@@ -287,6 +342,15 @@ describe("Windows local deployment lifecycle", () => {
     expect(serverScript).toContain('"reg.exe"')
   })
 
+  it("answers Excel's startup fetch on the IPv6 loopback as well", () => {
+    // Given: Excel resolves `localhost` to ::1 first on Windows, so a one-family
+    // listener fails every Excel start while interactive re-adds keep working.
+    // When: the shipped server's binding contract is inspected.
+    // Then: the default binds both loopbacks and tolerates a machine without IPv6.
+    expect(serverScript).toContain('secondaryServer.listen(address.port, "::1"')
+    expect(serverScript).toContain("IPv6 loopback listener unavailable")
+  })
+
   it("reports every link of the logon chain in status", () => {
     // Given: a broken PC where the only question is which link failed.
     // When: the controller's status output is inspected.
@@ -404,5 +468,92 @@ describe("Windows local deployment lifecycle", () => {
     const error = manageScript.indexOf("throw", failure)
     expect(failure).toBeGreaterThanOrEqual(0)
     expect(cleanup).toBeLessThan(error)
+  })
+})
+
+describe("Windows package layout", () => {
+  it("puts the double-clickable launcher beside app, runtime, and scripts", () => {
+    // Given: a user who unzips the package and looks for the one thing to click.
+    // When: the packager places the launcher.
+    // Then: it lands at the package root next to app\ and runtime\, not inside scripts\.
+    expect(packageScript).toContain('(Join-Path $packageRoot "땡땡엑셀 설치.bat")')
+    expect(packageScript).toContain('$scriptsRoot = Join-Path $packageRoot "scripts"')
+    expect(packageScript).not.toContain('-Destination (Join-Path $scriptsRoot "땡')
+  })
+
+  it("keeps every operator script under scripts\\", () => {
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "menu.ps1")')
+    expect(packageScript).not.toContain('-Destination (Join-Path $packageRoot "menu.ps1")')
+    for (const name of ["install.ps1", "manage.ps1", "uninstall.ps1"]) {
+      expect(packageScript).toContain(`-Destination (Join-Path $scriptsRoot "${name}")`)
+      expect(packageScript).not.toContain(`-Destination (Join-Path $packageRoot "${name}")`)
+    }
+    expect(packageScript).toContain('-Destination (Join-Path $scriptsRoot "start-hidden.vbs")')
+  })
+
+  it("ships no markdown", () => {
+    // Given: end users read the menu, not a file tree of documents.
+    expect(packageScript).not.toContain(".md")
+  })
+
+  it("resolves the payload from the package root now that it ships one level down", () => {
+    // Given: install.ps1 moved into scripts\, so $PSScriptRoot is no longer the payload.
+    // When: it locates app\ and runtime\.
+    // Then: it walks up one level first, or every install fails as "incomplete package".
+    expect(installScript).toContain(
+      '$packageRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
+    )
+    expect(installScript).toContain('$packageApp = Join-Path $packageRoot "app"')
+    expect(installScript).toContain('$packageRuntime = Join-Path $packageRoot "runtime"')
+    // Its siblings still sit beside it, so those stay on $PSScriptRoot.
+    expect(installScript).toContain('(Join-Path $PSScriptRoot "manage.ps1")')
+  })
+
+  it("launches the menu through a code page the Korean messages survive", () => {
+    // Given: cmd.exe on Korean Windows starts in cp949 and renders UTF-8 as mojibake.
+    const text = menuBatch.toString("utf8")
+    // When: the launcher runs.
+    // Then: it switches to UTF-8 before its first message, restores the old page after,
+    // and carries CRLF endings so cmd.exe parses it at all.
+    const firstKorean = menuBatch.findIndex((byte) => byte > 0x7f)
+    expect(firstKorean).toBeGreaterThan(0)
+    expect(menuBatch.indexOf("chcp 65001")).toBeLessThan(firstKorean)
+    // Line endings in the working tree are rewritten by editors and git clients, so the
+    // packager writes the bytes Windows needs rather than copying whatever is on disk.
+    expect(packageScript).toContain('(($launcher -replace "`r`n", "`n") -replace "`n", "`r`n")')
+    expect(packageScript).toContain("[Text.UTF8Encoding]::new($false))")
+    expect(text).toContain("chcp %ORIGINAL_CP%")
+    expect(text).toContain("-ExecutionPolicy Bypass")
+    expect(text).toContain(String.raw`%~dp0scripts\menu.ps1`)
+  })
+
+  it("gives the menu a BOM so PowerShell 5.1 reads its Korean as UTF-8", () => {
+    // Given: Windows PowerShell 5.1 decodes a BOM-less script as ANSI.
+    // When: the shipped menu is inspected.
+    // Then: the BOM is present, so the menu renders instead of printing mojibake.
+    expect(menuScript.toString("utf8")).toContain("땡땡엑셀 설치 도우미")
+    expect(packageScript).toContain('(($menu -replace "`r`n", "`n") -replace "`n", "`r`n")')
+    expect(packageScript).toContain("[Text.UTF8Encoding]::new($true))")
+  })
+
+  it("drives the installer instead of reimplementing it", () => {
+    // Given: two copies of install logic drift the first time one is edited.
+    const text = menuScript.toString("utf8")
+    // When: the menu acts.
+    // Then: every action delegates to the scripts beside it.
+    expect(text).toContain('$installScript = Join-Path $PSScriptRoot "install.ps1"')
+    expect(text).toContain('$manageScript = Join-Path $PSScriptRoot "manage.ps1"')
+    expect(text).toContain('$uninstallScript = Join-Path $PSScriptRoot "uninstall.ps1"')
+    expect(text).not.toContain("New-SelfSignedCertificate")
+    expect(text).not.toContain("Compress-Archive")
+  })
+
+  it("confirms before the destructive action", () => {
+    // Given: uninstall deletes the service, certificates, and Excel registration.
+    const text = menuScript.toString("utf8")
+    const prompt = text.indexOf("(y/N)")
+    const call = text.indexOf("& $uninstallScript")
+    expect(prompt).toBeGreaterThanOrEqual(0)
+    expect(prompt).toBeLessThan(call)
   })
 })

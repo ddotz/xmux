@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process"
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs"
 import { createServer } from "node:https"
 import { extname, join, resolve, sep } from "node:path"
 
@@ -11,6 +18,7 @@ const valueFlags = new Set([
   "--cert",
   "--host",
   "--key",
+  "--log-file",
   "--passphrase-file",
   "--pfx",
   "--pid-file",
@@ -38,10 +46,16 @@ if (!existsSync(root) || !statSync(root).isDirectory()) {
   throw new Error(`Task pane root does not exist: ${root}`)
 }
 
-const host = options.get("--host") ?? "127.0.0.1"
-if (host !== "127.0.0.1" && host !== "::1") {
+// Windows resolves the manifest's `localhost` to ::1 before 127.0.0.1, and Excel's own
+// startup fetch (ribbon icons, source validation) does not reliably fall back across
+// address families the way the WebView2 pane does. Listening on one family only makes
+// the add-in load interactively but fail at every Excel start — which drops the ribbon
+// registration. Default: bind both loopbacks; an explicit --host binds only that one.
+const hostOption = options.get("--host")
+if (hostOption !== undefined && hostOption !== "127.0.0.1" && hostOption !== "::1") {
   throw new Error("The local service may only bind to a loopback address")
 }
+const host = hostOption ?? "127.0.0.1"
 
 const portText = options.get("--port") ?? "3927"
 const port = Number.parseInt(portText, 10)
@@ -77,6 +91,26 @@ const tls =
         pfx: readFileSync(pfxPath),
       }
 
+// Whether Excel asks this service for anything at startup is the one fact nobody can see
+// from the outside: by the time a user notices the add-in is gone and runs status, the
+// service has already re-asserted the registration and looks healthy. The log is what
+// turns "it disappeared again" into a timestamp and an address family.
+const logFile = options.get("--log-file")
+const logLimit = 256 * 1024
+const log = (message) => {
+  if (logFile === undefined) return
+  try {
+    // Bounded by truncation, not rotation: one file, never unbounded, no scheduler.
+    if (existsSync(logFile) && statSync(logFile).size > logLimit) {
+      const kept = readFileSync(logFile, "utf8").slice(-logLimit / 2)
+      writeFileSync(logFile, kept.slice(kept.indexOf("\n") + 1), { mode: 0o600 })
+    }
+    appendFileSync(logFile, `${new Date().toISOString()} ${message}\n`, { mode: 0o600 })
+  } catch {
+    // A log that cannot be written must never take the service down with it.
+  }
+}
+
 const contentTypes = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
@@ -97,8 +131,14 @@ const send = (response, status, contentType, body, method) => {
   response.end(method === "HEAD" ? undefined : body)
 }
 
-const server = createServer(tls, (request, response) => {
+const handleRequest = (request, response) => {
   const method = request.method ?? "GET"
+  // The local address is the point: it names which family Excel actually reached.
+  const family = request.socket.localAddress ?? "?"
+  response.once("finish", () => {
+    const path = new URL(request.url ?? "/", "https://localhost").pathname
+    log(`${family} ${method} ${path} -> ${response.statusCode}`)
+  })
   if (method !== "GET" && method !== "HEAD") {
     send(response, 405, "text/plain; charset=utf-8", "Method not allowed", method)
     return
@@ -151,7 +191,12 @@ const server = createServer(tls, (request, response) => {
     "X-Content-Type-Options": "nosniff",
   })
   response.end(method === "HEAD" ? undefined : readFileSync(filePath))
-})
+}
+
+const server = createServer(tls, handleRequest)
+// The IPv6 loopback listener is best-effort: a machine with IPv6 disabled still serves
+// IPv4, and Excel reaches whichever family answers.
+const secondaryServer = hostOption === undefined ? createServer(tls, handleRequest) : undefined
 
 // Excel deletes the current-user developer registration when an add-in fails to load at
 // startup — exactly what happens when Excel opens before this service is listening. While
@@ -165,12 +210,28 @@ const assertOfficeRegistration = () => {
     return
   }
   const regTool = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "reg.exe")
+  // Reading before writing turns the re-assert into evidence: a registration that was
+  // present needed no repair, and one that was missing means Excel deleted it since the
+  // last pass — which is the failure this whole logon chain exists to survive.
   execFile(
     regTool,
-    ["add", developerRegistryKey, "/v", wefGuid, "/t", "REG_SZ", "/d", wefManifest, "/f"],
+    ["query", developerRegistryKey, "/v", wefGuid],
     { windowsHide: true },
-    (error) => {
-      if (error !== null) console.error(`Office registration re-assert failed: ${error.message}`)
+    (queryError, stdout) => {
+      const present = queryError === null && stdout.includes(wefManifest)
+      execFile(
+        regTool,
+        ["add", developerRegistryKey, "/v", wefGuid, "/t", "REG_SZ", "/d", wefManifest, "/f"],
+        { windowsHide: true },
+        (error) => {
+          if (error !== null) {
+            console.error(`Office registration re-assert failed: ${error.message}`)
+            log(`registration repair FAILED: ${error.message}`)
+            return
+          }
+          if (!present) log("registration was MISSING - Excel dropped it; restored")
+        },
+      )
     },
   )
 }
@@ -180,6 +241,7 @@ const readyFile = options.get("--ready-file")
 // wait around to learn the process id. Writing it here means one owner of that fact.
 const pidFile = options.get("--pid-file")
 const close = () => {
+  if (secondaryServer !== undefined && secondaryServer.listening) secondaryServer.close()
   server.close(() => {
     if (readyFile !== undefined) rmSync(readyFile, { force: true })
     if (pidFile !== undefined) rmSync(pidFile, { force: true })
@@ -198,7 +260,27 @@ server.listen(port, host, () => {
   if (readyFile !== undefined) writeFileSync(readyFile, String(address.port), { mode: 0o600 })
   assertOfficeRegistration()
   setInterval(assertOfficeRegistration, 300_000).unref()
-  console.log(`LISTENING ${address.port}`)
+  // The readiness line prints only after the second family settles, so a caller that
+  // saw LISTENING can rely on every listener this process will ever have.
+  if (secondaryServer === undefined) {
+    console.log(`LISTENING ${address.port}`)
+    return
+  }
+  let announced = false
+  const announce = () => {
+    if (announced) return
+    announced = true
+    console.log(`LISTENING ${address.port}`)
+  }
+  secondaryServer.on("error", (error) => {
+    console.error(`IPv6 loopback listener unavailable: ${error.message}`)
+    log(`listening on 127.0.0.1:${address.port} only (::1 unavailable: ${error.message})`)
+    announce()
+  })
+  secondaryServer.listen(address.port, "::1", () => {
+    log(`listening on 127.0.0.1 and ::1 port ${address.port}`)
+    announce()
+  })
 })
 
 process.once("SIGINT", close)

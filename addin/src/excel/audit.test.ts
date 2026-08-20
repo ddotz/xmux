@@ -35,6 +35,8 @@ const workbook = (used = LEDGER) => {
       isNullObject: false,
       address,
       values: source.values,
+      text: source.values.map((row) => row.map((value) => String(value ?? ""))),
+      numberFormat: source.values.map((row) => row.map(() => "General")),
       formulas: source.formulas,
       valueTypes: source.valueTypes,
       cellCount: source.values.length * (source.values[0]?.length ?? 0),

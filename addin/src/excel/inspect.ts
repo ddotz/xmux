@@ -3,7 +3,7 @@ import type { ToolCall } from "../ai/tool-schemas"
 import { quoteSheetName } from "../formula/reference"
 import { columnLetters, parseArea } from "./address"
 import { runAuditTool } from "./audit"
-import { formulaAddresses, renderGrid } from "./grid"
+import { formulaAddresses, renderDisplayDetails, renderGrid } from "./grid"
 import type { InspectContext, InspectSheet } from "./office-shapes"
 import { runReasoningTool } from "./reasoning"
 import { splitQualified } from "./resolve"
@@ -49,7 +49,7 @@ const readRange = async (
     return `${range.address}는 ${range.cellCount}칸이라 한 번에 읽기에 너무 넓습니다. ${budget.readCells}칸 이하로 나눠서 요청하세요.`
   }
 
-  range.load(call.formulas === true ? "formulas" : "values")
+  range.load("values, text, numberFormat, formulas")
   await context.sync()
   // Where the rectangle starts, so every row can carry the sheet row it actually is.
   const anchor = parseArea(splitQualified(range.address).local)
@@ -59,15 +59,22 @@ const readRange = async (
     anchor,
     budget,
   )
-  if (call.formulas !== true || anchor === null) return grid
+  const details =
+    anchor === null
+      ? ""
+      : renderDisplayDetails(range.values, range.text, range.numberFormat, anchor, budget)
+  if (call.formulas !== true || anchor === null)
+    return details === "" ? grid : `${grid}\n${details}`
   // Which cells hold formulas is the question this mode answers; hand the addresses over
   // outright instead of leaving them to be reconstructed by counting grid columns.
   const listed = formulaAddresses(range.formulas, anchor)
-  return listed.length === 0
-    ? `${grid}\n수식 셀 없음: 이 범위의 값은 모두 직접 입력된 값입니다.`
-    : `${grid}\n수식 셀 (실제 주소 · 위치는 반드시 이 주소를 사용):\n${listed
-        .map((line) => `${quoteSheetName(sheet.name)}!${line}`)
-        .join("\n")}`
+  const formulaDetail =
+    listed.length === 0
+      ? "수식 셀 없음: 이 범위의 값은 모두 직접 입력된 값입니다."
+      : `수식 셀 (실제 주소 · 위치는 반드시 이 주소를 사용):\n${listed
+          .map((line) => `${quoteSheetName(sheet.name)}!${line}`)
+          .join("\n")}`
+  return details === "" ? `${grid}\n${formulaDetail}` : `${grid}\n${details}\n${formulaDetail}`
 }
 
 const listSheetNames = async (context: InspectContext): Promise<string> => {

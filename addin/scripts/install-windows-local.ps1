@@ -21,8 +21,10 @@ if ($env:OS -ne "Windows_NT") {
     throw "This installer must be run on Windows."
 }
 
-$packageApp = Join-Path $PSScriptRoot "app"
-$packageRuntime = Join-Path $PSScriptRoot "runtime"
+# The installer ships in the package's scripts folder; the payload sits beside that folder.
+$packageRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$packageApp = Join-Path $packageRoot "app"
+$packageRuntime = Join-Path $packageRoot "runtime"
 $requiredFiles = @(
     (Join-Path $packageApp "dist\index.html"),
     (Join-Path $packageApp "manifest.xml"),

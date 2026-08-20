@@ -27,6 +27,13 @@ import { splitQualified } from "../excel/resolve"
 import { changedWorkbook, refused } from "../excel/write-outcome"
 import type { ChatHandlers, ChatState, ChatTurn, SelectionAttachment } from "./chat"
 import { serializeWorkbookContext } from "./chat-context"
+import {
+  groundingCallsCover,
+  groundingPlan,
+  selectionGroundingCalls,
+  selectionWideClaim,
+  workbookClaim,
+} from "./chat-grounding"
 import { systemPrompt } from "./chat-prompt"
 import {
   loadLocalSkills,
@@ -206,6 +213,9 @@ const LEGACY_PLAN_NOT_RUN =
   "수정 제안 JSON은 실행되지 않습니다. 같은 작업을 지금 허용된 도구 호출로 실행하고, 실행 결과를 확인한 뒤 답하세요."
 const NOT_PERFORMED =
   "요청한 워크북 작업을 실행하지 못했습니다. 완료했다고 보고하지 않고 여기서 멈춥니다."
+const NOT_VERIFIED =
+  "셀 상태를 다시 확인했지만 답변의 주장과 일치시키지 못했습니다. 확인되지 않은 값은 알 수 없습니다."
+const SELECTION_NOT_VERIFIED = "전체 범위를 모두 읽지 못해 판단할 수 없다."
 
 const VERIFY_WRITES =
   "방금 쓴 결과 범위를 아직 확인하지 않았습니다. 쓴 시트와 범위 전체를 덮는 read_range(formulas:true)로 헤더·첫 행·마지막 행·수식 누락·원본 필드 대응을 확인하고, 누락이 있으면 지금 보충한 뒤 답하세요."
@@ -806,6 +816,23 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         if (isWrite(call)) deps.redraw()
         return observation
       }
+      const runGroundingBatch = async (
+        calls: readonly ToolCall[],
+      ): Promise<readonly string[] | null> => {
+        const observations: string[] = []
+        let reached = false
+        try {
+          await deps.run(async (context) => {
+            reached = true
+            for (const call of calls)
+              observations.push(await runTool(context as unknown as InspectContext, call, budget))
+          })
+        } catch (error) {
+          if (error === ABANDONED) throw error
+          return null
+        }
+        return reached ? observations : null
+      }
 
       let repeats = 0
       let lastBatch: string | null = null
@@ -813,6 +840,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       let planNudged = false
       let verificationNudged = false
       let pendingVerification: VerificationTarget[] = []
+      let toolRounds = 0
 
       let reply = await askCurrent(turns)
       let step = readSteps(reply)
@@ -880,6 +908,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         }
         repeats = 0
         lastBatch = signature
+        toolRounds += 1
 
         const observations: string[] = []
         let batchChanged = false
@@ -958,6 +987,108 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         if (readSteps(reply).kind === "calls") {
           const spoken = withoutToolCall(reply)
           reply = spoken === "" ? OUT_OF_ROUNDS : spoken
+        }
+      }
+
+      // A request may carry the addresses while the draft says only "둘 다 비었습니다".
+      // Ground the union, otherwise removing the address from the prose bypasses the gate.
+      const finalPlan = groundingPlan(
+        workbookClaim(reply) ? `${request}\n${reply}` : reply,
+        targetSheet,
+      )
+      const needsSelectionCoverage =
+        attachment !== null &&
+        (selectionWideClaim(reply) || (attachment.cellCount > 72 && workbookClaim(reply)))
+      const selectionCalls =
+        attachment !== null && needsSelectionCoverage
+          ? selectionGroundingCalls(
+              attachment.address,
+              attachment.sheet,
+              // Row/column labels and display metadata cost characters too. Using the
+              // raw cell cap can make renderGrid truncate a tile even though Excel read
+              // every cell; a truncated tile is not complete coverage.
+              Math.min(budget.readCells, Math.max(1, Math.floor(budget.readChars / 16))),
+              Math.max(0, MAX_TOOL_ROUNDS - toolRounds) * 8,
+            )
+          : []
+      const selectedTiles = selectionCalls ?? []
+      const requiredCalls =
+        selectionCalls === null
+          ? null
+          : needsSelectionCoverage
+            ? [
+                ...selectedTiles,
+                ...finalPlan.calls.filter((call) => !groundingCallsCover(selectedTiles, call)),
+              ]
+            : finalPlan.calls
+      const requiredBatches =
+        requiredCalls === null ? Number.POSITIVE_INFINITY : Math.ceil(requiredCalls.length / 8)
+      const observationsFit =
+        requiredCalls !== null &&
+        requiredCalls.reduce((total, call) => {
+          const area = "address" in call ? parseArea(call.address) : null
+          // Workbook grids average about eight characters per cell (the same exchange
+          // rate that sizes readCells). Twelve leaves room for row/column labels without
+          // rejecting every multi-tile numeric selection before it is even read; the
+          // actual joined observation is checked again below and still fails closed.
+          return (
+            total + (area === null ? budget.observationChars + 1 : area.height * area.width * 12)
+          )
+        }, 0) <= Math.min(budget.observationChars, budget.roundChars)
+      if (
+        (needsSelectionCoverage && (!finalPlan.complete || !observationsFit)) ||
+        (needsSelectionCoverage && requiredBatches > MAX_TOOL_ROUNDS - toolRounds)
+      ) {
+        reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
+      } else if (!needsSelectionCoverage && (!finalPlan.complete || !observationsFit)) {
+        reply = NOT_VERIFIED
+      } else if (finalPlan.hasClaim || needsSelectionCoverage) {
+        const observations: string[] = []
+        let verified = true
+        for (let index = 0; index < (requiredCalls?.length ?? 0); index += 8) {
+          const batch = requiredCalls?.slice(index, index + 8) ?? []
+          const result = await runGroundingBatch(batch)
+          if (
+            result === null ||
+            result.some((observation) =>
+              /(?:요청을 처리하지 못했습니다|실행하지 못했습니다|시트를 찾을 수 없습니다|너무 넓습니다|… \(생략됨\)|표시 정보 생략됨)/.test(
+                observation,
+              ),
+            )
+          ) {
+            verified = false
+            break
+          }
+          observations.push(...result)
+        }
+        if (
+          !verified ||
+          observations.join("\n").length > Math.min(budget.observationChars, budget.roundChars)
+        ) {
+          reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
+        } else {
+          const originalClaim = reply
+          const groundedCalls = requiredCalls ?? []
+          turns.push({ role: "assistant", content: reply })
+          turns.push({
+            role: "user",
+            content: `${OBSERVATION_PREFIX}\n최종 답변 근거 확인 (원래 주장):\n${reply}\n실제 Excel 값:\n${boundRound(observations, budget)}\n위 실제 값만 근거로 한국어 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.`,
+          })
+          reply = await askCurrent(trimObservations(turns, budget))
+          const rewritten = groundingPlan(
+            workbookClaim(reply) ? `${request}\n${reply}` : reply,
+            targetSheet,
+          )
+          const introducesUncheckedAddress = rewritten.calls.some(
+            (call) => !groundingCallsCover(groundedCalls, call),
+          )
+          if (
+            reply.trim() === originalClaim.trim() ||
+            !rewritten.complete ||
+            introducesUncheckedAddress ||
+            (selectionWideClaim(reply) && !needsSelectionCoverage)
+          )
+            reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
         }
       }
 
