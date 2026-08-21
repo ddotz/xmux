@@ -185,7 +185,13 @@ function Write-StartupChain {
     # Which build is actually installed. "I reinstalled" and "the new package is running"
     # are different claims, and only this one is checkable.
     if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
-        $manifestXml = [xml](Get-Content -LiteralPath $ManifestPath -Raw)
+        # Not [xml](Get-Content ...): the manifest is BOM-less UTF-8 holding Korean, and
+        # Windows PowerShell 5.1 decodes a BOM-less file with the ANSI code page. On Korean
+        # Windows cp949 mangles the text and its multi-byte runs swallow the ASCII that
+        # follows, which unterminates an attribute and fails the parse. XmlDocument reads
+        # the bytes and honours the declared encoding instead.
+        $manifestXml = New-Object System.Xml.XmlDocument
+        $manifestXml.Load($ManifestPath)
         Write-Host "Installed version: $($manifestXml.OfficeApp.Version)"
     }
 
@@ -219,7 +225,9 @@ function Write-ServiceLog {
         return
     }
     Write-Host "Service log (last $Tail lines) - $LogPath"
-    Get-Content -LiteralPath $LogPath -Tail $Tail | ForEach-Object { Write-Host "  $_" }
+    # The service writes UTF-8, and a localized Windows error can put Korean in the log.
+    Get-Content -LiteralPath $LogPath -Tail $Tail -Encoding UTF8 |
+        ForEach-Object { Write-Host "  $_" }
 }
 
 function Stop-LocalService {

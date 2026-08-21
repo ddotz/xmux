@@ -44,7 +44,14 @@ function Get-ManifestVersion {
     param([string]$Path)
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     try {
-        return ([xml](Get-Content -LiteralPath $Path -Raw)).OfficeApp.Version
+        # Not [xml](Get-Content ...): the manifest is BOM-less UTF-8 holding Korean, and
+        # Windows PowerShell 5.1 decodes a BOM-less file with the ANSI code page. On
+        # Korean Windows cp949 mangles the text and its multi-byte runs swallow the ASCII
+        # that follows, unterminating an attribute and failing the parse. XmlDocument
+        # reads the bytes and honours the declared encoding instead.
+        $document = New-Object System.Xml.XmlDocument
+        $document.Load($Path)
+        return $document.OfficeApp.Version
     } catch {
         return $null
     }
@@ -55,11 +62,18 @@ function Show-Header {
     Write-Host ""
     Write-Host "  땡땡엑셀 설치 도우미" -ForegroundColor Cyan
     Write-Host "  ---------------------------------------------"
+    # Whether the add-in is installed is a question about the file, not about whether it
+    # parses. A damaged manifest is a damaged install -- reporting it as "not installed"
+    # hides the real fault and sends the user to reinstall over a display bug.
     $installedVersion = Get-ManifestVersion $installedManifest
     $packageVersion = Get-ManifestVersion $packageManifest
-    if ($null -ne $installedVersion) {
+    if (Test-Path -LiteralPath $installedManifest -PathType Leaf) {
         Write-Host "  설치 상태: 설치됨" -ForegroundColor Green
-        Write-Host "  설치된 버전: $installedVersion"
+        if ($null -ne $installedVersion) {
+            Write-Host "  설치된 버전: $installedVersion"
+        } else {
+            Write-Host "  설치된 버전: 확인할 수 없음 (매니페스트를 읽지 못했습니다)" -ForegroundColor Yellow
+        }
     } else {
         Write-Host "  설치 상태: 설치되지 않음" -ForegroundColor Yellow
     }

@@ -423,6 +423,33 @@ describe("Windows local deployment lifecycle", () => {
     expect(guard).toBeLessThan(installScript.indexOf("-Signer $caCertificate"))
   })
 
+  it("reads the manifest as XML instead of through the console code page", () => {
+    // Given: manifest.xml is BOM-less UTF-8 and carries Korean. Windows PowerShell 5.1
+    // decodes a BOM-less file with the ANSI code page, so cp949 on Korean Windows both
+    // mangles the text and lets a multi-byte run swallow the ASCII that follows it -- the
+    // closing quote of an attribute disappears and the parser blames the next '<'.
+    // When: the surfaces that display a version read a manifest.
+    // Then: they hand the path to the XML reader, which honours the file's own declaration
+    // rather than the machine's code page.
+    for (const script of [menuScript.toString("utf8"), manageScript]) {
+      // Comments are stripped first: the code below is described in prose that names the
+      // very call being banned, and a test a comment can fail is a test worth ignoring.
+      const code = script
+        .split(/\r?\n/)
+        .filter((line) => !line.trimStart().startsWith("#"))
+        .join("\n")
+      expect(code).not.toContain("[xml](Get-Content")
+      expect(code).toContain("System.Xml.XmlDocument")
+    }
+  })
+
+  it("reads the service log as the UTF-8 the service writes", () => {
+    // Given: the log is written by node as UTF-8 and can carry a localized Windows error.
+    // When: status tails it.
+    // Then: it is decoded as UTF-8, not as the ANSI code page.
+    expect(manageScript).toContain("-Tail $Tail -Encoding UTF8")
+  })
+
   it("pins the lifetimes of the certificates it issues", () => {
     // Given: nothing renews these in the background, so their length is the whole margin
     // the user gets before the pane stops loading. A silent edit here is a silent outage
@@ -458,6 +485,21 @@ describe("Windows local deployment lifecycle", () => {
     const version = manageScript.indexOf("Installed version:")
     expect(expiry).toBeGreaterThanOrEqual(0)
     expect(version).toBeGreaterThanOrEqual(0)
+  })
+
+  it("decides install state from the file, not from parsing it", () => {
+    // Given: an unreadable manifest is a damaged install, not an absent one. Deriving the
+    // state from a parse means any parse failure reports "설치되지 않음" over a working
+    // install and invites a reinstall to fix a display bug.
+    const text = menuScript.toString("utf8")
+    const state = text.indexOf("설치 상태: 설치됨")
+    const test = text.lastIndexOf("Test-Path -LiteralPath $installedManifest", state)
+    // When: the header reports whether the add-in is installed.
+    // Then: the decision is the file's existence, and the version is reported separately so
+    // a missing version degrades to unknown instead of erasing the install.
+    expect(state).toBeGreaterThanOrEqual(0)
+    expect(test).toBeGreaterThanOrEqual(0)
+    expect(test).toBeLessThan(state)
   })
 
   it("shows the installed build beside the one being offered", () => {
