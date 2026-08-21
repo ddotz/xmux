@@ -4,7 +4,13 @@
 # message, and exit path lives in this file. Nothing here duplicates installer logic:
 # each action hands off to install.ps1 / manage.ps1 / uninstall.ps1 in this same folder.
 [CmdletBinding()]
-param()
+param(
+    # UAC can elevate into a different admin account than the one that double-clicked.
+    # The installer writes to the *elevated* account's HKCU and %LOCALAPPDATA%, which is
+    # not where the Excel the user is running looks, so the launcher hands the menu the
+    # invoking account and the menu refuses to install quietly into the wrong profile.
+    [string]$InvokedBy = ""
+)
 
 $ErrorActionPreference = "Stop"
 # The console is cp949 by default on Korean Windows, which renders this file's UTF-8
@@ -39,6 +45,13 @@ function Show-Header {
         Write-Host "  설치 상태: 설치되지 않음" -ForegroundColor Yellow
     }
     Write-Host "  설치 위치: $installRoot"
+    $current = "$env:USERDOMAIN\$env:USERNAME"
+    if ($InvokedBy -and $InvokedBy -ne $current) {
+        Write-Host ""
+        Write-Host "  경고: $InvokedBy 계정으로 시작했지만 $current 계정으로 실행 중입니다." -ForegroundColor Red
+        Write-Host "  이대로 설치하면 $current 프로필에 설치되어 Excel이 찾지 못합니다." -ForegroundColor Red
+        Write-Host "  $InvokedBy 계정에 관리자 권한을 준 뒤 다시 실행하세요." -ForegroundColor Red
+    }
     Write-Host ""
 }
 

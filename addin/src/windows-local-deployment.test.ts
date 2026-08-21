@@ -536,6 +536,34 @@ describe("Windows package layout", () => {
     expect(packageScript).toContain("[Text.UTF8Encoding]::new($true))")
   })
 
+  it("declares every parameter its launcher passes", () => {
+    // Given: PowerShell rejects an undeclared named parameter before the script body runs,
+    // so a launcher that hands the menu an argument it never declared is not a degraded
+    // installer -- it is an installer that cannot start at all.
+    const batch = menuBatch.toString("utf8")
+    const menu = menuScript.toString("utf8")
+    const declaration = menu.slice(menu.indexOf("param("), menu.indexOf("$ErrorActionPreference"))
+    const body = menu.slice(menu.indexOf("$ErrorActionPreference"))
+    // When: the arguments the launcher places after the script path are collected.
+    const passed = [
+      ...new Set(
+        batch
+          .split(/\r?\n/)
+          .filter((line) => line.includes("%MENU%"))
+          .flatMap(
+            (line) => line.slice(line.lastIndexOf("%MENU%")).match(/-[A-Za-z][A-Za-z0-9]*/g) ?? [],
+          ),
+      ),
+    ]
+    // Then: the menu declares each one, and acts on it. A declared-but-unused parameter is
+    // deleted by the next reader, which brings the unusable installer straight back.
+    expect(passed).not.toHaveLength(0)
+    for (const name of passed) {
+      expect(declaration).toContain(`$${name.slice(1)}`)
+      expect(body).toContain(`$${name.slice(1)}`)
+    }
+  })
+
   it("drives the installer instead of reimplementing it", () => {
     // Given: two copies of install logic drift the first time one is edited.
     const text = menuScript.toString("utf8")
