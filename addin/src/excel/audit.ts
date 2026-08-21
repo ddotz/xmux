@@ -1,5 +1,6 @@
 import type { ToolCall } from "../ai/tool-schemas"
 import { columnLetters, parseArea } from "./address"
+import { runColumnStats } from "./column-stats"
 import type { InspectContext, InspectRange, InspectSheet } from "./office-shapes"
 import { splitQualified } from "./resolve"
 
@@ -16,7 +17,6 @@ import { splitQualified } from "./resolve"
 /** A scan reads every cell's formula, so it is bounded well below what a read is. */
 const MAX_SCAN_CELLS = 20_000
 const MAX_FINDINGS = 40
-const MAX_STAT_COLUMNS = 12
 
 const cellAddress = (anchor: { top: number; left: number }, row: number, column: number): string =>
   `${columnLetters(anchor.left + column)}${anchor.top + row}`
@@ -156,58 +156,6 @@ const listNames = async (context: InspectContext): Promise<string> => {
   return `정의된 이름 ${items.length}개:\n${lines.join("\n")}`
 }
 
-const number = (result: { value: unknown }): string => {
-  const value = result.value
-  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("ko-KR") : "-"
-}
-
-/**
- * Per-column totals for a table too big to read.
- *
- * `read_range` refuses past 500 cells, which leaves a 200,000-row ledger unreadable and the
- * model guessing. Every figure here is computed by Excel itself, so the table stays where
- * it is and only seven numbers per column come back.
- */
-const columnStats = async (
-  context: InspectContext,
-  sheet: InspectSheet,
-  call: Extract<ToolCall, { tool: "column_stats" }>,
-): Promise<string> => {
-  const range = await areaFor(context, sheet, call.address)
-  if (range === null) return `${sheet.name}은 비어 있습니다.`
-  const anchor = anchorOf(range)
-  const columns = (
-    call.columns ?? Array.from({ length: range.columnCount }, (_, index) => index + 1)
-  ).slice(0, MAX_STAT_COLUMNS)
-
-  const asked = columns.map((column) => {
-    const top = anchor.top + (call.hasHeaders === false ? 0 : 1)
-    const letter = columnLetters(anchor.left + column - 1)
-    const body = sheet.getRange(`${letter}${top}:${letter}${anchor.top + range.rowCount - 1}`)
-    const results = {
-      letter,
-      count: context.workbook.functions.count(body),
-      filled: context.workbook.functions.countA(body),
-      blank: context.workbook.functions.countBlank(body),
-      sum: context.workbook.functions.sum(body),
-      average: context.workbook.functions.average(body),
-      min: context.workbook.functions.min(body),
-      max: context.workbook.functions.max(body),
-    }
-    for (const result of Object.values(results)) {
-      if (typeof result !== "string") result.load("value")
-    }
-    return results
-  })
-  await context.sync()
-
-  const lines = asked.map(
-    (stat) =>
-      `${stat.letter}열: 숫자 ${number(stat.count)} · 값 ${number(stat.filled)} · 빈칸 ${number(stat.blank)} · 합계 ${number(stat.sum)} · 평균 ${number(stat.average)} · 최소 ${number(stat.min)} · 최대 ${number(stat.max)}`,
-  )
-  return `${where(sheet, range)} (${range.rowCount}행)\n${lines.join("\n")}`
-}
-
 /**
  * Run one audit or profiling call, or answer `null` so `inspect.ts` keeps looking.
  */
@@ -220,6 +168,6 @@ export const runAuditTool = async (
   if (call.tool === "find_hardcoded") return await findHardcoded(context, sheet, call.address)
   if (call.tool === "list_links") return await findLinks(context, sheet, call.address)
   if (call.tool === "list_names") return await listNames(context)
-  if (call.tool === "column_stats") return await columnStats(context, sheet, call)
+  if (call.tool === "column_stats") return (await runColumnStats(context, sheet, call)).text
   return null
 }

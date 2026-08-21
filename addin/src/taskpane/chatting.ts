@@ -20,13 +20,20 @@ import {
 import { formatArea, parseArea } from "../excel/address"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
-import { runTool } from "../excel/inspect"
+import { type InspectObservation, observeTool, type RangeEvidence } from "../excel/inspect"
 import type { InspectContext, OperateContext } from "../excel/office-shapes"
 import { runWrite } from "../excel/operate"
 import { splitQualified } from "../excel/resolve"
 import { changedWorkbook, refused } from "../excel/write-outcome"
 import type { ChatHandlers, ChatState, ChatTurn, SelectionAttachment } from "./chat"
+import {
+  type VerificationTarget,
+  verificationInstruction,
+  verificationTargets,
+  verifiedBy,
+} from "./chat-action-verification"
 import { serializeWorkbookContext } from "./chat-context"
+import { aggregateAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
 import {
   groundingCallsCover,
   groundingPlan,
@@ -34,6 +41,13 @@ import {
   selectionWideClaim,
   workbookClaim,
 } from "./chat-grounding"
+import { type ActionReceipt, createHarnessLedger } from "./chat-harness"
+import {
+  aggregateCallsForSelection,
+  aggregateClaim,
+  aggregateEvidenceComplete,
+  aggregateEvidenceForSelection,
+} from "./chat-large-range"
 import { systemPrompt } from "./chat-prompt"
 import {
   loadLocalSkills,
@@ -139,11 +153,6 @@ const receipt = (performed: readonly ToolCall[]): string => {
 /** Said once at the end of a turn that changed something 되돌리기 will not change back. */
 const UNDO_NOTE = "(서식·표·피벗·차트처럼 되돌리기로 복구되지 않는 작업이 포함되어 있습니다.)"
 
-type WriteAttempt = {
-  readonly call: ToolCall
-  readonly observation: string
-}
-
 /**
  * The reply the user reads: what the model said, plus what only the pane knows.
  *
@@ -151,11 +160,10 @@ type WriteAttempt = {
  * so in its own result — and it still forgets to pass that on. The pane does not forget,
  * and it stays quiet when the answer already covers it.
  */
-const withReceipt = (
-  answer: string,
-  performed: readonly ToolCall[],
-  attempts: readonly WriteAttempt[] = [],
-): string => {
+const withReceipt = (answer: string, attempts: readonly ActionReceipt[]): string => {
+  const performed = attempts
+    .filter(({ status }) => status === "changed" || status === "partial")
+    .map(({ call }) => call)
   const generated = answer.trim() === ""
   const said =
     generated && unresolvedAttempts(attempts).length > 0
@@ -164,11 +172,11 @@ const withReceipt = (
         ? receipt(performed)
         : answer
   if (performed.length === 0) return said
-  const successful = attempts.filter(({ observation }) => completedObservation(observation))
+  const successful = attempts.filter(({ status }) => status === "changed")
   const verified =
     successful.length === 0
       ? `실행 확인:\n${performed.map((call) => `- ${describeCall(call)}`).join("\n")}`
-      : `실행 확인:\n${successful.map(({ observation }) => `- ${observation}`).join("\n")}`
+      : `실행 확인:\n${successful.map(({ text }) => `- ${text}`).join("\n")}`
   const accounted = said.includes("실행 확인:") ? said : `${said}\n\n${verified}`
   return performed.some(outsideUndo) && !accounted.includes("되돌리기")
     ? `${accounted}\n\n${UNDO_NOTE}`
@@ -217,19 +225,11 @@ const NOT_VERIFIED =
   "셀 상태를 다시 확인했지만 답변의 주장과 일치시키지 못했습니다. 확인되지 않은 값은 알 수 없습니다."
 const SELECTION_NOT_VERIFIED = "전체 범위를 모두 읽지 못해 판단할 수 없다."
 
-const VERIFY_WRITES =
-  "방금 쓴 결과 범위를 아직 확인하지 않았습니다. 쓴 시트와 범위 전체를 덮는 read_range(formulas:true)로 헤더·첫 행·마지막 행·수식 누락·원본 필드 대응을 확인하고, 누락이 있으면 지금 보충한 뒤 답하세요."
-
 const CLAIMS_CHANGE =
   /(?:만들|쓰|채우|적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정)(?:했|됐|하였)/
 const AMBIGUOUS_CONTINUATION = /^(?:계속|이어서|마저|그대로)(?:해|하|진행|작업)?/
 
 const ABANDONED = Symbol("abandoned chat generation")
-const PARTIAL_OUTCOME =
-  /(?:했지만|썼지만|넣었지만|만들었지만|복제했지만)[^\n]*(?:못했습니다|실패했습니다)/
-
-const completedObservation = (observation: string): boolean =>
-  changedWorkbook(observation) && !PARTIAL_OUTCOME.test(observation)
 
 const writeEffect = (call: ToolCall): string => {
   if (call.tool === "write_range" || call.tool === "copy_range" || call.tool === "move_range")
@@ -278,103 +278,23 @@ const writeTarget = (call: ToolCall): string => {
   return `${writeEffect(call)}|${JSON.stringify(call)}`
 }
 
-const unresolvedAttempts = (attempts: readonly WriteAttempt[]): readonly WriteAttempt[] =>
+const unresolvedAttempts = (attempts: readonly ActionReceipt[]): readonly ActionReceipt[] =>
   attempts.filter((attempt, index) => {
-    if (completedObservation(attempt.observation)) return false
+    if (attempt.status === "changed") return false
     const target = writeTarget(attempt.call)
     return !attempts
       .slice(index + 1)
-      .some(
-        (later) => completedObservation(later.observation) && writeTarget(later.call) === target,
-      )
+      .some((later) => later.status === "changed" && writeTarget(later.call) === target)
   })
 
-const withFailures = (answer: string, attempts: readonly WriteAttempt[]): string => {
+const withFailures = (answer: string, attempts: readonly ActionReceipt[]): string => {
   const failed = unresolvedAttempts(attempts)
   return failed.length === 0
     ? answer
     : `${answer}\n\n실행 실패 확인:\n${failed
-        .map(({ call, observation }) => `- ${describeCall(call)}: ${observation}`)
+        .map(({ call, text }) => `- ${describeCall(call)}: ${text}`)
         .join("\n")}`.trim()
 }
-
-type VerificationTarget = { readonly sheet: string; readonly address: string }
-
-const destinationArea = (
-  sourceAddress: string,
-  targetAddress: string,
-  transpose: boolean,
-): string => {
-  const source = parseArea(sourceAddress)
-  const target = parseArea(targetAddress)
-  if (source === null || target === null) return targetAddress
-  return formatArea({
-    top: target.top,
-    left: target.left,
-    height: transpose ? source.width : source.height,
-    width: transpose ? source.height : source.width,
-  })
-}
-
-const verificationTargets = (call: ToolCall): readonly VerificationTarget[] => {
-  if (call.tool === "write_range") {
-    const anchor = parseArea(call.address)
-    const width = Math.max(0, ...call.rows.map((row) => row.length))
-    return anchor === null || width === 0
-      ? []
-      : [
-          {
-            sheet: call.sheet ?? "",
-            address: formatArea({
-              top: anchor.top,
-              left: anchor.left,
-              height: call.rows.length,
-              width,
-            }),
-          },
-        ]
-  }
-  if (call.tool === "copy_range" || call.tool === "move_range") {
-    const destination = {
-      sheet: call.targetSheet ?? call.sheet ?? "",
-      address: destinationArea(
-        call.address,
-        call.target,
-        call.tool === "copy_range" && call.transpose === true,
-      ),
-    }
-    return call.tool === "move_range"
-      ? [{ sheet: call.sheet ?? "", address: call.address }, destination]
-      : [destination]
-  }
-  if (
-    call.tool === "fill_formula" ||
-    call.tool === "scale_values" ||
-    call.tool === "clear_range" ||
-    call.tool === "delete_range"
-  ) {
-    return [{ sheet: call.sheet ?? "", address: call.address }]
-  }
-  return []
-}
-
-const containsArea = (outerText: string, innerText: string): boolean => {
-  const outer = parseArea(outerText)
-  const inner = parseArea(innerText)
-  if (outer === null || inner === null) return false
-  return (
-    outer.top <= inner.top &&
-    outer.left <= inner.left &&
-    outer.top + outer.height >= inner.top + inner.height &&
-    outer.left + outer.width >= inner.left + inner.width
-  )
-}
-
-const verifiedBy = (call: ToolCall, target: VerificationTarget): boolean =>
-  call.tool === "read_range" &&
-  call.formulas === true &&
-  (call.sheet ?? "") === target.sheet &&
-  containsArea(call.address, target.address)
 
 /**
  * Shown when the tool phase ended and the model still will not answer in words.
@@ -730,9 +650,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     const targetSheet = attachment?.sheet ?? state.sheet
     const settings = state.settings
     const current = (): boolean => mine === generation
+    const harness = createHarnessLedger()
     const askCurrent = async (messages: readonly ChatMessage[]): Promise<string> => {
       const answer = await askModel(settings, messages)
       if (!current()) throw ABANDONED
+      harness.record({ kind: "analysis", reply: answer })
       return answer
     }
     const selectedSkillId =
@@ -742,14 +664,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     const request = stripSlashCommand(question, state.skills)
     const asked: ChatTurn = { role: "user", text: question }
     commit({ turns: [...previous, asked], pending: true, error: null, plan: null, activity: [] })
-    // Everything the workbook actually did this turn, in order, so the answer can be
-    // checked against the work rather than taken on the model's word. A call that was
-    // refused, threw, or never reached Excel is not on this list — the receipt built from
-    // it is the pane's own account, and an account that names work nobody did is worse
-    // than no account at all. It lives out here because a turn that dies upstream still
-    // has to say what it changed.
-    const performedSoFar: ToolCall[] = []
-    const attemptedWrites: WriteAttempt[] = []
     try {
       if (hadCompaction && AMBIGUOUS_CONTINUATION.test(request.trim())) {
         commit({
@@ -769,6 +683,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       }
       const workbook = await describeWorkbook(attachment)
       if (!current()) throw ABANDONED
+      harness.record({
+        kind: "context",
+        sheet: targetSheet,
+        coverage: attachment === null ? "none" : attachment.cellCount > 72 ? "not_loaded" : "full",
+      })
       const turns = [
         ...conversation(
           request,
@@ -781,8 +700,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         ),
       ]
 
-      const performed = performedSoFar
-
       // The model works the workbook the way a person would: look, act, look again. Each
       // round it sends one tool call or a batch of them, every call runs against the real
       // sheet as it arrives, and the results go back so it can continue — until it answers.
@@ -794,15 +711,19 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         // read off the promise. It is read off whether the callback itself ran.
         let reached = false
         let observation = UNREACHED
+        let inspected: InspectObservation = { text: UNREACHED, evidence: null }
         try {
           await deps.run(async (context) => {
             if (!current()) throw ABANDONED
             reached = true
             // A write lands as soon as the model asks for it. Undo is what makes that safe,
             // so every change goes through the history rather than straight at the range.
-            observation = isWrite(call)
-              ? await runWrite(context as unknown as OperateContext, deps.history, call)
-              : await runTool(context as unknown as InspectContext, call, budget)
+            if (isWrite(call)) {
+              observation = await runWrite(context as unknown as OperateContext, deps.history, call)
+            } else {
+              inspected = await observeTool(context as unknown as InspectContext, call, budget)
+              observation = inspected.text
+            }
           })
         } catch (error) {
           if (error === ABANDONED) throw error
@@ -810,22 +731,26 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // what went wrong and works around it, the same as any other failed call.
           const detail = error instanceof Error ? error.message : String(error)
           observation = `실행하지 못했습니다: ${detail}`
+          inspected = { text: observation, evidence: null }
         }
-        if (isWrite(call) && reached && changedWorkbook(observation)) performed.push(call)
-        if (isWrite(call)) attemptedWrites.push({ call, observation })
+        if (isWrite(call)) harness.recordAction(call, observation, reached)
+        else harness.recordTool(call, inspected, reached)
         if (isWrite(call)) deps.redraw()
         return observation
       }
       const runGroundingBatch = async (
         calls: readonly ToolCall[],
-      ): Promise<readonly string[] | null> => {
-        const observations: string[] = []
+      ): Promise<readonly InspectObservation[] | null> => {
+        const observations: InspectObservation[] = []
         let reached = false
         try {
           await deps.run(async (context) => {
             reached = true
-            for (const call of calls)
-              observations.push(await runTool(context as unknown as InspectContext, call, budget))
+            for (const call of calls) {
+              const observed = await observeTool(context as unknown as InspectContext, call, budget)
+              harness.recordTool(call, observed, true)
+              observations.push(observed)
+            }
           })
         } catch (error) {
           if (error === ABANDONED) throw error
@@ -875,7 +800,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             if (verificationNudged) break
             verificationNudged = true
             turns.push({ role: "assistant", content: reply })
-            turns.push({ role: "user", content: `${OBSERVATION_PREFIX}\n${VERIFY_WRITES}` })
+            turns.push({
+              role: "user",
+              content: `${OBSERVATION_PREFIX}\n${verificationInstruction(pendingVerification)}`,
+            })
             reply = await askCurrent(trimObservations(turns, budget))
             step = readSteps(reply)
             continue
@@ -919,10 +847,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               ? await runCall(call)
               : refused(`${normalized.rejected}. 호출을 실행하지 않았습니다.`)
           if (normalized.rejected !== null && isWrite(call))
-            attemptedWrites.push({ call, observation })
+            harness.recordAction(call, observation, false)
           if (isWrite(call) && changedWorkbook(observation)) {
             batchChanged = true
-            for (const target of verificationTargets(call)) {
+            for (const target of verificationTargets(call, budget.readCells)) {
               if (
                 !pendingVerification.some(
                   (pending) => pending.sheet === target.sheet && pending.address === target.address,
@@ -992,13 +920,92 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
       // A request may carry the addresses while the draft says only "둘 다 비었습니다".
       // Ground the union, otherwise removing the address from the prose bypasses the gate.
-      const finalPlan = groundingPlan(
-        workbookClaim(reply) ? `${request}\n${reply}` : reply,
-        targetSheet,
-      )
-      const needsSelectionCoverage =
+      const hasWorkbookClaim = workbookClaim(reply)
+      let aggregateHandled = false
+      if (
         attachment !== null &&
-        (selectionWideClaim(reply) || (attachment.cellCount > 72 && workbookClaim(reply)))
+        attachment.cellCount > 72 &&
+        hasWorkbookClaim &&
+        aggregateClaim(reply)
+      ) {
+        aggregateHandled = true
+        let aggregateEvidence = aggregateEvidenceForSelection(
+          harness.aggregateEvidence(),
+          attachment,
+        )
+        if (!aggregateEvidenceComplete(aggregateEvidence, attachment)) {
+          const calls = aggregateCallsForSelection(
+            attachment,
+            Math.max(0, MAX_TOOL_ROUNDS - toolRounds) * 8,
+          )
+          if (calls !== null) {
+            for (let index = 0; index < calls.length; index += 8) {
+              const result = await runGroundingBatch(calls.slice(index, index + 8))
+              if (
+                result === null ||
+                result.some(
+                  (observation) =>
+                    observation.evidence === null ||
+                    /(?:요청을 처리하지 못했습니다|실행하지 못했습니다|시트를 찾을 수 없습니다)/.test(
+                      observation.text,
+                    ),
+                )
+              ) {
+                aggregateEvidence = []
+                break
+              }
+            }
+            if (aggregateEvidence.length > 0 || calls.length > 0)
+              aggregateEvidence = aggregateEvidenceForSelection(
+                harness.aggregateEvidence(),
+                attachment,
+              )
+          }
+        }
+        const serializedEvidence = JSON.stringify({
+          kind: "excel_aggregate_evidence",
+          selection: attachment,
+          evidence: aggregateEvidence,
+        })
+        if (
+          aggregateEvidence.length === 0 ||
+          !aggregateEvidenceComplete(aggregateEvidence, attachment) ||
+          serializedEvidence.length > Math.min(budget.observationChars, budget.roundChars)
+        ) {
+          reply = SELECTION_NOT_VERIFIED
+        } else if (!aggregateAnswerMatches(reply, aggregateEvidence)) {
+          turns.push({ role: "assistant", content: reply })
+          turns.push({
+            role: "user",
+            content: `${OBSERVATION_PREFIX}\n아래 Excel 집계 근거만 사용해 최종 답변을 다시 쓰세요. 각 숫자는 열과 연산(건수·빈칸·합계·평균·최소·최대)을 함께 명시하세요.\n${serializedEvidence}`,
+          })
+          let corrected = false
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            reply = await askCurrent(trimObservations(turns, budget))
+            if (aggregateAnswerMatches(reply, aggregateEvidence)) {
+              corrected = true
+              break
+            }
+            if (attempt === 0) {
+              turns.push({ role: "assistant", content: reply })
+              turns.push({
+                role: "user",
+                content: `${OBSERVATION_PREFIX}\n직전 답변의 숫자·열·연산이 Excel 집계 근거와 불일치합니다. 아래 근거만 사용해 한 번 더 고치세요.\n${serializedEvidence}`,
+              })
+            }
+          }
+          if (!corrected) reply = SELECTION_NOT_VERIFIED
+        }
+      }
+      const finalPlan = aggregateHandled
+        ? { calls: [], hasClaim: false, complete: true }
+        : groundingPlan(hasWorkbookClaim ? `${request}\n${reply}` : reply, targetSheet)
+      const needsSelectionCoverage =
+        !aggregateHandled &&
+        attachment !== null &&
+        (selectionWideClaim(reply) ||
+          (finalPlan.calls.length === 0 && hasWorkbookClaim) ||
+          (attachment.cellCount > 72 && hasWorkbookClaim))
       const selectionCalls =
         attachment !== null && needsSelectionCoverage
           ? selectionGroundingCalls(
@@ -1044,22 +1051,30 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         reply = NOT_VERIFIED
       } else if (finalPlan.hasClaim || needsSelectionCoverage) {
         const observations: string[] = []
+        const rangeEvidence: RangeEvidence[] = []
         let verified = true
         for (let index = 0; index < (requiredCalls?.length ?? 0); index += 8) {
           const batch = requiredCalls?.slice(index, index + 8) ?? []
           const result = await runGroundingBatch(batch)
           if (
             result === null ||
-            result.some((observation) =>
-              /(?:요청을 처리하지 못했습니다|실행하지 못했습니다|시트를 찾을 수 없습니다|너무 넓습니다|… \(생략됨\)|표시 정보 생략됨)/.test(
-                observation,
-              ),
+            result.some(
+              (observation) =>
+                observation.evidence?.kind !== "range" ||
+                /(?:요청을 처리하지 못했습니다|실행하지 못했습니다|시트를 찾을 수 없습니다|너무 넓습니다|… \(생략됨\)|표시 정보 생략됨)/.test(
+                  observation.text,
+                ),
             )
           ) {
             verified = false
             break
           }
-          observations.push(...result)
+          observations.push(...result.map((observation) => observation.text))
+          rangeEvidence.push(
+            ...result.flatMap((observation) =>
+              observation.evidence?.kind === "range" ? [observation.evidence] : [],
+            ),
+          )
         }
         if (
           !verified ||
@@ -1067,31 +1082,50 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         ) {
           reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
         } else {
-          const originalClaim = reply
           const groundedCalls = requiredCalls ?? []
           turns.push({ role: "assistant", content: reply })
           turns.push({
             role: "user",
             content: `${OBSERVATION_PREFIX}\n최종 답변 근거 확인 (원래 주장):\n${reply}\n실제 Excel 값:\n${boundRound(observations, budget)}\n위 실제 값만 근거로 한국어 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.`,
           })
-          reply = await askCurrent(trimObservations(turns, budget))
-          const rewritten = groundingPlan(
-            workbookClaim(reply) ? `${request}\n${reply}` : reply,
-            targetSheet,
-          )
-          const introducesUncheckedAddress = rewritten.calls.some(
-            (call) => !groundingCallsCover(groundedCalls, call),
-          )
-          if (
-            reply.trim() === originalClaim.trim() ||
-            !rewritten.complete ||
-            introducesUncheckedAddress ||
-            (selectionWideClaim(reply) && !needsSelectionCoverage)
-          )
-            reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
+          const groundedReplyIsValid = (answer: string): boolean => {
+            const rewritten = groundingPlan(
+              workbookClaim(answer) ? `${request}\n${answer}` : answer,
+              targetSheet,
+            )
+            const introducesUncheckedAddress = rewritten.calls.some(
+              (call) => !groundingCallsCover(groundedCalls, call),
+            )
+            return (
+              rewritten.complete &&
+              !introducesUncheckedAddress &&
+              rangeAnswerMatches(answer, rangeEvidence) &&
+              (!selectionWideClaim(answer) || needsSelectionCoverage)
+            )
+          }
+          let corrected = false
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            reply = await askCurrent(trimObservations(turns, budget))
+            if (groundedReplyIsValid(reply)) {
+              corrected = true
+              break
+            }
+            if (attempt === 0) {
+              turns.push({ role: "assistant", content: reply })
+              turns.push({
+                role: "user",
+                content: `${OBSERVATION_PREFIX}\n직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 아래 실제 값만 사용해 최종 답변을 다시 쓰세요.\n실제 Excel 값:\n${boundRound(observations, budget)}`,
+              })
+            }
+          }
+          if (!corrected) reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
         }
       }
 
+      const actionReceipts = harness.actions()
+      const performed = actionReceipts
+        .filter(({ status }) => status === "changed" || status === "partial")
+        .map(({ call }) => call)
       const plan: Plan = parsePlan(reply)
       // Whatever happened above, a tool call is not something the user should be reading —
       // and neither is an empty bubble, which is what a reply of pure JSON used to leave
@@ -1107,10 +1141,22 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           ? UNRUNNABLE_CALL
           : displayReply(spoken)
       if (performed.length === 0 && CLAIMS_CHANGE.test(answer)) answer = NOT_PERFORMED
-      answer = withFailures(answer, attemptedWrites)
+      answer = withFailures(answer, actionReceipts)
       if (pendingVerification.length > 0)
         answer = `${answer}\n\n검증 상태: 마지막 변경 범위를 다시 읽어 확인하지 못했습니다.`.trim()
-      const said = withReceipt(answer, performed, attemptedWrites)
+      const said = withReceipt(answer, actionReceipts)
+      if (performed.length > 0)
+        harness.record({
+          kind: "verification",
+          status: pendingVerification.length === 0 ? "passed" : "failed",
+          addresses: pendingVerification.map((target) => target.address),
+        })
+      harness.record({
+        kind: "answer",
+        status:
+          reply === NOT_VERIFIED || reply === SELECTION_NOT_VERIFIED ? "rejected" : "accepted",
+        text: said,
+      })
       const skillPlan: Plan | null =
         plan.skill === undefined
           ? null
@@ -1132,9 +1178,12 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // Whatever went wrong upstream, the writes that already landed are the user's
       // problem now: they are looking at a changed workbook and deciding whether to press
       // 되돌리기. The error explains the turn; only this explains the sheet.
+      const actionReceipts = harness.actions()
       const accounted = withFailures(
-        performedSoFar.length === 0 ? "" : withReceipt("", performedSoFar, attemptedWrites),
-        attemptedWrites,
+        actionReceipts.every(({ status }) => status !== "changed" && status !== "partial")
+          ? ""
+          : withReceipt("", actionReceipts),
+        actionReceipts,
       )
       const done =
         accounted === ""

@@ -443,6 +443,7 @@ describe("workbook lookups before answering", () => {
     vi.mocked(askModel)
       .mockResolvedValueOnce("J5는 빈 값입니다.")
       .mockResolvedValueOnce("J5는 빈 값입니다.")
+      .mockResolvedValueOnce("J5는 빈 값입니다.")
     const context = {
       workbook: {
         worksheets: {
@@ -476,11 +477,11 @@ describe("workbook lookups before answering", () => {
     expect(chatting.state().turns.at(-1)?.text).toContain("확인되지 않은 값은 알 수 없습니다")
   })
 
-  it("tiles every cell of a large selection before accepting a range-wide claim", async () => {
-    const budget = budgetFor(DEFAULT_SETTINGS)
-    const cellsPerCall = Math.min(budget.readCells, Math.max(1, Math.floor(budget.readChars / 16)))
-    const selectedCells = cellsPerCall * 2 + 1
+  it("uses Excel-side aggregate evidence for a large range instead of loading its cells", async () => {
+    const selectedCells = 200_000
     const looked: string[] = []
+    const loaded: string[] = []
+    const result = (value: number) => ({ value, load: () => {} })
     const context = {
       workbook: {
         worksheets: {
@@ -490,25 +491,30 @@ describe("workbook lookups before answering", () => {
             load: () => {},
             getRange: (address: string) => {
               looked.push(address)
-              const [first = "A1", last = first] = address.split(":")
-              const from = Number(first.slice(1))
-              const to = Number(last.slice(1))
-              const values = Array.from({ length: to - from + 1 }, (_, at) => [from + at])
               return {
                 address: `Main!${address}`,
-                cellCount: values.length,
-                values,
-                load: () => {},
+                isNullObject: false,
+                cellCount: selectedCells,
+                rowCount: selectedCells,
+                columnCount: 1,
+                load: (properties: string) => loaded.push(properties),
               }
             },
           }),
         },
+        functions: {
+          count: () => result(selectedCells - 1),
+          countA: () => result(selectedCells - 1),
+          countBlank: () => result(0),
+          sum: () => result(1),
+          average: () => result(1 / (selectedCells - 1)),
+          min: () => result(0),
+          max: () => result(1),
+        },
       },
       sync: async () => {},
     }
-    vi.mocked(askModel)
-      .mockResolvedValueOnce("선택 데이터 전체의 합계는 1입니다.")
-      .mockResolvedValueOnce(`선택 범위 전체 ${selectedCells}개 셀을 모두 확인했습니다.`)
+    vi.mocked(askModel).mockResolvedValueOnce("선택 데이터 전체의 합계는 1입니다.")
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
@@ -526,13 +532,10 @@ describe("workbook lookups before answering", () => {
     chatting.handlers.onSend("선택 범위 전체를 확인해줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(looked).toEqual([
-      `A1:A${cellsPerCall}`,
-      `A${cellsPerCall + 1}:A${cellsPerCall * 2}`,
-      `A${cellsPerCall * 2 + 1}`,
-    ])
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
-    expect(chatting.state().turns.at(-1)?.text).toContain(`${selectedCells}개 셀`)
+    expect(looked).toEqual([`A1:A${selectedCells}`, `A2:A${selectedCells}`])
+    expect(loaded.some((properties) => /values|formulas/.test(properties))).toBe(false)
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+    expect(chatting.state().turns.at(-1)?.text).toContain("합계는 1")
   })
 
   it("fails closed when a complete selection tile cannot fit without truncation", async () => {
@@ -1052,7 +1055,9 @@ describe("operating without approval", () => {
     // The turn-start snapshot is refreshed after each write batch before the model continues.
     expect(vi.mocked(readWorkbookContext)).toHaveBeenCalledTimes(3)
     const verificationRequest = vi.mocked(askModel).mock.calls[3]?.[1].at(-1)?.content ?? ""
-    expect(verificationRequest).toContain("수식 누락")
+    expect(verificationRequest).toContain(
+      '{"tool":"read_range","sheet":"정리","address":"A1:B2","formulas":true}',
+    )
     const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).toContain("정리 시트에 표를 만들었습니다.")
     expect(said).toContain("실행 확인")
@@ -1316,6 +1321,28 @@ describe("working through a batch of tool calls", () => {
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     expect(chatting.state().turns.at(-1)?.text).toContain("검증 상태")
+  })
+
+  it("verifies a large formula fill with deterministic boundary probes", async () => {
+    const book = workbook()
+    book.context.workbook.worksheets.add("Main")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"fill_formula","sheet":"Main","anchor":"D2","address":"D2:D200000","formula":"=A2"}',
+      )
+      .mockResolvedValueOnce("D열 수식을 모두 채웠습니다.")
+      .mockResolvedValueOnce(
+        '[{"tool":"read_range","sheet":"Main","address":"D2","formulas":true},' +
+          '{"tool":"read_range","sheet":"Main","address":"D200000","formulas":true}]',
+      )
+      .mockResolvedValueOnce("D열의 첫 행과 마지막 행 수식을 확인했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("D2:D200000에 수식을 채워줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).not.toContain("검증 상태")
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(4)
   })
 
   it("never puts a tool call on screen, and tells the model how to fix it", async () => {

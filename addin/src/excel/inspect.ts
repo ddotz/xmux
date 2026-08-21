@@ -3,10 +3,27 @@ import type { ToolCall } from "../ai/tool-schemas"
 import { quoteSheetName } from "../formula/reference"
 import { columnLetters, parseArea } from "./address"
 import { runAuditTool } from "./audit"
+import { type ColumnStatsEvidence, runColumnStats } from "./column-stats"
 import { formulaAddresses, renderDisplayDetails, renderGrid } from "./grid"
 import type { InspectContext, InspectSheet } from "./office-shapes"
 import { runReasoningTool } from "./reasoning"
 import { splitQualified } from "./resolve"
+
+export type RangeEvidence = {
+  readonly kind: "range"
+  readonly sheet: string
+  readonly address: string
+  readonly formulas: boolean
+  readonly values: readonly (readonly unknown[])[]
+  readonly display: readonly (readonly string[])[]
+}
+
+export type InspectEvidence = RangeEvidence | ColumnStatsEvidence
+
+export type InspectObservation = {
+  readonly text: string
+  readonly evidence: InspectEvidence | null
+}
 
 /**
  * Answering the model's questions about the workbook.
@@ -37,34 +54,48 @@ const readRange = async (
   context: InspectContext,
   call: ToolCall,
   budget: Budget,
-): Promise<string> => {
+): Promise<InspectObservation> => {
   if (call.tool !== "read_range") throw new Error("read_range expected")
   const sheet = await sheetFor(context, call.sheet)
-  if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+  if (sheet === null)
+    return { text: `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`, evidence: null }
 
   const range = sheet.getRange(call.address)
   range.load("address, cellCount")
   await context.sync()
   if (range.cellCount > budget.readCells) {
-    return `${range.address}는 ${range.cellCount}칸이라 한 번에 읽기에 너무 넓습니다. ${budget.readCells}칸 이하로 나눠서 요청하세요.`
+    return {
+      text: `${range.address}는 ${range.cellCount}칸이라 한 번에 읽기에 너무 넓습니다. ${budget.readCells}칸 이하로 나눠서 요청하세요.`,
+      evidence: null,
+    }
   }
 
   range.load("values, text, numberFormat, formulas")
   await context.sync()
+  const observedValues =
+    (call.formulas === true ? range.formulas : range.values) ?? range.values ?? []
+  const displayValues =
+    range.text ??
+    observedValues.map((row) =>
+      row.map((value) => (value === null || value === undefined ? "" : String(value))),
+    )
   // Where the rectangle starts, so every row can carry the sheet row it actually is.
   const anchor = parseArea(splitQualified(range.address).local)
-  const grid = renderGrid(
-    range.address,
-    call.formulas === true ? range.formulas : range.values,
-    anchor,
-    budget,
-  )
+  const grid = renderGrid(range.address, observedValues, anchor, budget)
   const details =
     anchor === null
       ? ""
       : renderDisplayDetails(range.values, range.text, range.numberFormat, anchor, budget)
+  const evidence: RangeEvidence = {
+    kind: "range",
+    sheet: sheet.name,
+    address: range.address,
+    formulas: call.formulas === true,
+    values: observedValues.map((row) => [...row]),
+    display: displayValues.map((row) => [...row]),
+  }
   if (call.formulas !== true || anchor === null)
-    return details === "" ? grid : `${grid}\n${details}`
+    return { text: details === "" ? grid : `${grid}\n${details}`, evidence }
   // Which cells hold formulas is the question this mode answers; hand the addresses over
   // outright instead of leaving them to be reconstructed by counting grid columns.
   const listed = formulaAddresses(range.formulas, anchor)
@@ -74,7 +105,10 @@ const readRange = async (
       : `수식 셀 (실제 주소 · 위치는 반드시 이 주소를 사용):\n${listed
           .map((line) => `${quoteSheetName(sheet.name)}!${line}`)
           .join("\n")}`
-  return details === "" ? `${grid}\n${formulaDetail}` : `${grid}\n${details}\n${formulaDetail}`
+  return {
+    text: details === "" ? `${grid}\n${formulaDetail}` : `${grid}\n${details}\n${formulaDetail}`,
+    evidence,
+  }
 }
 
 const listSheetNames = async (context: InspectContext): Promise<string> => {
@@ -165,27 +199,35 @@ const find = async (
  * A failure comes back as text rather than throwing: the model can recover from "that sheet
  * does not exist" by asking again, but it cannot recover from the chat dying underneath it.
  */
-export const runTool = async (
+export const observeTool = async (
   context: InspectContext,
   call: ToolCall,
   budget: Budget = DEFAULT_BUDGET,
-): Promise<string> => {
+): Promise<InspectObservation> => {
   try {
     if (call.tool === "read_range") return await readRange(context, call, budget)
-    if (call.tool === "used_range") return await usedRange(context, call)
-    if (call.tool === "list_sheets") return await listSheetNames(context)
+    if (call.tool === "used_range") return { text: await usedRange(context, call), evidence: null }
+    if (call.tool === "list_sheets") return { text: await listSheetNames(context), evidence: null }
 
     // What is left all works against one sheet: the audit and profiling calls, and `find`.
     const named = "sheet" in call ? call.sheet : undefined
     const sheet = await sheetFor(context, named)
-    if (sheet === null) return `시트를 찾을 수 없습니다: ${named ?? ""}`
-    if (call.tool === "list_tables") return await listTables(context, sheet)
+    if (sheet === null) return { text: `시트를 찾을 수 없습니다: ${named ?? ""}`, evidence: null }
+    if (call.tool === "list_tables")
+      return { text: await listTables(context, sheet), evidence: null }
+    if (call.tool === "column_stats") return await runColumnStats(context, sheet, call)
     const audited = await runAuditTool(context, sheet, call)
-    if (audited !== null) return audited
+    if (audited !== null) return { text: audited, evidence: null }
     const reasoned = await runReasoningTool(context, sheet, call)
-    return reasoned ?? (await find(context, sheet, call))
+    return { text: reasoned ?? (await find(context, sheet, call)), evidence: null }
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    return `요청을 처리하지 못했습니다: ${detail}`
+    return { text: `요청을 처리하지 못했습니다: ${detail}`, evidence: null }
   }
 }
+
+export const runTool = async (
+  context: InspectContext,
+  call: ToolCall,
+  budget: Budget = DEFAULT_BUDGET,
+): Promise<string> => (await observeTool(context, call, budget)).text

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { runTool } from "./inspect"
+import { observeTool, runTool } from "./inspect"
 import type { InspectContext, InspectRange, InspectSheet } from "./office-shapes"
 
 /**
@@ -81,6 +81,28 @@ describe("runTool", () => {
     expect(answer).toContain("Main!A1:B2")
     expect(answer).toContain("대출채권\t1200")
     expect(answer).toContain('B2: 표시 "1,200" · 형식 "#,##0"')
+  })
+
+  it("keeps exact addresses, raw values, and display values as typed range evidence", async () => {
+    const observed = await observeTool(context(sheet()), {
+      tool: "read_range",
+      address: "A1:B2",
+    })
+
+    expect(observed.evidence).toEqual({
+      kind: "range",
+      sheet: "Main",
+      address: "Main!A1:B2",
+      formulas: false,
+      values: [
+        ["항목", "금액"],
+        ["대출채권", 1200],
+      ],
+      display: [
+        ["항목", "금액"],
+        ["대출채권", "1,200"],
+      ],
+    })
   })
 
   it("reads the formulas as written when the model asks for them", async () => {
@@ -186,6 +208,35 @@ describe("runTool", () => {
     expect(answer).toContain("Main!A1:B2")
     expect(answer).toContain("2행 × 2열")
     expect(answer).toContain("4칸")
+  })
+
+  it("returns typed aggregate evidence beside the model-facing column statistics", async () => {
+    const observed = await observeTool(context(sheet()), {
+      tool: "column_stats",
+      address: "A1:B2",
+      columns: [2],
+    })
+
+    expect(observed.evidence).toEqual({
+      kind: "column_stats",
+      sheet: "Main",
+      address: "Main!A1:B2",
+      rowCount: 2,
+      hasHeaders: true,
+      columns: [
+        {
+          index: 2,
+          letter: "B",
+          count: 0,
+          filled: 0,
+          blank: 0,
+          sum: 0,
+          average: 0,
+          min: 0,
+          max: 0,
+        },
+      ],
+    })
   })
 
   it("counts the blank cells when there are any", async () => {
