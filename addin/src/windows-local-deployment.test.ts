@@ -407,6 +407,22 @@ describe("Windows local deployment lifecycle", () => {
     expect(installScript).not.toContain("Export-Certificate -Cert $certificate")
   })
 
+  it("reuses a CA only when its private key is still usable", () => {
+    // Given: a store entry proves the certificate's public half exists, not that its keyset
+    // does. A roamed, restored, or foreign-profile store hands back an object that passes a
+    // NotAfter check with HasPrivateKey false, and CertEnroll then fails to open the key --
+    // the install dies at -Signer with "key does not exist".
+    // When: the installer decides whether to reuse the CA it recorded.
+    const reuse = installScript.indexOf("$caCertificate = $ownedCaCertificate")
+    const guard = installScript.lastIndexOf("HasPrivateKey", reuse)
+    // Then: the private key is required before the object is ever used as a signer.
+    expect(reuse).toBeGreaterThanOrEqual(0)
+    expect(guard).toBeGreaterThanOrEqual(0)
+    expect(guard).toBeLessThan(reuse)
+    expect(guard).toBeGreaterThan(installScript.indexOf("$ownedCaCertificate = Get-Item"))
+    expect(guard).toBeLessThan(installScript.indexOf("-Signer $caCertificate"))
+  })
+
   it("names every address the pane is reached by in the leaf's SAN", () => {
     // Given: Chromium ignores the subject common name outright.
     expect(installScript).toContain(

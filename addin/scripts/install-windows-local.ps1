@@ -106,7 +106,13 @@ if ($null -ne $ownedCaThumbprint) {
     $ownedCaCertificate = Get-Item `
         -LiteralPath "Cert:\CurrentUser\My\$ownedCaThumbprint" `
         -ErrorAction SilentlyContinue
+    # A store entry proves the certificate's public half is present, not that its keyset
+    # still is. A roamed or restored profile -- and an elevation into a different admin
+    # account, whose Cert:\CurrentUser is a different store entirely -- hands back an object
+    # that passes every date check with no key behind it. Signing with it fails inside
+    # CertEnroll as "key does not exist", far from this line, so it is rejected here.
     if ($null -ne $ownedCaCertificate -and
+        $ownedCaCertificate.HasPrivateKey -and
         $ownedCaCertificate.NotAfter -gt (Get-Date).AddDays(30)) {
         $caCertificate = $ownedCaCertificate
     }
