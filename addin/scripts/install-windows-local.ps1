@@ -212,6 +212,7 @@ $password = ConvertTo-SecureString -String $passwordText -AsPlainText -Force
 $pfxPath = Join-Path $certificateRoot "localhost.pfx"
 $passwordPath = Join-Path $certificateRoot "pfx-password.txt"
 $thumbprintPath = Join-Path $certificateRoot "thumbprint.txt"
+$expiryPath = Join-Path $certificateRoot "expires.txt"
 Export-PfxCertificate `
     -Cert $certificate `
     -FilePath $pfxPath `
@@ -224,6 +225,14 @@ Export-PfxCertificate `
 [IO.File]::WriteAllText(
     $thumbprintPath,
     $certificate.Thumbprint,
+    [Text.UTF8Encoding]::new($false)
+)
+# Nothing renews this certificate in the background: it is reissued only when the installer
+# runs again. Recording the expiry here is what lets the menu and `manage.ps1 status` warn
+# before the pane starts failing to load, instead of after.
+[IO.File]::WriteAllText(
+    $expiryPath,
+    $certificate.NotAfter.ToString("yyyy-MM-dd"),
     [Text.UTF8Encoding]::new($false)
 )
 

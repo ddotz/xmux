@@ -25,6 +25,7 @@ $ServerPath = Join-Path $AppRoot "local-server.mjs"
 $DistPath = Join-Path $AppRoot "dist"
 $PfxPath = Join-Path $InstallRoot "certificate\localhost.pfx"
 $PasswordPath = Join-Path $InstallRoot "certificate\pfx-password.txt"
+$ExpiryPath = Join-Path $InstallRoot "certificate\expires.txt"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
 if ($env:OS -ne "Windows_NT") {
@@ -186,6 +187,27 @@ function Write-StartupChain {
     if (Test-Path -LiteralPath $ManifestPath -PathType Leaf) {
         $manifestXml = [xml](Get-Content -LiteralPath $ManifestPath -Raw)
         Write-Host "Installed version: $($manifestXml.OfficeApp.Version)"
+    }
+
+    # The certificate is reissued only by the installer, so its expiry is a deadline rather
+    # than a detail: past it, Excel refuses the pane and the symptom looks like a crash.
+    if (Test-Path -LiteralPath $ExpiryPath -PathType Leaf) {
+        $expiryText = (Get-Content -LiteralPath $ExpiryPath -Raw).Trim()
+        $expiry = [datetime]::MinValue
+        if ([datetime]::TryParse($expiryText, [ref]$expiry)) {
+            $daysLeft = [int][Math]::Floor(($expiry - (Get-Date)).TotalDays)
+            if ($daysLeft -lt 0) {
+                Write-Host ("Certificate expires: $expiryText - EXPIRED " +
+                    "$([Math]::Abs($daysLeft)) days ago; rerun the installer to reissue it.")
+            } elseif ($daysLeft -le 60) {
+                Write-Host ("Certificate expires: $expiryText - $daysLeft days left; " +
+                    "rerun the installer to reissue it.")
+            } else {
+                Write-Host "Certificate expires: $expiryText ($daysLeft days left)"
+            }
+        } else {
+            Write-Host "Certificate expires: unreadable ($expiryText)"
+        }
     }
 }
 

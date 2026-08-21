@@ -423,6 +423,58 @@ describe("Windows local deployment lifecycle", () => {
     expect(guard).toBeLessThan(installScript.indexOf("-Signer $caCertificate"))
   })
 
+  it("pins the lifetimes of the certificates it issues", () => {
+    // Given: nothing renews these in the background, so their length is the whole margin
+    // the user gets before the pane stops loading. A silent edit here is a silent outage
+    // two years later, which is why the numbers are pinned rather than merely present.
+    // When: the issued lifetimes are inspected.
+    // Then: the CA outlives the leaf, and the leaf stays inside the 825-day ceiling
+    // Chromium enforces on certificates issued by a locally trusted root.
+    expect(installScript).toContain("-NotAfter (Get-Date).AddYears(5)")
+    expect(installScript).toContain("-NotAfter (Get-Date).AddDays(825)")
+    // And: the CA is replaced before it lapses rather than at the moment it does.
+    expect(installScript).toContain("$ownedCaCertificate.NotAfter -gt (Get-Date).AddDays(30)")
+  })
+
+  it("records when the served certificate expires", () => {
+    // Given: the expiry is decided at install time and nothing re-checks it afterwards, so
+    // it has to be written down where the menu and the controller can both read it.
+    // When: the installer finishes issuing the leaf.
+    // Then: the expiry lands beside the thumbprint it already records.
+    expect(installScript).toContain("expires.txt")
+    const write = installScript.indexOf("$expiryPath")
+    const issue = installScript.indexOf("-NotAfter (Get-Date).AddDays(825)")
+    expect(write).toBeGreaterThan(issue)
+  })
+
+  it("reports the certificate expiry in status", () => {
+    // Given: "it stopped working" and "the certificate lapsed" are the same symptom to a
+    // user, and only one of them is checkable.
+    // When: the controller reports status.
+    // Then: it prints the date and how long is left, next to the version it already prints.
+    expect(manageScript).toContain("expires.txt")
+    expect(manageScript).toContain("Certificate expires:")
+    const expiry = manageScript.indexOf("Certificate expires:")
+    const version = manageScript.indexOf("Installed version:")
+    expect(expiry).toBeGreaterThanOrEqual(0)
+    expect(version).toBeGreaterThanOrEqual(0)
+  })
+
+  it("shows the installed build beside the one being offered", () => {
+    // Given: the menu's whole job is deciding whether to install, and "which version am I
+    // on" is the question that decides it. The install root and the package are different
+    // manifests, so both are read rather than inferred from one.
+    const text = menuScript.toString("utf8")
+    // When: the menu draws its header.
+    // Then: it reads the installed manifest and the package's own, and it surfaces the
+    // certificate expiry it cannot otherwise warn about.
+    expect(text).toContain('Join-Path $installRoot "app\\manifest.xml"')
+    expect(text).toContain("OfficeApp.Version")
+    expect(text).toContain("설치된 버전")
+    expect(text).toContain("이 패키지")
+    expect(text).toContain("인증서 만료")
+  })
+
   it("names every address the pane is reached by in the leaf's SAN", () => {
     // Given: Chromium ignores the subject common name outright.
     expect(installScript).toContain(
