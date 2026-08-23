@@ -532,6 +532,45 @@ describe("workbook lookups before answering", () => {
     expect(said).toContain("F10")
   })
 
+  it("reports a real failure even when a sheet is named like the read-only refusal", async () => {
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => ({
+              address: `Main!${address}`,
+              cellCount: 1,
+              values: [["x"]],
+              load: () => {},
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"분석 전용","address":"[Other.xlsx]분석 전용!A1","rows":[["x"]]}',
+      )
+      .mockResolvedValueOnce("요청하신 값을 넣었습니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("A1에 값을 써줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toContain("실행 실패 확인")
+  })
+
   it("keeps an already-true cited answer without a rewrite round", async () => {
     const values: Record<string, number> = { J5: 125, J6: 250 }
     const context = {

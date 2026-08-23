@@ -301,7 +301,7 @@ const unresolvedAttempts = (attempts: readonly ActionReceipt[]): readonly Action
   attempts.filter((attempt, index) => {
     // Honoring an answer-only request is obedience, not failure: the refusal the model
     // read back is the designed outcome, never a failed attempt worth reporting.
-    if ((attempt.text ?? "").includes("분석 전용")) return false
+    if (attempt.text === READ_ONLY_REFUSAL) return false
     if (attempt.status === "changed") return false
     const target = writeTarget(attempt.call)
     return !attempts
@@ -330,6 +330,11 @@ const withFailures = (answer: string, attempts: readonly ActionReceipt[]): strin
  * first model call — analysis starts from real numbers instead of discovery rounds.
  */
 const INTAKE_PROFILE_CELLS = 500
+
+/** The exact observation a write tool returns on an answer-only turn. Receipt exclusion
+ * keys on this identity — never on prose sniffing, or a sheet literally named 분석 전용
+ * could make a genuine failure vanish. */
+const READ_ONLY_REFUSAL = refused("이 요청은 분석 전용입니다. 워크북을 바꾸지 말고 답변으로만 답합니다.")
 
 const OUT_OF_ROUNDS =
   "도구 실행을 여기서 멈추고 종료합니다. 아래 실행 확인에 기록된 작업만 반영됐으며 나머지는 완료되지 않았습니다."
@@ -861,7 +866,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             // so every change goes through the history rather than straight at the range.
             if (isWrite(call)) {
               observation = readOnlyRequest
-                ? refused("이 요청은 분석 전용입니다. 워크북을 바꾸지 말고 답변으로만 답합니다.")
+                ? READ_ONLY_REFUSAL
                 : await runWrite(context as unknown as OperateContext, deps.history, call)
             } else {
               inspected = await observeTool(context as unknown as InspectContext, call, budget)
