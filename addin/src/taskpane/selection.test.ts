@@ -23,6 +23,31 @@ describe("mirrorSelection", () => {
     })
   })
 
+  it("follows the first rectangle of a ctrl+click multi-area selection", () => {
+    // Given: Excel reports two rectangles joined by commas — slicing after the last "!"
+    // would silently keep only the second one
+    const selected = {
+      address: "Data!$B$2:$D$5,Data!$F$8:$G$9",
+      cellCount: 14,
+      formulas: [],
+      text: [],
+      sheet: "Data",
+    }
+
+    // When: the selection is translated into pane state
+    const mirrored = mirrorSelection(selected)
+
+    // Then: the pane carries every rectangle and the viewport follows the first
+    expect(mirrored.pane).toMatchObject({
+      kind: "multiCell",
+      address: "Data!$B$2:$D$5,Data!$F$8:$G$9",
+    })
+    expect(mirrored.target).toEqual({
+      sheet: "Data",
+      area: { top: 2, left: 2, height: 4, width: 3 },
+    })
+  })
+
   it("keeps formula explanation state exclusive to one selected cell", () => {
     // Given: one selected formula cell
     const selected = {

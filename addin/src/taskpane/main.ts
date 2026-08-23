@@ -14,7 +14,7 @@ import { createLinkedWorkbookControl } from "./linked-workbooks-control"
 import { lookupTarget } from "./lookup-target"
 import { findPaneNodes } from "./pane-elements"
 import { attachReferenceShortcuts } from "./reference-shortcuts"
-import { mirrorSelection } from "./selection"
+import { mirrorSelection, type SelectionSnapshot } from "./selection"
 import { attachSelection, createSelectionEvents, previewSelection } from "./selection-refresh"
 import { createTabs } from "./tabs"
 import { createStatusPresenter, createUndoControls } from "./undo-controls"
@@ -270,19 +270,48 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
 
   const nextTarget: { readonly sheet: string; readonly area: GridArea } | null = await Excel.run(
     async (context) => {
-      const selection = context.workbook.getSelectedRange()
-      selection.load("address, cellCount, formulas, text, worksheet/name")
+      // Excel refuses value loads on a ctrl+click selection (a multi-area Range), so the
+      // address is probed alone first. Single rectangles load fully; multi-area ones go
+      // through RangeAreas for counts only — mirroring a multiCell pane needs neither
+      // formulas nor text, and the chat attachment skips them rather than misstate what
+      // was selected.
+      const probe = context.workbook.getSelectedRange()
+      probe.load("address")
       await context.sync()
       if (!isCurrent()) return null
-      attachSelection(selection, chatting.updateSelection)
+      const multi = probe.address.includes(",")
 
-      const mirrored = mirrorSelection({
-        address: selection.address,
-        cellCount: selection.cellCount,
-        formulas: selection.formulas,
-        text: selection.text,
-        sheet: selection.worksheet.name,
-      })
+      let snapshot: SelectionSnapshot
+      if (!multi) {
+        const selection = context.workbook.getSelectedRange()
+        selection.load("address, cellCount, formulas, text, worksheet/name")
+        await context.sync()
+        if (!isCurrent()) return null
+        attachSelection(selection, chatting.updateSelection)
+        snapshot = {
+          address: selection.address,
+          cellCount: selection.cellCount,
+          formulas: selection.formulas,
+          text: selection.text,
+          sheet: selection.worksheet.name,
+        }
+      } else {
+        const areas = context.workbook.getSelectedRanges()
+        areas.load("address, worksheet/name, areas/items/cellCount")
+        await context.sync()
+        if (!isCurrent()) return null
+        chatting.updateSelection(null)
+        const count = areas.areas.items.reduce((total, area) => total + area.cellCount, 0)
+        snapshot = {
+          address: areas.address,
+          cellCount: count,
+          formulas: [],
+          text: [],
+          sheet: areas.worksheet.name,
+        }
+      }
+
+      const mirrored = mirrorSelection(snapshot)
       if (mirrored.key === lastKey) {
         draw()
         return null
@@ -294,7 +323,11 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
       if (mirrored.pane.kind === "multiCell") {
         const target = mirrored.target
         if (target === null) return null
-        const summary = (await summariseReferences<Excel.Range>(context, [target]))[0] ?? null
+        // Across several rectangles neither the sum nor the average of one rectangle is
+        // the user's number, so a multi-area selection shows no summary at all.
+        const summary = multi
+          ? null
+          : ((await summariseReferences<Excel.Range>(context, [target]))[0] ?? null)
         if (!isCurrent() || pane.kind !== "multiCell") return null
         show({ ...pane, summary }, badge)
         return target

@@ -268,6 +268,28 @@ describe("selection refresh scheduling", () => {
     expect(attached).toEqual([{ sheet: "Main", address: "B3", cellCount: 1 }])
   })
 
+  it("attaches nothing for a ctrl+click multi-area selection", () => {
+    // Given: Excel reports two rectangles joined by commas
+    const attached: {
+      readonly sheet: string
+      readonly address: string
+      readonly cellCount: number
+    }[] = []
+
+    // When: the selection reaches the attachment sink
+    attachSelection(
+      {
+        address: "Main!B2:D5,Main!F2:G9",
+        cellCount: 28,
+        worksheet: { name: "Main" },
+      },
+      (selection) => attached.push(selection),
+    )
+
+    // Then: no attachment is made — the last rectangle alone would misstate the selection
+    expect(attached).toEqual([])
+  })
+
   it("previews the event address and loading state synchronously", () => {
     document.body.innerHTML = '<span id="address">Main!A1</span><span id="badge" hidden></span>'
     const address = document.getElementById("address")

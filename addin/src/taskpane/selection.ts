@@ -1,4 +1,4 @@
-import { type GridArea, parseArea } from "../excel/address"
+import { type GridArea, parseArea, splitAreas } from "../excel/address"
 import { scanReferences } from "../formula/scanner"
 import type { ReferenceSummary } from "../formula/types"
 import type { PaneState } from "../model"
@@ -38,7 +38,11 @@ export const formatSelectionSummary = (summary: ReferenceSummary | null): string
 /** Translate loaded Excel selection properties without reading any global workbook state. */
 export const mirrorSelection = (selection: SelectionSnapshot): SelectionMirror => {
   if (selection.cellCount !== 1) {
-    const area = localArea(selection.address)
+    // A ctrl+click selection reports every rectangle joined by commas. The pane mirrors
+    // the whole list as its address and the viewport follows the first rectangle, which
+    // is where the selection started.
+    const [first] = splitAreas(selection.address)
+    const area = first === undefined ? null : localArea(first)
     return {
       pane: { kind: "multiCell", address: selection.address, summary: null },
       key: selection.address,

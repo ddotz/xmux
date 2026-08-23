@@ -71,6 +71,12 @@ export const attachSelection = (
   selection: AuthoritativeSelection,
   update: SelectionAttachmentSink,
 ): void => {
+  // A ctrl+click selection is a comma-joined list of rectangles. No single local address
+  // describes what the user selected, and attaching just the last one would let the chat
+  // verify claims against a range the user never meant (HARNESS-DESIGN.md carries the
+  // per-area attachment design). Until that lands, a multi-area selection attaches
+  // nothing.
+  if (selection.address.includes(",")) return
   const separator = selection.address.lastIndexOf("!")
   update({
     sheet: selection.worksheet.name,
