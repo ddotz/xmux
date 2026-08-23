@@ -447,6 +447,44 @@ describe("workbook lookups before answering", () => {
     expect(chatting.state().turns.at(-1)?.text).toBe("J5는 125이고 J6은 250입니다.")
   })
 
+  it("keeps an already-true cited answer without a rewrite round", async () => {
+    const values: Record<string, number> = { J5: 125, J6: 250 }
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => ({
+              address: `Main!${address}`,
+              cellCount: 1,
+              values: [[values[address] ?? 0]],
+              load: () => {},
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel).mockResolvedValueOnce("J5는 125이고 J6은 250입니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("J5와 J6 값을 알려줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+    expect(chatting.state().turns.at(-1)?.text).toBe("J5는 125이고 J6은 250입니다.")
+    expect(chatting.state().turns.at(-1)?.text).toBe("J5는 125이고 J6은 250입니다.")
+  })
+
   it("fails closed when the grounding rewrite repeats an unsupported claim", async () => {
     vi.mocked(askModel)
       .mockResolvedValueOnce("J5는 빈 값입니다.")
@@ -1063,9 +1101,8 @@ describe("operating without approval", () => {
     // The turn-start snapshot is refreshed after each write batch before the model continues.
     expect(vi.mocked(readWorkbookContext)).toHaveBeenCalledTimes(3)
     const verificationRequest = vi.mocked(askModel).mock.calls[3]?.[1].at(-1)?.content ?? ""
-    expect(verificationRequest).toContain(
-      '{"tool":"read_range","sheet":"정리","address":"A1:B2","formulas":true}',
-    )
+    expect(verificationRequest).toContain("정리!A1:B2")
+    expect(verificationRequest).toContain("read_range(formulas:true)")
     const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).toContain("정리 시트에 표를 만들었습니다.")
     expect(said).toContain("실행 확인")

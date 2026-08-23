@@ -1259,13 +1259,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             }
             let result = await runGroundingBatch([call])
             let observation = result?.[0]
-            // eslint-disable-next-line no-console
-            console.log(
-              "[eval-debug] gather",
-              JSON.stringify(call),
-              "->",
-              observation?.text.slice(0, 120),
-            )
             // Models rename sheets ("Sheet1" for "sheet 1"); a miss against this turn's
             // bound sheet gets exactly one rebinding retry before the tile counts as
             // failed — the answer itself may still be right.
@@ -1341,13 +1334,18 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               reply = next
             })
           }
-          await rewriteAsk(
-            "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 아래 실제 값만 사용해 최종 답변을 다시 쓰세요.",
-          )
-          if (!groundedReplyIsValid(reply))
+          // A first draft that already matches the real cells goes straight out: asking a
+          // correct answer to rewrite itself costs a round trip and risks introducing an
+          // error. The ladder below only runs when validation actually fails.
+          if (!groundedReplyIsValid(reply)) {
             await rewriteAsk(
-              "직전 답변이 다시 통과하지 못했습니다. 아래 실제 값만 사용해 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
+              "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 아래 실제 값만 사용해 최종 답변을 다시 쓰세요.",
             )
+            if (!groundedReplyIsValid(reply))
+              await rewriteAsk(
+                "직전 답변이 다시 통과하지 못했습니다. 아래 실제 값만 사용해 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
+              )
+          }
           if (!groundedReplyIsValid(reply)) {
             const filtered = stripUnverifiedSentences(
               reply,

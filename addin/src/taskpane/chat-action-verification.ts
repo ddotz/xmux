@@ -115,8 +115,6 @@ export const verifiedBy = (call: ToolCall, target: VerificationTarget): boolean 
 
 export const verificationInstruction = (targets: readonly VerificationTarget[]): string =>
   [
-    "방금 쓴 결과의 검증 지점이 남았습니다. 아래 read_range(formulas:true)를 실행하고 실제 결과를 확인한 뒤 답하세요.",
-    ...targets.map(({ sheet, address }) =>
-      JSON.stringify({ tool: "read_range", sheet, address, formulas: true }),
-    ),
+    "방금 쓴 결과의 검증 지점이 남았습니다. 아래 각 지점을 read_range(formulas:true)로 읽고 실제 결과를 확인한 뒤 답하세요.",
+    ...targets.map(({ sheet, address }) => `${sheet}!${address}`),
   ].join("\n")
