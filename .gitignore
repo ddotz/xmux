@@ -17,6 +17,13 @@ __pycache__/
 companion/xmux-companion
 probes/ax_probe
 
+# Parity fixtures: generated from the local 2026.2Q corpus, never committed (probes/xlsx-parity.py)
+probes/parity-fixtures/
+
+# Evaluation secrets and run logs
+probes/.opencodex-key
+probes/eval/runs/
+
 # Environment files and private key material
 .env
 .env.*
