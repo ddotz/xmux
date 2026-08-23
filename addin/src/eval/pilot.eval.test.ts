@@ -270,6 +270,18 @@ describe.skipIf(!evalOn)("harness evaluation pilot", () => {
       for (const n of numbersIn(observation.text)) truthNumbers.add(n)
       for (const n of numbersIn(JSON.stringify(observation.evidence ?? null))) truthNumbers.add(n)
     }
+    // The model may also peek at the header block itself — 보고서 제목, 기준년월, IFRS9
+    // 라벨. Numbers a small header read legitimately surfaces are as traceable to the
+    // workbook as the aggregates; without this the checker flags grounded years.
+    const headerPeek = await observeTool(
+      truthContext as never,
+      { tool: "read_range", sheet: sheet.sheet, address: "A1:O8" },
+      DEFAULT_BUDGET,
+    )
+    if (headerPeek !== null) {
+      for (const n of numbersIn(headerPeek.text)) truthNumbers.add(n)
+      for (const n of numbersIn(JSON.stringify(headerPeek.evidence ?? null))) truthNumbers.add(n)
+    }
     const answers: string[] = []
     for (let rep = 0; rep < 2; rep += 1) {
       const copy: EvalWorkbook = JSON.parse(JSON.stringify(book))

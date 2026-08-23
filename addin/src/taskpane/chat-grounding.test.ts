@@ -14,6 +14,28 @@ import {
 } from "./chat-grounding"
 import type { HarnessEvent } from "./chat-harness"
 
+describe("stripUnverifiedSentences", () => {
+  it("drops number-led continuation fragments of a dropped list item", () => {
+    const answer = [
+      "- H열 합계는 999입니다.",
+      "86 · 최소 10 · 최대 20",
+      "- I열 값은 293칸입니다.",
+    ].join("\n")
+
+    // The fragment's own numbers verify fine; its label line does not — yet keeping a
+    // vouched fragment whose label was dropped leaves an orphaned "86 · ..." stub.
+    const { kept, dropped } = stripUnverifiedSentences(
+      answer,
+      (sentence) => !sentence.includes("H열"),
+    )
+
+    expect(dropped).toBe(2)
+    expect(kept).not.toContain("999입니다.")
+    expect(kept).toContain("I열")
+    expect(kept).not.toContain("86 ·")
+  })
+})
+
 describe("final answer grounding", () => {
   it("extracts and deduplicates local and bound qualified references", () => {
     const plan = groundingPlan(

@@ -232,13 +232,33 @@ export const stripUnverifiedSentences = (
   vouchesFor: (sentence: string) => boolean,
 ): { readonly kept: string; readonly dropped: number } => {
   let dropped = 0
+  // A list item whose label sentence was dropped sometimes leaves its stat tail behind —
+  // a line that starts with a bare number and "·" chains. The numbers vouch fine, but
+  // without the label they read as nonsense, so they fall with their parent.
+  let parentDropped = false
   const kept = answer
     .split(/(?<=[.\n])/)
     .filter((sentence) => {
-      if (sentence.trim() === "") return true
-      if (!workbookClaim(sentence)) return true
-      if (vouchesFor(sentence)) return true
+      const trimmed = sentence.trim()
+      if (trimmed === "") return true
+      if (
+        parentDropped &&
+        workbookClaim(sentence) &&
+        /^\d[\d,]*\s*·/.test(trimmed)
+      ) {
+        dropped += 1
+        return false
+      }
+      if (!workbookClaim(sentence)) {
+        parentDropped = false
+        return true
+      }
+      if (vouchesFor(sentence)) {
+        parentDropped = false
+        return true
+      }
       dropped += 1
+      parentDropped = true
       return false
     })
     .join("")
