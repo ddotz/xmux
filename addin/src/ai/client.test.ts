@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest"
-import { AiError, askModel, type ChatMessage, conversationFor } from "./client"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { AiError, askModel, type ChatMessage, conversationFor, retryBackoffMs } from "./client"
 import { DEFAULT_SETTINGS } from "./settings"
 
 /**
@@ -33,6 +33,15 @@ type RequestBody = {
   readonly reasoning_effort?: string
   readonly messages?: unknown
 }
+
+const productionBackoff = [...retryBackoffMs]
+
+beforeEach(() => {
+  retryBackoffMs.splice(0, retryBackoffMs.length, 0, 0)
+})
+afterEach(() => {
+  retryBackoffMs.splice(0, retryBackoffMs.length, ...productionBackoff)
+})
 
 describe("askModel", () => {
   it("turns a 200 that is not JSON into an AiError, not a raw SyntaxError", async () => {
@@ -119,6 +128,37 @@ describe("askModel", () => {
     await askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)
 
     expect(new Headers(calls[0]?.init?.headers).get("Authorization")).toBe("Bearer sk-secret-123")
+  })
+
+  it('reads the gateway\'s literal "None" refusal as no refusal', async () => {
+    // Given: an OpenRouter-class proxy echoes refusal:"None" where OpenAI sends null.
+    const { calls, fetcher } = answering({
+      choices: [
+        {
+          message: { role: "assistant", content: "답변", refusal: "None" },
+          finish_reason: "stop",
+        },
+      ],
+    })
+
+    const answer = await askModel(SETTINGS, [{ role: "user", content: "안녕" }], fetcher)
+
+    expect(answer).toBe("답변")
+    expect(calls.length).toBeGreaterThan(0)
+  })
+
+  it("leaves the Qwen soft switch out of non-Qwen deployments", async () => {
+    // Given: an OpenRouter model through the local proxy. "/no_think" is Qwen's dialect;
+    // any other model reads it as part of the user's request.
+    const { calls, fetcher } = answering(reply)
+
+    await askModel(
+      { ...SETTINGS, model: "stealth/ox-alpha" },
+      [{ role: "user", content: "안녕" }],
+      fetcher,
+    )
+
+    expect(String(calls[0]?.init?.body)).not.toContain("/no_think")
   })
 
   it("sends the turns as turns, with the configured model and limits", async () => {
@@ -303,5 +343,97 @@ describe("the shape the server will accept", () => {
       messages: { role: string; content: string }[]
     }
     expect(body.messages.map((message) => message.role)).toEqual(["system", "user"])
+  })
+})
+
+describe("transient failure retry", () => {
+  const messages: ChatMessage[] = [{ role: "user", content: "B6 값을 알려줘" }]
+  const sequencing = (bodies: unknown[]): { count(): number; fetcher: typeof fetch } => {
+    let sent = 0
+    return {
+      count: () => sent,
+      fetcher: async () => {
+        const body = bodies[Math.min(sent, bodies.length - 1)]
+        sent += 1
+        return new Response(typeof body === "string" ? body : JSON.stringify(body), {
+          status:
+            typeof body === "object" && body !== null && "status" in body
+              ? (body as { status: number }).status
+              : 200,
+        })
+      },
+    }
+  }
+
+  it("retries once when a reasoning model spends the whole budget on deliberation", async () => {
+    // Measured on stealth/ox-alpha: reasoning tokens share max_tokens with content, so a
+    // hard-thinking round can end finish=length with null content and no answer at all.
+    const truncated = {
+      choices: [{ message: { role: "assistant", content: null }, finish_reason: "length" }],
+    }
+    const good = {
+      choices: [{ message: { role: "assistant", content: "L8의 값은 2,044,160입니다." } }],
+    }
+    const seq = sequencing([truncated, good])
+    const answer = await askModel(SETTINGS, messages, seq.fetcher)
+    expect(answer).toContain("2,044,160")
+    expect(seq.count()).toBe(2)
+  })
+
+  it("retries once on a provider rate limit and succeeds", async () => {
+    const limited = { status: 429, error: { message: "rate_limited" } }
+    const good = { choices: [{ message: { role: "assistant", content: "2044160" } }] }
+    const seq = sequencing([limited, good])
+    const answer = await askModel(SETTINGS, messages, seq.fetcher)
+    expect(answer).toContain("2044160")
+    expect(seq.count()).toBe(2)
+  })
+
+  it("still fails after the retry instead of looping", async () => {
+    const truncated = {
+      choices: [{ message: { role: "assistant", content: null }, finish_reason: "length" }],
+    }
+    const seq = sequencing([truncated])
+    await expect(askModel(SETTINGS, messages, seq.fetcher)).rejects.toThrow(AiError)
+    expect(seq.count()).toBe(5)
+  })
+})
+
+describe("provider flap tolerance", () => {
+  const messages: ChatMessage[] = [{ role: "user", content: "B6 값을 알려줘" }]
+
+  it("survives four consecutive ghost failures on the fifth attempt", async () => {
+    // Measured against opencodex under a congested shared key: HTTP 200 with null content
+    // and native_finish_reason=network_error arrives in bursts that outlast four attempts.
+    const bad = {
+      status: 200,
+      choices: [{ finish_reason: "stop", message: { role: "assistant", content: null } }],
+    }
+    let sent = 0
+    const fetcher = async (): Promise<Response> => {
+      sent += 1
+      return new Response(
+        JSON.stringify(
+          sent < 5 ? bad : { choices: [{ message: { role: "assistant", content: "2044160" } }] },
+        ),
+        {
+          status: 200,
+        },
+      )
+    }
+    const answer = await askModel(SETTINGS, messages, fetcher)
+    expect(answer).toContain("2044160")
+    expect(sent).toBe(5)
+  })
+
+  it("still fails after five attempts instead of hanging the conversation", async () => {
+    const bad = { status: 502, error: { message: "upstream" } }
+    let sent = 0
+    const fetcher = async (): Promise<Response> => {
+      sent += 1
+      return new Response(JSON.stringify(bad), { status: 502 })
+    }
+    await expect(askModel(SETTINGS, messages, fetcher)).rejects.toThrow(AiError)
+    expect(sent).toBe(5)
   })
 })

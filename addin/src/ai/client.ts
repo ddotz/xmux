@@ -20,14 +20,23 @@ export type ChatMessage = {
   readonly content: string
 }
 
+/** Delay before each retry attempt after the first; tests zero this out. */
+export const retryBackoffMs = [2_000, 10_000, 30_000, 90_000]
+
 export class AiError extends Error {
-  constructor(message: string) {
+  /** True when the failure is measured to be transient: one retry is worth spending. */
+  readonly retryable: boolean
+  constructor(message: string, retryable = false) {
     super(message)
     this.name = "AiError"
+    this.retryable = retryable
   }
 }
 
-const REQUEST_TIMEOUT_MS = 120_000
+// Measured on stealth/ox-alpha via opencodex: single calls at large input sizes took up
+// to 103s, and reasoning bursts cross 120s even on modest ones. Two minutes aborted
+// requests that were mid-answer; four minutes covers the observed tail with headroom.
+const REQUEST_TIMEOUT_MS = 240_000
 
 /**
  * The message shape this server will accept.
@@ -114,7 +123,14 @@ const SWITCH: Record<ReasoningLevel, string> = {
 const switched = (
   messages: readonly ChatMessage[],
   reasoning: ReasoningLevel,
+  model: string,
 ): readonly ChatMessage[] => {
+  // The soft switch is Qwen's own dialect. Any other model reads it as prompt garbage —
+  // an OpenRouter model answers the literal string "/no_think" as part of the request —
+  // so it rides only on Qwen-family deployments, which is what the shipped default is.
+  // Thinking-capable gateways are driven by `reasoning_effort` instead, already
+  // conditional one level down.
+  if (!/qwen/i.test(model)) return messages
   const at = messages.map((message) => message.role).lastIndexOf("user")
   if (at < 0) return messages
   return messages.map((message, index) =>
@@ -143,7 +159,12 @@ const completionOf = (body: unknown): Completion | null => {
   return {
     content,
     finishReason: typeof finishReason === "string" ? finishReason : null,
-    refusal: typeof refusal === "string" && refusal.trim() !== "" ? refusal : null,
+    // OpenRouter-class gateways answer with the STRING "None" where the OpenAI shape has
+    // null — reading that literally turns every successful reply into a refusal.
+    refusal:
+      typeof refusal === "string" && refusal.trim() !== "" && !/^(?:none|null)$/i.test(refusal)
+        ? refusal
+        : null,
   }
 }
 
@@ -155,10 +176,10 @@ const describeFailure = (status: number, body: string, settings: AiSettings): st
     : `AI 서버가 오류를 반환했습니다: ${status} (${detail})`
 }
 
-export const askModel = async (
+const askOnce = async (
   settings: AiSettings,
   messages: readonly ChatMessage[],
-  fetcher: typeof fetch = fetch,
+  fetcher: typeof fetch,
 ): Promise<string> => {
   const problem = settingsProblem(settings)
   if (problem !== null) throw new AiError(problem)
@@ -173,10 +194,12 @@ export const askModel = async (
       },
       body: JSON.stringify({
         model: settings.model.trim(),
-        messages: switched(conversationFor(messages), settings.reasoning).map((message) => ({
-          role: message.role,
-          content: message.content,
-        })),
+        messages: switched(conversationFor(messages), settings.reasoning, settings.model).map(
+          (message) => ({
+            role: message.role,
+            content: message.content,
+          }),
+        ),
         temperature: settings.temperature,
         max_tokens: settings.maxTokens,
         stream: false,
@@ -187,11 +210,14 @@ export const askModel = async (
   } catch (error) {
     // A pane has no console the user will read, so the reason has to survive as text.
     const reason = error instanceof Error ? redactKey(error.message, settings.apiKey) : "알 수 없음"
-    throw new AiError(`AI 서버에 연결하지 못했습니다: ${reason}`)
+    throw new AiError(`AI 서버에 연결하지 못했습니다: ${reason}`, true)
   }
 
   if (!response.ok)
-    throw new AiError(describeFailure(response.status, await response.text(), settings))
+    throw new AiError(
+      describeFailure(response.status, await response.text(), settings),
+      response.status === 429 || response.status >= 500,
+    )
 
   // A 200 carrying something that is not JSON (a proxy error page, a half-written body)
   // used to escape as a raw SyntaxError, which nothing upstream caught.
@@ -199,10 +225,10 @@ export const askModel = async (
   try {
     body = await response.json()
   } catch {
-    throw new AiError("AI 응답을 이해하지 못했습니다.")
+    throw new AiError("AI 응답을 이해하지 못했습니다.", true)
   }
   const completion = completionOf(body)
-  if (completion === null) throw new AiError("AI 응답을 이해하지 못했습니다.")
+  if (completion === null) throw new AiError("AI 응답을 이해하지 못했습니다.", true)
   if (completion.refusal !== null)
     throw new AiError(`AI가 요청을 거부했습니다: ${completion.refusal.trim().slice(0, 300)}`)
   if (
@@ -214,6 +240,7 @@ export const askModel = async (
       completion.finishReason === "length"
         ? "AI 답변이 길이 제한으로 중간에 잘렸습니다. 요청 범위를 나눠 다시 시도해 주세요."
         : `AI 답변이 완료되지 않았습니다: ${completion.finishReason}`,
+      true,
     )
   }
   // A thinking model's deliberation arrives inside `content` on a server that does not
@@ -226,6 +253,43 @@ export const askModel = async (
 }
 
 /** Verify URL, credentials, and model with the smallest real request the legacy API accepts. */
+/**
+ * One measured retry for transient failures.
+ *
+ * Against the deployed reasoning models two shapes recur: a provider rate limit or
+ * network blip mid-conversation, and a reasoning burst that consumes max_tokens with
+ * deliberation and ends finish=length with null content. Both clear on a second attempt;
+ * a refusal or an auth problem never does and is not retried.
+ */
+export const askModel = async (
+  settings: AiSettings,
+  messages: readonly ChatMessage[],
+  fetcher: typeof fetch = fetch,
+): Promise<string> => {
+  // Five attempts with an escalating backoff: under a congested shared key the upstream
+  // returns 502/429 bursts and HTTP-200 ghost failures (null content, native
+  // network_error) that were measured to outlast shorter schedules — five 429s landed
+  // inside fifty seconds in a recorded L1 run. The long tail (90s) rides out a rate-limit
+  // window without stalling the conversation the way a queue-and-forget would.
+  const backoffMs = retryBackoffMs
+  let last: AiError | null = null
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      return await askOnce(settings, messages, fetcher)
+    } catch (error) {
+      last =
+        error instanceof AiError
+          ? error
+          : new AiError(error instanceof Error ? error.message : "알 수 없음")
+      if (!last.retryable) throw last
+      if (attempt < backoffMs.length) {
+        await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt]))
+      }
+    }
+  }
+  throw last ?? new AiError("AI 요청이 반복 실패했습니다.")
+}
+
 export const testConnection = async (
   settings: AiSettings,
   fetcher: typeof fetch = fetch,
