@@ -830,6 +830,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // The model works the workbook the way a person would: look, act, look again. Each
       // round it sends one tool call or a batch of them, every call runs against the real
       // sheet as it arrives, and the results go back so it can continue — until it answers.
+      // An explicit answer-only request makes the whole turn read-only: write tools answer
+      // with a refusal instead of touching the workbook, because a build — however well
+      // executed — is not what the user asked for.
+      const readOnlyRequest =
+        /답변으로만|만들지 마|수정하지 마|추가하지 말고|생성하지 마/.test(request)
       const runCall = async (call: ToolCall): Promise<string> => {
         if (!current()) throw ABANDONED
         commit({ activity: [...state.activity, describeCall(call)] })
@@ -846,7 +851,9 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             // A write lands as soon as the model asks for it. Undo is what makes that safe,
             // so every change goes through the history rather than straight at the range.
             if (isWrite(call)) {
-              observation = await runWrite(context as unknown as OperateContext, deps.history, call)
+              observation = readOnlyRequest
+                ? refused("이 요청은 분석 전용입니다. 워크북을 바꾸지 말고 답변으로만 답합니다.")
+                : await runWrite(context as unknown as OperateContext, deps.history, call)
             } else {
               inspected = await observeTool(context as unknown as InspectContext, call, budget)
               observation = inspected.text

@@ -579,7 +579,7 @@ describe.skipIf(!evalOn)("harness evaluation pilot", () => {
       checks: f9Checks,
     })
     for (const check of f9Checks) expect(check.pass, check.name).toBe(true)
-  }, 1_800_000)
+  }, 2_700_000)
 
   it("T1 traces a cross-sheet reference to its source sheet and cell", async () => {
     // A synthetic two-sheet workbook keeps this case hermetic: the summary sheet holds

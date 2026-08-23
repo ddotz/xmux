@@ -402,6 +402,52 @@ describe("workbook lookups before answering", () => {
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
   })
 
+  it("keeps an answer-only request read-only even when the model tries to build", async () => {
+    const addedSheets: string[] = []
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => ({
+              address: `Main!${address}`,
+              cellCount: 1,
+              values: [["x"]],
+              load: () => {},
+            }),
+          }),
+          add: (name: string) => {
+            addedSheets.push(name)
+          },
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"create_sheet","name":"요약"}')
+      .mockResolvedValueOnce("표를 만들지 않고 분석만 답변드립니다.")
+    const history = createHistory()
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history,
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("시트나 표를 만들지 말고 열 구성만 답변으로만 요약해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(addedSheets).toEqual([])
+    expect(history.last()).toBeNull()
+    const secondAsk = JSON.stringify(vi.mocked(askModel).mock.calls[1]?.[1])
+    expect(secondAsk).toContain("분석 전용")
+    expect(chatting.state().turns.at(-1)?.text).toContain("분석만 답변드립니다")
+  })
+
   it("grounds a cited false blank claim before it reaches the user", async () => {
     const looked: string[] = []
     const values: Record<string, number> = { J5: 125, J6: 250 }
