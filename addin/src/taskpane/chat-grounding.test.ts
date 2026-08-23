@@ -15,6 +15,20 @@ import {
 import type { HarnessEvent } from "./chat-harness"
 
 describe("stripUnverifiedSentences", () => {
+  it("keeps decimals whole across sentence splits", () => {
+    const answer = "평균 연체율은 12.5%입니다."
+    const numbers = new Set([12.5])
+
+    const { kept, dropped } = stripUnverifiedSentences(answer, (sentence) =>
+      [...sentence.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)].every((m) =>
+        numbers.has(Number(m[0].replaceAll(",", ""))),
+      ),
+    )
+
+    expect(dropped).toBe(0)
+    expect(kept).toBe("평균 연체율은 12.5%입니다.")
+  })
+
   it("drops number-led continuation fragments of a dropped list item", () => {
     const answer = [
       "- H열 합계는 999입니다.",

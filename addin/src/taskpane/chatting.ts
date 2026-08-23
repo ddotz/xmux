@@ -299,6 +299,9 @@ const writeTarget = (call: ToolCall): string => {
 
 const unresolvedAttempts = (attempts: readonly ActionReceipt[]): readonly ActionReceipt[] =>
   attempts.filter((attempt, index) => {
+    // Honoring an answer-only request is obedience, not failure: the refusal the model
+    // read back is the designed outcome, never a failed attempt worth reporting.
+    if ((attempt.text ?? "").includes("분석 전용")) return false
     if (attempt.status === "changed") return false
     const target = writeTarget(attempt.call)
     return !attempts
@@ -832,9 +835,15 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // sheet as it arrives, and the results go back so it can continue — until it answers.
       // An explicit answer-only request makes the whole turn read-only: write tools answer
       // with a refusal instead of touching the workbook, because a build — however well
-      // executed — is not what the user asked for.
-      const readOnlyRequest =
-        /답변으로만|만들지 마|수정하지 마|추가하지 말고|생성하지 마/.test(request)
+      // executed — is not what the user asked for. Only an explicit answer-only marker
+      // triggers this: a negative clause inside a write request ("추가하지 말고 F10에 써줘")
+      // scopes the write, it does not forbid one.
+      const readOnlyRequest = /답변으로만|분석만/.test(request)
+      if (readOnlyRequest)
+        turns.push({
+          role: "user",
+          content: "(참고: 이 요청은 분석 전용입니다. 워크북을 바꾸는 도구는 실행되지 않습니다.)",
+        })
       const runCall = async (call: ToolCall): Promise<string> => {
         if (!current()) throw ABANDONED
         commit({ activity: [...state.activity, describeCall(call)] })

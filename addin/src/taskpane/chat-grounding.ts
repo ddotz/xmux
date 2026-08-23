@@ -237,7 +237,7 @@ export const stripUnverifiedSentences = (
   // without the label they read as nonsense, so they fall with their parent.
   let parentDropped = false
   const kept = answer
-    .split(/(?<=[.\n])/)
+    .split(/(?<=[.\n])(?<!\d\.)(?!\d)/)
     .filter((sentence) => {
       const trimmed = sentence.trim()
       if (trimmed === "") return true

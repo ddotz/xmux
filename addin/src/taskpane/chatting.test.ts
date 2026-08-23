@@ -493,6 +493,45 @@ describe("workbook lookups before answering", () => {
     expect(chatting.state().turns.at(-1)?.text).toBe("J5는 125이고 J6은 250입니다.")
   })
 
+  it("does not hijack a write request that merely scopes a constraint", async () => {
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => ({
+              address: `Main!${address}`,
+              cellCount: 1,
+              values: [["x"]],
+              load: () => {},
+            }),
+          }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"write_range","sheet":"Main","address":"F10","rows":[["합계"]]}')
+      .mockResolvedValueOnce("F10에 합계를 썼습니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("빈 행은 추가하지 말고 기존 표 Main!F10에 합계를 써줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).not.toContain("분석 전용")
+    expect(said).toContain("F10")
+  })
+
   it("keeps an already-true cited answer without a rewrite round", async () => {
     const values: Record<string, number> = { J5: 125, J6: 250 }
     const context = {
