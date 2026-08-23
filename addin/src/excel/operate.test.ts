@@ -172,6 +172,8 @@ const workbook = () => {
         add: (name: string) => {
           added.push(name)
         },
+        load: () => {},
+        items: existingSheet ? [{ name: "원본" }] : [],
       },
     },
     sync: async () => {

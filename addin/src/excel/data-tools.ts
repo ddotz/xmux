@@ -374,8 +374,14 @@ export const runDataTool = async (
         : context.workbook.worksheets.getItemOrNullObject(call.targetSheet.trim())
     destinationSheet.load("isNullObject, name")
     await context.sync()
-    if (destinationSheet.isNullObject)
-      return refused(`시트를 찾을 수 없습니다: ${call.targetSheet ?? ""}`)
+    if (destinationSheet.isNullObject) {
+      // A wrong sheet name must not cost the model another guessing round trip: list what
+      // exists so the corrected call lands on the next attempt.
+      context.workbook.worksheets.load("items/name")
+      await context.sync()
+      const known = context.workbook.worksheets.items.map((s) => s.name).join(", ")
+      return refused(`시트를 찾을 수 없습니다: ${call.targetSheet ?? ""} (있는 시트: ${known})`)
+    }
 
     const pivot = destinationSheet.pivotTables.add(
       call.name,
@@ -388,6 +394,8 @@ export const runDataTool = async (
     for (const value of call.values) {
       const added = pivot.dataHierarchies.add(pivot.hierarchies.getItem(value.field))
       added.summarizeBy = value.summarizeBy ?? "Sum"
+      if (value.showAs !== undefined)
+        added.showAs = { calculation: value.showAs, baseField: null, baseItem: null }
     }
     await context.sync()
     return `${destinationSheet.name}!${call.target}에 피벗 ${call.name}을(를) 만들었습니다. ${NOT_UNDOABLE}`

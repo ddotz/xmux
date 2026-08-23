@@ -86,6 +86,9 @@ const workbook = ({
           get summarizeBy() {
             return ""
           },
+          set showAs(value: { calculation: string }) {
+            performed.push(`showAs ${value.calculation}`)
+          },
         }
       },
     },
@@ -186,6 +189,8 @@ const workbook = ({
         getItemOrNullObject: (name: string) =>
           existingWorksheetNames.includes(name) ? sheet : { ...sheet, name, isNullObject: true },
         add: () => {},
+        load: () => {},
+        items: existingWorksheetNames.map((name) => ({ name })),
       },
     },
     sync: async () => {
@@ -597,5 +602,38 @@ describe("runDataTool", () => {
       "summarizeBy Count",
     ])
     expect(answer).toContain("F1")
+  })
+
+  it("marks a pivot value as a share of the whole", async () => {
+    const book = workbook()
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "add_pivot",
+      address: "A1:D999",
+      name: "비중별",
+      target: "F1",
+      rows: ["지점"],
+      values: [{ field: "금액", summarizeBy: "Sum", showAs: "PercentOfGrandTotal" }],
+    })
+
+    expect(book.performed).toContain("showAs PercentOfGrandTotal")
+    expect(answer).toContain("F1")
+  })
+
+  it("names the sheets that do exist when the target sheet is missing", async () => {
+    const book = workbook()
+
+    const answer = await runDataTool(book.context, createHistory(), book.sheet, {
+      tool: "add_pivot",
+      address: "A1:D999",
+      name: "지점별",
+      target: "F1",
+      targetSheet: "없는시트",
+      rows: ["지점"],
+      values: [{ field: "금액" }],
+    })
+
+    expect(answer).toContain("시트를 찾을 수 없습니다")
+    expect(answer).toContain("있는 시트:")
   })
 })

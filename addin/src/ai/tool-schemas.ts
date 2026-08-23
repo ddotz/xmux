@@ -416,6 +416,10 @@ export const addPivotSchema = z.object({
       z.object({
         field: z.string().max(120),
         summarizeBy: z.enum(["Sum", "Count", "Average", "Max", "Min"]).optional(),
+        /** 비중 표시(전체 대비 %): Excel ShowAsCalculation의 세 가지 비중 모드만 노출한다. */
+        showAs: z
+          .enum(["PercentOfGrandTotal", "PercentOfRowTotal", "PercentOfColumnTotal"])
+          .optional(),
       }),
     )
     .min(1)

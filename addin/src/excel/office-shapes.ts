@@ -86,7 +86,12 @@ export type OperatePivot = {
   readonly hierarchies: { getItem: (name: string) => unknown }
   readonly rowHierarchies: { add: (hierarchy: unknown) => void }
   readonly columnHierarchies: { add: (hierarchy: unknown) => void }
-  readonly dataHierarchies: { add: (hierarchy: unknown) => { summarizeBy: string } }
+  readonly dataHierarchies: {
+    add: (hierarchy: unknown) => {
+      summarizeBy: string
+      showAs?: { calculation: string; baseField: unknown; baseItem: unknown }
+    }
+  }
 }
 
 export type OperateSheet = {
@@ -137,6 +142,9 @@ export type OperateContext = {
       /** Used by the undo snapshot, which addresses a sheet it knows exists. */
       readonly getItem: (name: string) => OperateSheet
       readonly add: (name: string) => void
+      /** Sheet-name suggestions on a miss read the collection the same way inspect does. */
+      readonly load: (properties: string) => void
+      readonly items: readonly { readonly name: string }[]
     }
     readonly names: {
       add: (name: string, reference: OperateRange) => void
@@ -199,6 +207,10 @@ export type InspectRange = {
   readonly columnCount: number
   readonly worksheet: { readonly name: string }
   readonly load: (properties: string) => void
+  /** select_range lands here through the write side's cast. */
+  readonly select?: () => void
+  /** fill_formula's fill-down probe lands here through the write side's cast. */
+  readonly autoFill?: () => void
 }
 
 export type InspectSheet = {
