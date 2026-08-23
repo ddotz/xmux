@@ -1,5 +1,6 @@
-import { type Budget, DEFAULT_BUDGET } from "../ai/budget"
+import { type Budget, createTokenCounter, DEFAULT_BUDGET } from "../ai/budget"
 import { columnLetters, type GridArea } from "./address"
+import { displayAnnotation } from "./format-profile"
 
 /**
  * Handing a rectangle of cells back to the model.
@@ -32,26 +33,33 @@ const cellText = (value: unknown): string => {
   return raw.replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")
 }
 
-const escapedText = (value: unknown): string =>
-  rawCellText(value).replaceAll("\r", "\\r").replaceAll("\n", "\\n").replaceAll("\t", "\\t")
-
 const blankRow = (row: readonly unknown[]): boolean => row.every((cell) => rawCellText(cell) === "")
 
 /** How many cells in the whole rectangle hold nothing, so the model can plan around them. */
 const blankCells = (values: readonly (readonly unknown[])[]): number =>
   values.reduce((total, row) => total + row.filter((cell) => rawCellText(cell) === "").length, 0)
 
+/** Display matrices a caller may hand in so semantic formats annotate themselves inline. */
+export type GridDisplay = {
+  readonly text: readonly (readonly string[])[]
+  readonly numberFormat: readonly (readonly string[])[]
+}
+
 /**
  * Render a grid, bounded, so a wide sheet cannot flood the conversation.
  *
  * `anchor` is where the rectangle starts on the sheet. Without it the rows are rendered
  * unlabelled, which is only what a caller that cannot say where it read from deserves.
+ * With `display`, cells whose format the model must not recompute (dates, percents,
+ * scaled figures) quote Excel's own displayed text inline; derivable formats such as
+ * thousands separators stay silent and are summarised once per column instead.
  */
 export const renderGrid = (
   address: string,
   values: readonly (readonly unknown[])[],
   anchor: Pick<GridArea, "top" | "left"> | null = null,
-  budget: Pick<Budget, "readCells" | "readChars"> = DEFAULT_BUDGET,
+  budget: Pick<Budget, "readCells" | "readTokens"> = DEFAULT_BUDGET,
+  display?: GridDisplay,
 ): string => {
   const width = Math.max(0, ...values.map((row) => row.length))
   const blanks = blankCells(values)
@@ -66,9 +74,9 @@ export const renderGrid = (
   }
 
   let cells = 0
-  let characters = 0
+  const counter = createTokenCounter()
   for (const [offset, row] of values.entries()) {
-    if (cells >= budget.readCells || characters >= budget.readChars) {
+    if (cells >= budget.readCells || counter.estimate() >= budget.readTokens) {
       lines.push("… (생략됨)")
       break
     }
@@ -77,13 +85,21 @@ export const renderGrid = (
       anchor !== null && blankRow(row)
         ? `${label}(빈 행)`
         : `${label}${row
-            .map((cell) => {
-              const text = cellText(cell)
+            .map((cell, columnOffset) => {
+              const note =
+                display === undefined
+                  ? null
+                  : displayAnnotation(
+                      cell,
+                      display.text[offset]?.[columnOffset],
+                      display.numberFormat[offset]?.[columnOffset],
+                    )
+              const text = `${cellText(cell)}${note ?? ""}`
               return rawCellText(cell) === "" ? BLANK_MARK : text
             })
             .join("\t")}`
     cells += row.length
-    characters += line.length
+    counter.add(line)
     lines.push(line)
   }
   return `${heading}\n${lines.join("\n")}`
@@ -114,46 +130,4 @@ export const formulaAddresses = (
   })
   if (more > 0) found.push(`외 ${more}개`)
   return found
-}
-
-/**
- * The sparse part of a read where Excel's displayed value carries information the raw grid
- * cannot: thousands separators, dates, percentages, and other non-General formats.
- */
-export const renderDisplayDetails = (
-  values: readonly (readonly unknown[])[],
-  text: readonly (readonly string[])[] = [],
-  numberFormat: readonly (readonly string[])[] = [],
-  anchor: Pick<GridArea, "top" | "left">,
-  budget: Pick<Budget, "readCells" | "readChars"> = DEFAULT_BUDGET,
-): string => {
-  // Test doubles and older callers may only provide raw values. Missing display matrices
-  // mean "display metadata unavailable", not that every nonblank value displays as empty.
-  if (text.length === 0 && numberFormat.length === 0) return ""
-  const lines: string[] = []
-  let cells = 0
-  let characters = 0
-  let omitted = 0
-
-  values.forEach((row, rowOffset) => {
-    row.forEach((value, columnOffset) => {
-      const displayed = text[rowOffset]?.[columnOffset] ?? ""
-      const format = numberFormat[rowOffset]?.[columnOffset] ?? "General"
-      if (rawCellText(value) === displayed && format.trim().toLowerCase() === "general") return
-
-      const address = `${columnLetters(anchor.left + columnOffset)}${anchor.top + rowOffset}`
-      const line = `${address}: 표시 "${escapedText(displayed)}" · 형식 "${escapedText(format)}"`
-      if (cells >= budget.readCells || characters + line.length > budget.readChars) {
-        omitted += 1
-        return
-      }
-      lines.push(line)
-      cells += 1
-      characters += line.length
-    })
-  })
-
-  if (lines.length === 0 && omitted === 0) return ""
-  if (omitted > 0) lines.push("… (표시 정보 생략됨)")
-  return `표시 값/서식 (실제 셀 주소):\n${lines.join("\n")}`
 }

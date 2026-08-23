@@ -4,7 +4,8 @@ import { quoteSheetName } from "../formula/reference"
 import { columnLetters, parseArea } from "./address"
 import { runAuditTool } from "./audit"
 import { type ColumnStatsEvidence, runColumnStats } from "./column-stats"
-import { formulaAddresses, renderDisplayDetails, renderGrid } from "./grid"
+import { columnFormatSummary } from "./format-profile"
+import { formulaAddresses, renderGrid } from "./grid"
 import type { InspectContext, InspectSheet } from "./office-shapes"
 import { runReasoningTool } from "./reasoning"
 import { splitQualified } from "./resolve"
@@ -74,28 +75,30 @@ const readRange = async (
   await context.sync()
   const observedValues =
     (call.formulas === true ? range.formulas : range.values) ?? range.values ?? []
-  const displayValues =
+  const displayText =
     range.text ??
     observedValues.map((row) =>
       row.map((value) => (value === null || value === undefined ? "" : String(value))),
     )
   // Where the rectangle starts, so every row can carry the sheet row it actually is.
   const anchor = parseArea(splitQualified(range.address).local)
-  const grid = renderGrid(range.address, observedValues, anchor, budget)
-  const details =
-    anchor === null
-      ? ""
-      : renderDisplayDetails(range.values, range.text, range.numberFormat, anchor, budget)
+  // Semantic formats (dates, percents, scaled figures) annotate themselves inline in the
+  // grid; derivable ones collapse into one column-level summary line below it.
+  const grid = renderGrid(range.address, observedValues, anchor, budget, {
+    text: displayText,
+    numberFormat: range.numberFormat ?? [],
+  })
+  const summary = anchor === null ? "" : columnFormatSummary(range.numberFormat ?? [], anchor)
   const evidence: RangeEvidence = {
     kind: "range",
     sheet: sheet.name,
     address: range.address,
     formulas: call.formulas === true,
     values: observedValues.map((row) => [...row]),
-    display: displayValues.map((row) => [...row]),
+    display: displayText.map((row) => [...row]),
   }
   if (call.formulas !== true || anchor === null)
-    return { text: details === "" ? grid : `${grid}\n${details}`, evidence }
+    return { text: summary === "" ? grid : `${grid}\n${summary}`, evidence }
   // Which cells hold formulas is the question this mode answers; hand the addresses over
   // outright instead of leaving them to be reconstructed by counting grid columns.
   const listed = formulaAddresses(range.formulas, anchor)
@@ -106,7 +109,7 @@ const readRange = async (
           .map((line) => `${quoteSheetName(sheet.name)}!${line}`)
           .join("\n")}`
   return {
-    text: details === "" ? `${grid}\n${formulaDetail}` : `${grid}\n${details}\n${formulaDetail}`,
+    text: summary === "" ? `${grid}\n${formulaDetail}` : `${grid}\n${summary}\n${formulaDetail}`,
     evidence,
   }
 }

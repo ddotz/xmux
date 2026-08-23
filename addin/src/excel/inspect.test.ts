@@ -80,7 +80,9 @@ describe("runTool", () => {
 
     expect(answer).toContain("Main!A1:B2")
     expect(answer).toContain("대출채권\t1200")
-    expect(answer).toContain('B2: 표시 "1,200" · 형식 "#,##0"')
+    // Separators are derivable: one column-level line, no per-cell display facts.
+    expect(answer).toContain('서식: B "#,##0"')
+    expect(answer).not.toContain('표시 "1,200"')
   })
 
   it("keeps exact addresses, raw values, and display values as typed range evidence", async () => {
@@ -114,8 +116,8 @@ describe("runTool", () => {
     })
 
     expect(answer).toContain("=B1*2")
-    expect(answer).not.toContain("1200")
-    expect(answer).toContain('B2: 표시 "1,200" · 형식 "#,##0"')
+    expect(answer).not.toContain("\t1200")
+    expect(answer).toContain('서식: B "#,##0"')
   })
 
   it("keeps numeric constants when reading formulas and adds their display facts", async () => {
@@ -140,9 +142,10 @@ describe("runTool", () => {
     })
 
     expect(answer).toContain("5\t2160853836970")
-    expect(answer).toContain("6\t45292")
-    expect(answer).toContain('J5: 표시 "2,160,853,836,970" · 형식 "#,##0"')
-    expect(answer).toContain('J6: 표시 "2024-01-01" · 형식 "yyyy-mm-dd"')
+    expect(answer).toContain('6\t45292 (표시 "2024-01-01")')
+    // Separators are summarised once per column, never per cell.
+    expect(answer).toContain('서식: J "#,##0"')
+    expect(answer).not.toContain('"2,160,853,836,970"')
   })
 
   it("lists every sheet so the model can orient itself", async () => {

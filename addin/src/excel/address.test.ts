@@ -8,6 +8,7 @@ import {
   MAX_ROW,
   parseArea,
   parseSpan,
+  splitAreas,
 } from "./address"
 
 describe("parseArea", () => {
@@ -147,5 +148,20 @@ describe("clampArea", () => {
     expect(
       clampArea({ top: 10, left: 3, height: 900, width: 40 }, { rows: 50, columns: 20 }),
     ).toEqual({ top: 10, left: 3, height: 50, width: 20 })
+  })
+})
+
+describe("splitAreas", () => {
+  it("splits a ctrl+click selection into its rectangles", () => {
+    expect(splitAreas("Sheet1!A1:B2,Sheet1!D5:E6")).toEqual(["Sheet1!A1:B2", "Sheet1!D5:E6"])
+  })
+
+  it("keeps a single rectangle whole", () => {
+    expect(splitAreas("Data!$B$2:$D$5")).toEqual(["Data!$B$2:$D$5"])
+  })
+
+  it("trims the spaces Excel puts after commas and drops empties", () => {
+    expect(splitAreas("Sheet1!A1:B2, Sheet1!D5:E6")).toEqual(["Sheet1!A1:B2", "Sheet1!D5:E6"])
+    expect(splitAreas(",Sheet1!A1")).toEqual(["Sheet1!A1"])
   })
 })

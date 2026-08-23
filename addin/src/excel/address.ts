@@ -23,6 +23,20 @@ export type RenderLimit = {
 export const MAX_COLUMN = 16384 // XFD
 export const MAX_ROW = 1048576
 
+/**
+ * Split a selection address into its rectangles.
+ *
+ * A ctrl+click selection reports every rectangle joined by commas —
+ * "Sheet1!A1:B2,Sheet1!D5:E6" — and every consumer of a selection address has to decide
+ * which rectangle it means instead of slicing after the last "!" (which silently keeps
+ * only the last one).
+ */
+export const splitAreas = (address: string): readonly string[] =>
+  address
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part !== "")
+
 const CELL = /^\$?([A-Za-z]{1,3})\$?([0-9]{1,7})$/
 
 const columnNumber = (letters: string): number =>

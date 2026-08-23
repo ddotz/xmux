@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { DEFAULT_BUDGET } from "../ai/budget"
-import { formulaAddresses, renderDisplayDetails, renderGrid } from "./grid"
+import { formulaAddresses, renderGrid } from "./grid"
 
 describe("renderGrid", () => {
   it("labels every row with the sheet row it actually is", () => {
@@ -115,7 +115,7 @@ describe("renderGrid", () => {
     // Given: the same rectangle read on a small window and on a large one. The cap is not
     // a property of the grid, it is a property of the deployment.
     const rows = Array.from({ length: 300 }, (_, row) => [`${row}`, "값", "값"])
-    const small = { readCells: 60, readChars: 4_000 }
+    const small = { readCells: 60, readTokens: 4_000 }
 
     expect(renderGrid("A1:C300", rows, { top: 1, left: 1 }, small)).toContain("… (생략됨)")
     expect(renderGrid("A1:C300", rows, { top: 1, left: 1 }, DEFAULT_BUDGET)).not.toContain(
@@ -124,35 +124,35 @@ describe("renderGrid", () => {
   })
 })
 
-describe("renderDisplayDetails", () => {
-  it("names only cells whose display or format adds information", () => {
-    const details = renderDisplayDetails(
-      [[2160853836970, 45292, 0.125, 2160000, 1200]],
-      [["2,160,853,836,970", "2024-01-01", "12.5%", "2.2", "1200"]],
-      [["#,##0", "yyyy-mm-dd", "0.0%", "0.0,,", "General"]],
-      { top: 5, left: 10 },
-    )
+describe("renderGrid display annotations", () => {
+  const rows = [[2160853836970, 45292, 0.125, 2160000, 1200]]
+  const text = [["2,160,853,836,970", "2024-01-01", "12.5%", "2.2", "1200"]]
+  const formats = [["#,##0", "yyyy-mm-dd", "0.0%", "0.0,,", "General"]]
 
-    expect(details.split("\n")).toEqual([
-      "표시 값/서식 (실제 셀 주소):",
-      'J5: 표시 "2,160,853,836,970" · 형식 "#,##0"',
-      'K5: 표시 "2024-01-01" · 형식 "yyyy-mm-dd"',
-      'L5: 표시 "12.5%" · 형식 "0.0%"',
-      'M5: 표시 "2.2" · 형식 "0.0,,"',
-    ])
+  it("annotates only the cells whose format the model must not recompute", () => {
+    const grid = renderGrid("A1:E1", rows, { top: 1, left: 1 }, DEFAULT_BUDGET, {
+      text,
+      numberFormat: formats,
+    })
+    const line = grid.split("\n")[2] ?? ""
+    expect(line).toContain('45292 (표시 "2024-01-01")')
+    expect(line).toContain('0.125 (표시 "12.5%")')
+    expect(line).toContain('2160000 (표시 "2.2")')
+    // Thousands separators are derivable; the raw value stands alone.
+    expect(line).toContain("2160853836970\t")
+    expect(line).not.toContain("2160853836970 (표시")
+    // General columns say nothing either.
+    expect(line.endsWith("1200")).toBe(true)
   })
 
-  it("escapes displayed text and caps sparse metadata without inventing blank cells", () => {
-    const details = renderDisplayDetails(
-      [[1, 2]],
-      [["one\ttwo", "three\nfour"]],
-      [["0", "0"]],
-      { top: 1, left: 1 },
-      { readCells: 1, readChars: 100 },
-    )
-
-    expect(details).toContain('A1: 표시 "one\\ttwo" · 형식 "0"')
-    expect(details).toContain("… (표시 정보 생략됨)")
-    expect(details).not.toContain("B1:")
+  it("charges annotations to the read budget like any other text", () => {
+    // Three annotated rows run past 45 characters, so the third must be cut off.
+    const tight = { readCells: 100, readTokens: 25 }
+    const grid = renderGrid("A1:A3", [[45292], [45293], [45294]], { top: 1, left: 1 }, tight, {
+      text: [["2024-01-01"], ["2024-01-02"], ["2024-01-03"]],
+      numberFormat: [["yyyy-mm-dd"], ["yyyy-mm-dd"], ["yyyy-mm-dd"]],
+    })
+    expect(grid).toContain("… (생략됨)")
+    expect(grid).not.toContain("45294")
   })
 })
