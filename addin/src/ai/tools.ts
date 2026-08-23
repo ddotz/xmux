@@ -102,6 +102,23 @@ const isAttemptedCall = (candidate: unknown): candidate is { readonly tool: unkn
  * Naming only the bad call let the model assume the rest of the batch had landed, which is
  * how a five-step build ends up two steps applied and reported as finished.
  */
+/**
+ * A required field that arrived undefined usually means its neighbour was misspelled:
+ * point at the candidate key closest to the missing name.
+ */
+const missingFieldHint = (candidate: unknown, error: ZodError): string => {
+  if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) return ""
+  const record = candidate as Record<string, unknown>
+  for (const issue of error.issues) {
+    if (!/received undefined|required/i.test(issue.message)) continue
+    const missing = issue.path[issue.path.length - 1]
+    if (typeof missing !== "string") continue
+    const near = nearestKey(missing, Object.keys(record))
+    if (near !== null) return ` 필수 필드 '${missing}'가 없습니다 — '${near}'를 의도하셨나요?`
+  }
+  return ""
+}
+
 const rejection = (
   candidate: { readonly tool: unknown },
   error: ZodError,
@@ -112,7 +129,7 @@ const rejection = (
     .map((issue) => `${issue.path.join(".") || "(최상위)"} — ${issue.message}`)
   const more = error.issues.length > 3 ? ` 외 ${error.issues.length - 3}건` : ""
   const dropped = behind > 0 ? ` 뒤의 ${behind}개도 실행되지 않았으니 함께 다시 보내세요.` : ""
-  return `${String(candidate.tool)} 호출은 형식이 맞지 않아 실행하지 못했습니다: ${issues.join(", ")}${more}. 고쳐서 다시 보내세요.${dropped}`
+  return `${String(candidate.tool)} 호출은 형식이 맞지 않아 실행하지 못했습니다: ${issues.join(", ")}${more}.${missingFieldHint(candidate, error)} 고쳐서 다시 보내세요.${dropped}`
 }
 
 /** A block that stops mid-value ran out of room; one that closes was merely written wrong. */
@@ -121,6 +138,56 @@ const unreadable = (block: string): string => {
   return tail === "}" || tail === "]"
     ? 'JSON 형식이 잘못돼 실행하지 못했습니다. 키와 값은 큰따옴표로 감싸고, 수식 안의 큰따옴표는 \\" 로 이스케이프하세요. 예: {"tool":"fill_formula","anchor":"B2","address":"B2:B20","formula":"=IF(A2=\\"\\",\\"\\",A2)"}'
     : "JSON이 완결되지 않아 실행하지 못했습니다. 길이 제한에 걸린 것 같습니다. 한 번에 더 적은 행·더 적은 호출로 나눠 보내세요."
+}
+
+/** Bounded Levenshtein check — true when the two keys are within `limit` edits. */
+const editDistanceAtMost = (a: string, b: string, limit: number): boolean => {
+  if (Math.abs(a.length - b.length) > limit) return false
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i += 1) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j += 1) {
+      cur.push(
+        Math.min(
+          (prev[j] ?? Number.POSITIVE_INFINITY) + 1,
+          (cur[j - 1] ?? Number.POSITIVE_INFINITY) + 1,
+          (prev[j - 1] ?? Number.POSITIVE_INFINITY) + (a[i - 1] === b[j - 1] ? 0 : 1),
+        ),
+      )
+    }
+    prev = cur
+  }
+  return (prev[b.length] ?? limit + 1) <= limit
+}
+
+const nearestKey = (key: string, known: readonly string[]): string | null => {
+  for (const candidate of known) {
+    if (editDistanceAtMost(key.toLowerCase(), candidate.toLowerCase(), 2)) return candidate
+  }
+  return null
+}
+
+/**
+ * The first source key the parsed object dropped, paired with the closest legal sibling:
+ * a misspelled field no longer costs the model a guessing round trip.
+ */
+const unknownFieldHint = (source: unknown, parsed: unknown): string => {
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    typeof parsed !== "object" ||
+    parsed === null ||
+    Array.isArray(source)
+  )
+    return ""
+  const parsedRecord = parsed as Record<string, unknown>
+  for (const key of Object.keys(source as Record<string, unknown>)) {
+    if (!(key in parsedRecord)) {
+      const near = nearestKey(key, Object.keys(parsedRecord))
+      return near === null ? "" : ` '${key}'는(는) 없는 필드입니다 — '${near}'를 의도하셨나요?`
+    }
+  }
+  return ""
 }
 
 /** Zod must never repair a tool by silently stripping a misspelled effect field. */
@@ -196,7 +263,7 @@ export const readSteps = (reply: string): ModelStep => {
         return {
           kind: "calls",
           calls: [],
-          rejected: `${String(call.data.tool)} 호출에 정의되지 않은 필드가 있어 묶음 전체를 실행하지 않았습니다. 키 이름을 확인해 다시 보내세요.`,
+          rejected: `${String(call.data.tool)} 호출에 정의되지 않은 필드가 있어 묶음 전체를 실행하지 않았습니다.${unknownFieldHint(candidate, call.data)} 키 이름을 확인해 다시 보내세요.`,
         }
       }
       calls.push(call.data)

@@ -299,6 +299,27 @@ describe("the tool surface", () => {
     for (const call of fixes.calls) expect(isWrite(call)).toBe(true)
   })
 
+  it("suggests the nearest valid field when a call carries an unknown key", () => {
+    const step = readSteps(
+      '{"tool":"add_pivot","address":"A1:D999","name":"지점별","target":"F1","rows":["지점"],"value":[{"field":"금액"}]}',
+    )
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.rejected).toContain("'values'")
+    expect(step.rejected).toContain("의도하셨나요")
+  })
+
+  it("suggests the legal sibling when an extra key sneaks past a valid call", () => {
+    const step = readSteps(
+      '{"tool":"set_visibility","address":"C:D","axis":"columns","hidden":true,"hidn":false}',
+    )
+
+    expect(step.kind).toBe("calls")
+    if (step.kind !== "calls") return
+    expect(step.rejected).toContain("'hidden'")
+  })
+
   it("names a pivot by where it lands, not by the table it read", () => {
     expect(
       describeCall({
