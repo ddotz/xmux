@@ -57,7 +57,7 @@ export const aggregateAnswerMatches = (
   evidence: readonly ColumnStatsEvidence[],
 ): boolean => {
   if (evidence.length === 0) return false
-  const checked = withoutReferences(answer)
+  const checked = withoutAnnotations(withoutReferences(answer))
   const claims = [...checked.matchAll(NUMBER)]
   if (claims.length === 0) return false
   return claims.every((claim) => {
@@ -160,6 +160,16 @@ const withoutReferences = (answer: string): string =>
     },
   )
 
+/**
+ * Display annotations and format codes are metadata the harness itself renders
+ * ("표시 \"2,044,160\" · 형식 \"#,##0\""); a model quoting what it saw puts them in the
+ * answer verbatim. Their digits are not numeric claims about cells — "#,##0" alone used
+ * to read as a claim of zero and fail every otherwise-correct value answer — so both
+ * matchers strip them before counting claims.
+ */
+const withoutAnnotations = (answer: string): string =>
+  answer.replace(/(?:표시|형식)\s*"[^"]*"/g, "").replace(/#[#,0\s]*0/g, "")
+
 const cellFor = (
   cells: readonly EvidenceCell[],
   sheet: string | undefined,
@@ -203,11 +213,16 @@ const supportedNumbers = (cells: readonly EvidenceCell[], answer: string): reado
 
 const answerMatchesCells = (answer: string, cells: readonly EvidenceCell[]): boolean => {
   if (cells.length === 0) return false
+  // Prose noise that is not a claim about cell values: inline code spans (format codes,
+  // formula quotes) and row/position counters ("8행"). A grounded draft explaining Excel
+  // semantics legitimately contains both.
+  const stripNoise = (text: string): string =>
+    text.replace(/`[^`]*`/g, " ").replace(/\d[\d,]*\s*(?:행|칸|번째)/g, " ")
   const references = [...answer.matchAll(CELL_REFERENCE)]
   for (const [index, reference] of references.entries()) {
     const start = (reference.index ?? 0) + reference[0].length
     const end = references[index + 1]?.index ?? answer.length
-    const segment = answer.slice(start, end)
+    const segment = stripNoise(withoutAnnotations(answer.slice(start, end)))
     const cell = cellFor(cells, reference[1] ?? reference[2], reference[3] ?? "")
     if (cell === null) continue
     const blank = (cell.values[0] ?? "") === ""
@@ -226,8 +241,9 @@ const answerMatchesCells = (answer: string, cells: readonly EvidenceCell[]): boo
   if (references.length === 0 && BLANK.test(answer) && blanks !== cells.length) return false
   if (references.length === 0 && NO_BLANK.test(answer) && blanks !== 0) return false
   const allowed = supportedNumbers(cells, answer)
-  return numbersIn(withoutReferences(answer)).every((number) =>
-    allowed.some((held) => sameNumber(number, held)),
+  const prose = numbersIn(stripNoise(withoutAnnotations(withoutReferences(answer))))
+  return prose.every((number) =>
+    number === 0 && blanks > 0 ? true : allowed.some((held) => sameNumber(number, held)),
   )
 }
 

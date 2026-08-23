@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest"
-import { budgetFor, DEFAULT_BUDGET, reservedTokensFor, SYSTEM_PROMPT_CHARS } from "./budget"
+import {
+  budgetFor,
+  DEFAULT_BUDGET,
+  estimateTokens,
+  reservedTokensFor,
+  SYSTEM_PROMPT_CHARS,
+} from "./budget"
 import { DEFAULT_SETTINGS } from "./settings"
 
 describe("budgetFor", () => {
@@ -10,17 +16,19 @@ describe("budgetFor", () => {
     const small = budgetFor({ contextTokens: 32_000, maxTokens: 4_096 })
 
     expect(large.readCells).toBeGreaterThan(small.readCells * 3)
-    expect(large.roundChars).toBeGreaterThan(small.roundChars * 3)
-    expect(large.observationChars).toBeGreaterThan(small.observationChars * 3)
+    expect(large.roundTokens).toBeGreaterThan(small.roundTokens * 3)
+    expect(large.observationTokens).toBeGreaterThan(small.observationTokens * 3)
   })
 
-  it("never asks a small window for more than the old constants did", () => {
-    // The 500-cell, 4,000-character read was what a 32k window was known to survive; the
-    // arithmetic must not quietly raise it there.
+  it("keeps a small window inside its own round", () => {
+    // The old constants pinned a 500-cell read because nothing downstream could measure
+    // what actually came back. The gates measure rendered output now and split whatever
+    // does not fit, so the small-window property is containment: one read never outweighs
+    // its round, and the floors keep a mis-sized window usable rather than starved.
     const small = budgetFor({ contextTokens: 32_000, maxTokens: 4_096 })
 
-    expect(small.readCells).toBe(500)
-    expect(small.readChars).toBeLessThanOrEqual(4_000)
+    expect(small.readCells).toBeGreaterThanOrEqual(500)
+    expect(small.readTokens).toBeLessThanOrEqual(small.roundTokens)
   })
 
   it("stays usable when the window is set to something impossible", () => {
@@ -29,8 +37,8 @@ describe("budgetFor", () => {
     const broken = budgetFor({ contextTokens: 1_000, maxTokens: 8_192 })
 
     expect(broken.readCells).toBeGreaterThan(0)
-    expect(broken.roundChars).toBeGreaterThan(0)
-    expect(broken.observationChars).toBeGreaterThan(0)
+    expect(broken.roundTokens).toBeGreaterThan(0)
+    expect(broken.observationTokens).toBeGreaterThan(0)
   })
 
   it("keeps each budget inside the one above it", () => {
@@ -38,8 +46,8 @@ describe("budgetFor", () => {
     // what the whole conversation keeps.
     for (const contextTokens of [8_000, 32_000, 128_000, 1_000_000]) {
       const budget = budgetFor({ contextTokens, maxTokens: 4_096 })
-      expect(budget.readChars).toBeLessThanOrEqual(budget.roundChars)
-      expect(budget.roundChars).toBeLessThanOrEqual(budget.observationChars)
+      expect(budget.readTokens).toBeLessThanOrEqual(budget.roundTokens)
+      expect(budget.roundTokens).toBeLessThanOrEqual(budget.observationTokens)
     }
   })
 
@@ -57,6 +65,43 @@ describe("budgetFor", () => {
     expect(spent).toBeGreaterThanOrEqual(SYSTEM_PROMPT_CHARS / 1.5)
     // And what is handed out is what is genuinely left over.
     const small = budgetFor({ contextTokens: 32_000, maxTokens: 4_096 })
-    expect(small.observationChars).toBeLessThanOrEqual((32_000 - 4_096 - spent) * 1.5)
+    expect(small.observationTokens).toBeLessThanOrEqual(32_000 - 4_096 - spent)
+  })
+})
+
+describe("estimateTokens", () => {
+  it("prices a digit grid above the old 1.5 chars/token assumption", () => {
+    // Measured on stealth/ox-alpha: tab-separated numeric grids run close to one token
+    // per digit, so a grid must be priced far above the prose exchange rate.
+    const grid = Array.from({ length: 1_000 }, () => "2044160\t2044160").join("\n")
+    expect(estimateTokens(grid)).toBeGreaterThan(grid.length / 1.5)
+  })
+
+  it("prices hangul near one token per character", () => {
+    const hangul = "가나다라마바사아자차카타파하".repeat(500)
+    expect(estimateTokens(hangul)).toBeGreaterThan(hangul.length * 0.8)
+    expect(estimateTokens(hangul)).toBeLessThan(hangul.length * 1.3)
+  })
+
+  it("prices ascii prose well under one token per character", () => {
+    const prose = "The quick brown fox jumps over the lazy dog. ".repeat(200)
+    expect(estimateTokens(prose)).toBeLessThan(prose.length / 2.5)
+  })
+})
+
+describe("token-denominated budgets", () => {
+  it("caps the 400k-window observation budget at the anti-saturation ceiling", () => {
+    // Measured saturation: char-denominated budgets let a greedy read storm reach 318k
+    // input tokens on a 400k window. The ceiling has to bind in tokens.
+    const large = budgetFor({ contextTokens: 400_000, maxTokens: 4_096 })
+    expect(large.observationTokens).toBeLessThanOrEqual(150_000)
+    expect(large.roundTokens).toBeLessThanOrEqual(120_000)
+  })
+
+  it("still gives a 128k window far more room than a 32k one", () => {
+    const large = budgetFor({ contextTokens: 128_000, maxTokens: 4_096 })
+    const small = budgetFor({ contextTokens: 32_000, maxTokens: 4_096 })
+    expect(large.observationTokens).toBeGreaterThan(small.observationTokens * 3)
+    expect(large.roundTokens).toBeGreaterThan(small.roundTokens * 3)
   })
 })

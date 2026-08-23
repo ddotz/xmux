@@ -8,7 +8,7 @@ const storeWith = (value: unknown): Pick<Storage, "getItem" | "setItem"> => ({
 
 describe("AI response budget", () => {
   it("defaults to enough output for multi-sheet financial proposals", () => {
-    expect(DEFAULT_SETTINGS.maxTokens).toBe(4_096)
+    expect(DEFAULT_SETTINGS.maxTokens).toBe(16_000)
   })
 
   it("migrates the legacy 1200-token default without losing connection settings", () => {
@@ -27,7 +27,7 @@ describe("AI response budget", () => {
       apiKey: "secret",
       model: "gpt-model",
       temperature: 0.4,
-      maxTokens: 4_096,
+      maxTokens: 16_000,
       reasoning: "off",
       contextTokens: 128_000,
     })

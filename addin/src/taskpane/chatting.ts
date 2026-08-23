@@ -1,4 +1,12 @@
-import { type Budget, budgetFor, DEFAULT_BUDGET } from "../ai/budget"
+import {
+  type Budget,
+  budgetFor,
+  DEFAULT_BUDGET,
+  estimateTokens,
+  REQUEST_TOKEN_CEILING,
+  reservedTokensFor,
+  SYSTEM_PROMPT_CHARS,
+} from "../ai/budget"
 import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
 import {
   describeApplied,
@@ -35,16 +43,19 @@ import {
 import { serializeWorkbookContext } from "./chat-context"
 import { aggregateAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
 import {
+  cachedReadFor,
   groundingCallsCover,
   groundingPlan,
+  INCOMPLETE_OBSERVATION,
   selectionGroundingCalls,
   selectionWideClaim,
+  splitGroundingRead,
+  stripUnverifiedSentences,
   workbookClaim,
 } from "./chat-grounding"
 import { type ActionReceipt, createHarnessLedger } from "./chat-harness"
 import {
   aggregateCallsForSelection,
-  aggregateClaim,
   aggregateEvidenceComplete,
   aggregateEvidenceForSelection,
 } from "./chat-large-range"
@@ -98,18 +109,26 @@ const OBSERVATION_PREFIX = "실행 결과:"
  * whole instead of cutting both in half.
  */
 export const boundRound = (parts: readonly string[], budget: Budget = DEFAULT_BUDGET): string => {
-  const total = parts.reduce((sum, part) => sum + part.length, 0)
-  if (total <= budget.roundChars) return parts.join("\n\n")
+  const sizes = parts.map((part) => estimateTokens(part))
+  const total = sizes.reduce((sum, size) => sum + size, 0)
+  if (total <= budget.roundTokens) return parts.join("\n\n")
   const shortest = parts
-    .map((part, index) => ({ part, index }))
-    .sort((left, right) => left.part.length - right.part.length)
+    .map((part, index) => ({ part, index, size: sizes[index] ?? 0 }))
+    .sort((left, right) => left.size - right.size)
   const kept = new Map<number, string>()
-  let left = budget.roundChars
+  let left = budget.roundTokens
   let remaining = shortest.length
-  for (const { part, index } of shortest) {
+  for (const { part, index, size } of shortest) {
     const share = Math.floor(left / remaining)
-    kept.set(index, part.length <= share ? part : `${part.slice(0, share)}\n… (생략됨)`)
-    left -= Math.min(part.length, share)
+    // Cut by characters in proportion to the part's own token density, so a digit grid
+    // loses fewer characters per shed token than Korean prose does.
+    kept.set(
+      index,
+      size <= share
+        ? part
+        : `${part.slice(0, Math.max(0, Math.floor((share / Math.max(1, size)) * part.length)))}\n… (생략됨)`,
+    )
+    left -= Math.min(size, share)
     remaining -= 1
   }
   return parts.map((_, index) => kept.get(index) ?? "").join("\n\n")
@@ -303,6 +322,12 @@ const withFailures = (answer: string, attempts: readonly ActionReceipt[]): strin
  * back unchanged — so it says what happened rather than naming a limit that may not be
  * the one that was hit.
  */
+/**
+ * Selections wider than this get their column aggregates computed at intake, before the
+ * first model call — analysis starts from real numbers instead of discovery rounds.
+ */
+const INTAKE_PROFILE_CELLS = 500
+
 const OUT_OF_ROUNDS =
   "도구 실행을 여기서 멈추고 종료합니다. 아래 실행 확인에 기록된 작업만 반영됐으며 나머지는 완료되지 않았습니다."
 
@@ -318,25 +343,127 @@ export const trimObservations = (
     )
     .map(({ index }) => index)
   const whole = new Set<number>()
-  let carried = budget.observationChars
+  let carried = budget.observationTokens
   for (const index of [...observationIndexes].reverse()) {
-    const length = messages[index]?.content.length ?? 0
+    const cost = estimateTokens(messages[index]?.content ?? "")
     // The newest result is what the model is acting on: it is carried whole whatever it
     // costs. Everything before it is kept only while there is room for it.
-    if (whole.size > 0 && (whole.size >= budget.keptObservations || length > carried)) break
-    carried -= length
+    if (whole.size > 0 && (whole.size >= budget.keptObservations || cost > carried)) break
+    carried -= cost
     whole.add(index)
   }
+  // Every observation that did not make the kept set folds to one line — its head plus
+  // the numbers it carried — so later rounds keep citable figures without resending full
+  // grids. The observation pool absorbed every number at read time and grounding re-reads
+  // live cells before any final answer, so folding costs accuracy nothing.
+  // The intake profile stays whole here as well: it is the shared foundation of every
+  // aggregate claim, not a stale intermediate result.
+  const intakeIdx = messages.findIndex(
+    (m) => m.role === "user" && m.content.includes("선택 영역 사전 집계"),
+  )
   return messages.map((message, index) =>
-    observationIndexes.includes(index) &&
-    !whole.has(index) &&
-    message.content.length > TRIMMED_OBSERVATION_CHARS
+    observationIndexes.includes(index) && !whole.has(index) && index !== intakeIdx
+      ? { ...message, content: foldObservation(message.content) }
+      : message,
+  )
+}
+
+/**
+ * Aged results fold to one line — head plus their numbers — capped hard, so a long
+ * session stops resending grids it is no longer working from.
+ */
+const foldObservation = (content: string): string => {
+  const head =
+    content
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line !== "" && !line.startsWith(OBSERVATION_PREFIX))
+      ?.slice(0, 60) ?? ""
+  const seen = new Set<string>()
+  const numbers: string[] = []
+  for (const match of content.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)) {
+    const token = match[0] ?? ""
+    if (!seen.has(token)) {
+      seen.add(token)
+      numbers.push(token)
+    }
+    if (numbers.length >= 12) break
+  }
+  const summary = `[요약] ${head}${numbers.length > 0 ? ` · 숫자: ${numbers.join(",")}` : ""}`
+  return `${summary.slice(0, 180)}\n… (이전 결과 생략)`
+}
+
+/**
+ * True when the question interrogates one specific cell (its address plus a why/how/
+ * evidence word) rather than asking for a selection-wide analysis.
+ */
+export const isCellTargetedQuestion = (question: string): boolean =>
+  /\b[A-Za-z]{1,3}\d+\b/.test(question) && /(수식|왜|어떻게|근거|이유|계산된)/.test(question)
+
+/** True when the user explicitly asks to BUILD something (pivot, table, sheet). */
+export const isExplicitBuildRequest = (question: string): boolean =>
+  /(피벗|피봇|요약표|크로스탭)/.test(question) && /(만들|생성|추가)/.test(question)
+
+/**
+ * Force the whole outgoing request under the window before it is sent.
+ *
+ * The per-round and per-observation gates bound what results may cost as they arrive,
+ * but a long session stacks many bounded things: instructions, the thread, the intake
+ * profile, every kept observation, the model's own replies. Measured on the deployed
+ * reasoning models that stack crossed 180k input tokens on a 400k window even with each
+ * gate individually respected. This is the last-layer guarantee: stub the oldest
+ * observations, then drop the oldest turns, until the estimate fits — the newest question
+ * is never touched.
+ */
+export const fitConversation = (
+  messages: readonly ChatMessage[],
+  settings: { readonly contextTokens: number; readonly maxTokens: number },
+): readonly ChatMessage[] => {
+  const limit = Math.max(
+    0,
+    Math.min(
+      settings.contextTokens - settings.maxTokens - reservedTokensFor(SYSTEM_PROMPT_CHARS),
+      REQUEST_TOKEN_CEILING,
+    ),
+  )
+  const spent = (list: readonly ChatMessage[]): number =>
+    list.reduce((sum, message) => sum + estimateTokens(message.content), 0)
+  if (spent(messages) <= limit) return messages
+
+  const observationAt = (index: number): boolean =>
+    messages[index]?.role === "user" && messages[index].content.startsWith(OBSERVATION_PREFIX)
+  // The intake profile is computed once at question intake and is the foundation every
+  // later aggregate claim leans on; stubbing it starves the rewrite of its evidence.
+  const isIntake = (content: string): boolean => content.includes("선택 영역 사전 집계")
+  let current = [...messages]
+  // Pass 1: every observation except the newest and the intake profile collapses.
+  const observationIndexes = messages.map((_, index) => index).filter(observationAt)
+  const newestObservation = observationIndexes.at(-1) ?? -1
+  const intakeIndex =
+    observationIndexes.find((index) => isIntake(messages[index]?.content ?? "")) ?? -1
+  current = current.map((message, index) =>
+    observationAt(index) && index !== newestObservation && index !== intakeIndex
       ? {
           ...message,
           content: `${message.content.slice(0, TRIMMED_OBSERVATION_CHARS)}\n… (이전 결과 생략)`,
         }
       : message,
   )
+  if (spent(current) <= limit) return current
+  // Pass 2: drop the oldest turns wholesale, keeping the system message, the intake
+  // profile, and the tail. Protection is by content, not stored index: each removal
+  // shifts positions, so a captured index would start pointing at the wrong turn.
+  while (current.length > 3 && spent(current) > limit) {
+    const dropIndex = current.findIndex(
+      (message, index) =>
+        index > 0 &&
+        index < current.length - 1 &&
+        !(isIntake(message.content) && message.content.startsWith(OBSERVATION_PREFIX)),
+    )
+    if (dropIndex < 0) break
+    current = [...current.slice(0, dropIndex), ...current.slice(dropIndex + 1)]
+  }
+  return current
 }
 
 /**
@@ -652,7 +779,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     const current = (): boolean => mine === generation
     const harness = createHarnessLedger()
     const askCurrent = async (messages: readonly ChatMessage[]): Promise<string> => {
-      const answer = await askModel(settings, messages)
+      const answer = await askModel(settings, fitConversation(messages, settings))
       if (!current()) throw ABANDONED
       harness.record({ kind: "analysis", reply: answer })
       return answer
@@ -723,6 +850,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             } else {
               inspected = await observeTool(context as unknown as InspectContext, call, budget)
               observation = inspected.text
+              rememberNumbers(observation)
             }
           })
         } catch (error) {
@@ -749,6 +877,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             for (const call of calls) {
               const observed = await observeTool(context as unknown as InspectContext, call, budget)
               harness.recordTool(call, observed, true)
+              rememberNumbers(observed.text)
               observations.push(observed)
             }
           })
@@ -761,11 +890,57 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
       let repeats = 0
       let lastBatch: string | null = null
+      // Every number any real observation has shown this conversation. The final sentence
+      // filter accepts a claim when all of its numbers appeared in some observation —
+      // read_range evidence alone misses column_stats/explain_cell facts and used to
+      // reject honest, fully grounded answers.
+      const observedNumbers = new Set<number>()
+      const rememberNumbers = (text: string): void => {
+        for (const match of text.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)) {
+          const value = Number(match[0].replaceAll(",", ""))
+          if (Number.isFinite(value)) observedNumbers.add(value)
+        }
+      }
       let nudged = false
       let planNudged = false
       let verificationNudged = false
       let pendingVerification: VerificationTarget[] = []
       let toolRounds = 0
+
+      // Intake profiling: a wide selection gets its aggregates before the first model
+      // call, so analysis starts from real numbers instead of spending rounds discovering
+      // structure — and the verification aggregate route finds complete evidence waiting.
+      // The profile rides in as an ordinary observation turn; a failed profile degrades to
+      // exactly today's behavior.
+      if (
+        attachment !== null &&
+        attachment.cellCount > INTAKE_PROFILE_CELLS &&
+        // A question that points at one cell wants that cell traced, not a survey of
+        // the whole selection: priming with whole-range aggregates steered a recorded
+        // P1 run into column statistics and away from the formula it was asked about.
+        !isCellTargetedQuestion(request) &&
+        // An explicit build request ("피벗을 만들어줘") must not be pre-primed into
+        // aggregate analysis either — the aggregates are for questions that ask for
+        // numbers, and a recorded P2 run never reached add_pivot because of this prime.
+        !isExplicitBuildRequest(request)
+      ) {
+        const intake: ToolCall[] = [
+          { tool: "used_range", sheet: attachment.sheet },
+          ...(aggregateCallsForSelection(attachment, MAX_TOOL_ROUNDS * 8) ?? []),
+        ]
+        const profiled = await runGroundingBatch(intake)
+        if (!current()) throw ABANDONED
+        if (profiled !== null) {
+          for (const observation of profiled) rememberNumbers(observation.text)
+          turns.push({
+            role: "user",
+            content: `${OBSERVATION_PREFIX}\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${boundRound(
+              profiled.map((observation) => observation.text),
+              budget,
+            )}\n이 집계를 우선 근거로 사용하세요. 개별 셀 값이 필요하면 그 범위만 read_range로 읽습니다.`,
+          })
+        }
+      }
 
       let reply = await askCurrent(turns)
       let step = readSteps(reply)
@@ -921,13 +1096,21 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // A request may carry the addresses while the draft says only "둘 다 비었습니다".
       // Ground the union, otherwise removing the address from the prose bypasses the gate.
       const hasWorkbookClaim = workbookClaim(reply)
-      let aggregateHandled = false
-      if (
+      const draftPlan = groundingPlan(
+        hasWorkbookClaim ? `${request}\n${reply}` : reply,
+        targetSheet,
+      )
+      // Structural routing: a wide selection with any workbook claim verifies against
+      // column aggregates whenever the draft speaks of the selection instead of citing
+      // specific cells. The old regex gate waited for the word "합계" and let narrative
+      // answers fall into raw-cell coverage that could never fit.
+      const aggregateRoute =
         attachment !== null &&
         attachment.cellCount > 72 &&
         hasWorkbookClaim &&
-        aggregateClaim(reply)
-      ) {
+        (selectionWideClaim(reply) || draftPlan.calls.length === 0)
+      let aggregateHandled = false
+      if (aggregateRoute) {
         aggregateHandled = true
         let aggregateEvidence = aggregateEvidenceForSelection(
           harness.aggregateEvidence(),
@@ -970,7 +1153,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         if (
           aggregateEvidence.length === 0 ||
           !aggregateEvidenceComplete(aggregateEvidence, attachment) ||
-          serializedEvidence.length > Math.min(budget.observationChars, budget.roundChars)
+          estimateTokens(serializedEvidence) > budget.observationTokens
         ) {
           reply = SELECTION_NOT_VERIFIED
         } else if (!aggregateAnswerMatches(reply, aggregateEvidence)) {
@@ -979,42 +1162,57 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             role: "user",
             content: `${OBSERVATION_PREFIX}\n아래 Excel 집계 근거만 사용해 최종 답변을 다시 쓰세요. 각 숫자는 열과 연산(건수·빈칸·합계·평균·최소·최대)을 함께 명시하세요.\n${serializedEvidence}`,
           })
+          // One rewrite, one nudged retry against the same evidence, then the sentence
+          // filter keeps only the numbers the aggregates actually vouch for.
           let corrected = false
-          for (let attempt = 0; attempt < 2; attempt += 1) {
+          for (let attempt = 0; attempt < 2 && !corrected; attempt += 1) {
             reply = await askCurrent(trimObservations(turns, budget))
             if (aggregateAnswerMatches(reply, aggregateEvidence)) {
               corrected = true
               break
             }
-            if (attempt === 0) {
-              turns.push({ role: "assistant", content: reply })
-              turns.push({
-                role: "user",
-                content: `${OBSERVATION_PREFIX}\n직전 답변의 숫자·열·연산이 Excel 집계 근거와 불일치합니다. 아래 근거만 사용해 한 번 더 고치세요.\n${serializedEvidence}`,
-              })
+            turns.push({ role: "assistant", content: reply })
+            turns.push({
+              role: "user",
+              content: `${OBSERVATION_PREFIX}\n직전 답변의 숫자·열·연산이 Excel 집계 근거와 불일치합니다. 아래 근거만 사용해 한 번 더 고치세요.\n${serializedEvidence}`,
+            })
+          }
+          if (!corrected) {
+            const filtered = stripUnverifiedSentences(
+              reply,
+              (sentence) =>
+                aggregateAnswerMatches(sentence, aggregateEvidence) ||
+                [...sentence.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)].every((match) =>
+                  observedNumbers.has(Number(match[0].replaceAll(",", ""))),
+                ),
+            )
+            if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
+              reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
+            } else {
+              reply = SELECTION_NOT_VERIFIED
             }
           }
-          if (!corrected) reply = SELECTION_NOT_VERIFIED
         }
       }
       const finalPlan = aggregateHandled
         ? { calls: [], hasClaim: false, complete: true }
-        : groundingPlan(hasWorkbookClaim ? `${request}\n${reply}` : reply, targetSheet)
+        : draftPlan
+      // Wide selections are the aggregate route's job now; what remains here is a small
+      // selection whose claims cite no address at all — tiling it is cheap and exact.
       const needsSelectionCoverage =
         !aggregateHandled &&
         attachment !== null &&
-        (selectionWideClaim(reply) ||
-          (finalPlan.calls.length === 0 && hasWorkbookClaim) ||
-          (attachment.cellCount > 72 && hasWorkbookClaim))
+        attachment.cellCount <= 72 &&
+        (selectionWideClaim(reply) || (finalPlan.calls.length === 0 && hasWorkbookClaim))
       const selectionCalls =
         attachment !== null && needsSelectionCoverage
           ? selectionGroundingCalls(
               attachment.address,
               attachment.sheet,
-              // Row/column labels and display metadata cost characters too. Using the
+              // Row/column labels and inline display notes cost characters too. Using the
               // raw cell cap can make renderGrid truncate a tile even though Excel read
               // every cell; a truncated tile is not complete coverage.
-              Math.min(budget.readCells, Math.max(1, Math.floor(budget.readChars / 16))),
+              Math.min(budget.readCells, Math.max(1, Math.floor(budget.readTokens / 16))),
               Math.max(0, MAX_TOOL_ROUNDS - toolRounds) * 8,
             )
           : []
@@ -1030,56 +1228,83 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             : finalPlan.calls
       const requiredBatches =
         requiredCalls === null ? Number.POSITIVE_INFINITY : Math.ceil(requiredCalls.length / 8)
-      const observationsFit =
-        requiredCalls !== null &&
-        requiredCalls.reduce((total, call) => {
-          const area = "address" in call ? parseArea(call.address) : null
-          // Workbook grids average about eight characters per cell (the same exchange
-          // rate that sizes readCells). Twelve leaves room for row/column labels without
-          // rejecting every multi-tile numeric selection before it is even read; the
-          // actual joined observation is checked again below and still fails closed.
-          return (
-            total + (area === null ? budget.observationChars + 1 : area.height * area.width * 12)
-          )
-        }, 0) <= Math.min(budget.observationChars, budget.roundChars)
       if (
-        (needsSelectionCoverage && (!finalPlan.complete || !observationsFit)) ||
-        (needsSelectionCoverage && requiredBatches > MAX_TOOL_ROUNDS - toolRounds)
+        (needsSelectionCoverage &&
+          (!finalPlan.complete ||
+            selectionCalls === null ||
+            requiredBatches > MAX_TOOL_ROUNDS - toolRounds)) ||
+        (!needsSelectionCoverage && !finalPlan.complete)
       ) {
         reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
-      } else if (!needsSelectionCoverage && (!finalPlan.complete || !observationsFit)) {
-        reply = NOT_VERIFIED
       } else if (finalPlan.hasClaim || needsSelectionCoverage) {
+        // Gather first, measure second: rendering IS the cost model. The old pre-gate
+        // estimated bytes per cell three different ways and passed tiles the renderer then
+        // truncated — a refusal verified into existence. Now every tile runs (from this
+        // turn's cache where possible), an incomplete one splits along its longer side and
+        // re-runs, and the fit gate sums what actually came back.
         const observations: string[] = []
         const rangeEvidence: RangeEvidence[] = []
         let verified = true
-        for (let index = 0; index < (requiredCalls?.length ?? 0); index += 8) {
-          const batch = requiredCalls?.slice(index, index + 8) ?? []
-          const result = await runGroundingBatch(batch)
-          if (
-            result === null ||
-            result.some(
-              (observation) =>
-                observation.evidence?.kind !== "range" ||
-                /(?:요청을 처리하지 못했습니다|실행하지 못했습니다|시트를 찾을 수 없습니다|너무 넓습니다|… \(생략됨\)|표시 정보 생략됨)/.test(
-                  observation.text,
-                ),
+        let splitPasses = 2
+        const pending: ToolCall[] = [...(requiredCalls ?? [])]
+        while (pending.length > 0) {
+          const batch = pending.splice(0, 8)
+          const resplit: ToolCall[] = []
+          for (const call of batch) {
+            const read = call.tool === "read_range" ? cachedReadFor(harness.events(), call) : null
+            if (read !== null) {
+              observations.push(read.text)
+              rangeEvidence.push(read.evidence)
+              continue
+            }
+            let result = await runGroundingBatch([call])
+            let observation = result?.[0]
+            // eslint-disable-next-line no-console
+            console.log(
+              "[eval-debug] gather",
+              JSON.stringify(call),
+              "->",
+              observation?.text.slice(0, 120),
             )
-          ) {
-            verified = false
-            break
+            // Models rename sheets ("Sheet1" for "sheet 1"); a miss against this turn's
+            // bound sheet gets exactly one rebinding retry before the tile counts as
+            // failed — the answer itself may still be right.
+            if (
+              call.tool === "read_range" &&
+              (result === null ||
+                observation === undefined ||
+                INCOMPLETE_OBSERVATION.test(observation.text)) &&
+              (call.sheet ?? "").trim() !== targetSheet.trim()
+            ) {
+              result = await runGroundingBatch([{ ...call, sheet: targetSheet }])
+              observation = result?.[0]
+            }
+            if (
+              result === null ||
+              observation === undefined ||
+              observation.evidence?.kind !== "range" ||
+              INCOMPLETE_OBSERVATION.test(observation.text)
+            ) {
+              if (call.tool === "read_range" && splitPasses > 0) {
+                const halves = splitGroundingRead(call)
+                if (halves.length > 0) {
+                  resplit.push(...halves)
+                  continue
+                }
+              }
+              verified = false
+              break
+            }
+            observations.push(observation.text)
+            rangeEvidence.push(observation.evidence)
           }
-          observations.push(...result.map((observation) => observation.text))
-          rangeEvidence.push(
-            ...result.flatMap((observation) =>
-              observation.evidence?.kind === "range" ? [observation.evidence] : [],
-            ),
-          )
+          if (resplit.length > 0) {
+            splitPasses -= 1
+            pending.push(...resplit)
+          }
+          if (!verified) break
         }
-        if (
-          !verified ||
-          observations.join("\n").length > Math.min(budget.observationChars, budget.roundChars)
-        ) {
+        if (!verified || estimateTokens(observations.join("\n")) > budget.observationTokens) {
           reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
         } else {
           const groundedCalls = requiredCalls ?? []
@@ -1103,22 +1328,41 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               (!selectionWideClaim(answer) || needsSelectionCoverage)
             )
           }
-          let corrected = false
-          for (let attempt = 0; attempt < 2; attempt += 1) {
-            reply = await askCurrent(trimObservations(turns, budget))
-            if (groundedReplyIsValid(reply)) {
-              corrected = true
-              break
-            }
-            if (attempt === 0) {
-              turns.push({ role: "assistant", content: reply })
-              turns.push({
-                role: "user",
-                content: `${OBSERVATION_PREFIX}\n직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 아래 실제 값만 사용해 최종 답변을 다시 쓰세요.\n실제 Excel 값:\n${boundRound(observations, budget)}`,
-              })
+          // The ladder: one rewrite, one nudged retry, then the sentence filter keeps
+          // every claim the real values vouch for and drops the rest. Fail-closed without
+          // discarding a whole answer for its worst sentence.
+          const rewriteAsk = (instruction: string): Promise<void> => {
+            turns.push({ role: "assistant", content: reply })
+            turns.push({
+              role: "user",
+              content: `${OBSERVATION_PREFIX}\n${instruction}\n실제 Excel 값:\n${boundRound(observations, budget)}`,
+            })
+            return askCurrent(trimObservations(turns, budget)).then((next) => {
+              reply = next
+            })
+          }
+          await rewriteAsk(
+            "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 아래 실제 값만 사용해 최종 답변을 다시 쓰세요.",
+          )
+          if (!groundedReplyIsValid(reply))
+            await rewriteAsk(
+              "직전 답변이 다시 통과하지 못했습니다. 아래 실제 값만 사용해 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
+            )
+          if (!groundedReplyIsValid(reply)) {
+            const filtered = stripUnverifiedSentences(
+              reply,
+              (sentence) =>
+                rangeAnswerMatches(sentence, rangeEvidence) ||
+                [...sentence.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)].every((match) =>
+                  observedNumbers.has(Number(match[0].replaceAll(",", ""))),
+                ),
+            )
+            if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
+              reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
+            } else {
+              reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
             }
           }
-          if (!corrected) reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
         }
       }
 

@@ -39,6 +39,27 @@ describe("grounded answer evidence", () => {
   })
 })
 
+describe("display annotations in answers", () => {
+  it("ignores format-code digits when verifying a value answer", () => {
+    // Regression from live evaluation: the model answered
+    // "L8의 값은 2044160이며, 표시 형식(#,##0)에 따라 2,044,160으로 보입니다" and the
+    // matcher counted the 0 inside "#,##0" as an unverified claim of zero.
+    const evidence = [
+      {
+        kind: "range" as const,
+        sheet: "sheet 1",
+        address: "sheet 1!L8",
+        formulas: false,
+        values: [[2044160]],
+        display: [["2,044,160"]],
+      },
+    ]
+    const answer =
+      "sheet 1!L8의 값은 2044160이며, 표시 형식(#,##0)에 따라 화면에는 2,044,160으로 보입니다."
+    expect(rangeAnswerMatches(answer, evidence)).toBe(true)
+  })
+})
+
 describe("aggregate answer evidence", () => {
   const evidence = [
     {
@@ -113,5 +134,32 @@ describe("typed range answer evidence", () => {
     expect(rangeAnswerMatches("A1은 250입니다.", evidence)).toBe(false)
     expect(rangeAnswerMatches("A1은 빈 값입니다.", evidence)).toBe(false)
     expect(rangeAnswerMatches("B1은 250입니다.", evidence)).toBe(true)
+  })
+})
+
+describe("prose noise tolerance", () => {
+  const evidence = [
+    {
+      kind: "range" as const,
+      sheet: "Main",
+      address: "Main!C8:E8",
+      formulas: false,
+      values: [[11763933, 3454570, null]],
+      display: [["11,763,933", "3,454,570", "(빈 칸)"]],
+    },
+  ]
+
+  it("ignores format codes and row counters when matching claimed numbers", () => {
+    // A grounded draft that explains Excel semantics mentions the display format and
+    // row positions; those are not claims about cell values.
+    const answer =
+      "F8의 표시 값은 15,218,503이며(표시 형식 `#,##0`) 참조 행의 값은 C8 = 11,763,933, D8 = 3,454,570, E8은 빈 칸입니다. 세 값의 합계가 F8 값과 일치하고, 8행의 세 값을 더하면 됩니다."
+    expect(rangeAnswerMatches(answer, evidence)).toBe(true)
+  })
+
+  it("still rejects a wrong total hidden behind prose", () => {
+    const answer =
+      "F8의 표시 값은 15,218,504이며(표시 형식 `#,##0`) 참조 행의 값은 C8 = 11,763,933, D8 = 3,454,570, E8은 빈 칸입니다. 두 값의 합계와 비교하면 틀립니다."
+    expect(rangeAnswerMatches(answer, evidence)).toBe(false)
   })
 })

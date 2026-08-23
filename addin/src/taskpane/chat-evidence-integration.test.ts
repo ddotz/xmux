@@ -221,6 +221,23 @@ describe("chat evidence gate", () => {
     expect(loaded.some((properties) => /values|formulas/.test(properties))).toBe(false)
   })
 
+  it("routes a narrative wide-selection answer through aggregates, not raw coverage", async () => {
+    const loaded: string[] = []
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("선택한 범위의 B열 데이터가 정리되어 있습니다.")
+      .mockResolvedValueOnce("B열 합계는 2,040이고 최대는 1,200입니다.")
+    const chatting = chattingForLargeSelection(loaded)
+
+    chatting.handlers.onSend("선택 범위 분석해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // The old regex gate let this narrative draft fall into full-coverage tiling that
+    // could never fit; structurally it belongs to the aggregate route.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
+    expect(chatting.state().turns.at(-1)?.text).toBe("B열 합계는 2,040이고 최대는 1,200입니다.")
+    expect(loaded.some((properties) => /values|formulas/.test(properties))).toBe(false)
+  })
+
   it("retries aggregate answers against the same typed Excel evidence", async () => {
     const loaded: string[] = []
     vi.mocked(askModel)

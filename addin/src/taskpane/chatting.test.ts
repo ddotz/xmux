@@ -1,6 +1,13 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { budgetFor, DEFAULT_BUDGET } from "../ai/budget"
+import {
+  budgetFor,
+  DEFAULT_BUDGET,
+  estimateTokens,
+  REQUEST_TOKEN_CEILING,
+  reservedTokensFor,
+  SYSTEM_PROMPT_CHARS,
+} from "../ai/budget"
 import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
 import { DEFAULT_SETTINGS } from "../ai/settings"
 import { MAX_TOOL_ROUNDS } from "../ai/tools"
@@ -11,6 +18,7 @@ import {
   type Chatting,
   compactTurns,
   createChatting,
+  fitConversation,
   trimObservations,
 } from "./chatting"
 
@@ -1634,7 +1642,13 @@ describe("a long build on the configured window", () => {
     }
   }
 
-  for (const contextTokens of [32_000, 128_000]) {
+  // Each window is paired with an output cap an operator could actually configure on it:
+  // a 16k reply budget belongs to large windows, and the containment property below is
+  // asserted over valid pairs.
+  for (const [contextTokens, maxTokens] of [
+    [32_000, 4_096],
+    [128_000, 16_000],
+  ] as const) {
     it(`never sends more than a ${contextTokens / 1_000}k window can hold`, async () => {
       // Given: a model that surveys until the round budget runs out, on a sheet whose reads
       // are wide. Every observation is resent on every later round, so this is the shape of
@@ -1675,7 +1689,7 @@ describe("a long build on the configured window", () => {
         .map((call) => call[1].reduce((sum, message) => sum + message.content.length, 0))
       // Characters, at the rate `budgetFor` buys them, must leave room for the reply.
       const spent = Math.max(...sent) / 1.5
-      expect(spent).toBeLessThan(contextTokens - DEFAULT_SETTINGS.maxTokens)
+      expect(spent).toBeLessThan(contextTokens - maxTokens)
     }, 30_000)
   }
 })
@@ -1686,23 +1700,28 @@ describe("the configured window", () => {
     // the model reads and the cap the tool enforces are the same number, and it is not a
     // constant — a model told 500 on a box that allows two thousand splits reads for
     // nothing, and one told two thousand on a small box gets refused every time.
-    const promptFor = async (contextTokens: number): Promise<string> => {
+    const promptFor = async (contextTokens: number, maxTokens: number): Promise<string> => {
       const asked = nextReply()
       const chatting = create()
-      chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test", contextTokens })
+      chatting.handlers.onSaveSettings({
+        ...DEFAULT_SETTINGS,
+        apiKey: "sk-test",
+        contextTokens,
+        maxTokens,
+      })
       chatting.handlers.onSend("요약해줘")
       await asked
       return vi.mocked(askModel).mock.calls.at(-1)?.[1][0]?.content ?? ""
     }
 
-    const small = await promptFor(32_000)
-    const large = await promptFor(128_000)
+    const small = await promptFor(32_000, 4_096)
+    const large = await promptFor(128_000, 16_000)
 
     expect(small).toContain(
       `최대 ${budgetFor({ contextTokens: 32_000, maxTokens: 4_096 }).readCells}칸`,
     )
     expect(large).toContain(
-      `최대 ${budgetFor({ contextTokens: 128_000, maxTokens: 4_096 }).readCells}칸`,
+      `최대 ${budgetFor({ contextTokens: 128_000, maxTokens: 16_000 }).readCells}칸`,
     )
     expect(small).not.toBe(large)
   })
@@ -1715,7 +1734,7 @@ describe("bounding one round of results", () => {
     const small = "정리의 사용 범위: 정리!A1:B6"
     const huge = "가".repeat(20_000)
 
-    const bounded = boundRound([small, huge], { ...DEFAULT_BUDGET, roundChars: 6_000 })
+    const bounded = boundRound([small, huge], { ...DEFAULT_BUDGET, roundTokens: 6_000 })
 
     expect(bounded).toContain(small)
     expect(bounded).toContain("… (생략됨)")
@@ -1754,6 +1773,28 @@ describe("carrying observations forward", () => {
     }
   })
 
+  it("folds aged results into number-preserving one-liners", () => {
+    const tagged = (tag: string): ChatMessage => ({
+      role: "user",
+      content: `실행 결과:\n${tag}열 집계 · 개수 42 · 합계 1,234,567\n${"x".repeat(300)}`,
+    })
+    const messages: ChatMessage[] = [
+      { role: "system", content: "규칙" },
+      tagged("A"),
+      tagged("B"),
+      tagged("C"),
+    ]
+
+    const trimmed = trimObservations(messages, { ...DEFAULT_BUDGET, keptObservations: 1 })
+
+    const folded = trimmed[1]?.content ?? ""
+    expect(folded).toContain("[요약]")
+    expect(folded).toContain("42")
+    expect(folded).toContain("1,234,567")
+    expect(folded.length).toBeLessThanOrEqual(220)
+    expect(trimmed.at(-1)?.content).toBe(messages.at(-1)?.content)
+  })
+
   it("leaves a short thread alone", () => {
     const messages: ChatMessage[] = [observation(1), observation(2)]
 
@@ -1773,7 +1814,7 @@ describe("carrying observations forward", () => {
       ...Array.from({ length: 5 }, (_, index) => big(index)),
     ]
 
-    const trimmed = trimObservations(messages, { ...DEFAULT_BUDGET, observationChars: 12_000 })
+    const trimmed = trimObservations(messages, { ...DEFAULT_BUDGET, observationTokens: 12_000 })
 
     // The one the model is acting on survives; what it can no longer afford is stubbed.
     expect(trimmed.at(-1)?.content).toBe(messages.at(-1)?.content)
@@ -1781,8 +1822,172 @@ describe("carrying observations forward", () => {
     expect(carried).toBeLessThan(20_000)
 
     // And on a window with room for all of it, nothing is stubbed at all.
-    expect(trimObservations(messages, { ...DEFAULT_BUDGET, observationChars: 120_000 })).toEqual(
+    expect(trimObservations(messages, { ...DEFAULT_BUDGET, observationTokens: 120_000 })).toEqual(
       messages,
     )
+  })
+})
+
+describe("token-aware conversation gates", () => {
+  const gridLine = "2044160\t2044160"
+
+  it("bounds a round of digit grids by estimated tokens, not characters", () => {
+    // Two 80-char digit grids: 160 characters fits a 200-char round, but their estimated
+    // token cost (~132) must overflow a 100-token round and force a split.
+    const parts = [Array(5).fill(gridLine).join("\n"), Array(5).fill(gridLine).join("\n")]
+    const out = boundRound(parts, { ...DEFAULT_BUDGET, roundTokens: 100 })
+    expect(estimateTokens(out)).toBeLessThanOrEqual(120)
+  })
+
+  it("carries digit-grid observations by estimated tokens", () => {
+    const content = `실행 결과:\n${Array(4).fill(gridLine).join("\n")}`
+    const messages = Array.from({ length: 3 }, (_, i) => ({
+      role: "user" as const,
+      content: `${content} #${i}`,
+    }))
+    const out = trimObservations(messages, {
+      ...DEFAULT_BUDGET,
+      observationTokens: 100,
+      keptObservations: 10,
+    })
+    const carried = out
+      .filter(
+        (m) =>
+          m.role === "user" && m.content.startsWith("실행 결과:") && !m.content.includes("생략"),
+      )
+      .reduce((sum, m) => sum + estimateTokens(m.content), 0)
+    expect(carried).toBeLessThanOrEqual(120)
+  })
+})
+
+describe("whole-request window fit", () => {
+  const gridBlock = Array(200).fill("2044160\t2044160").join("\n")
+
+  it("compacts an oversized conversation below the window before sending", () => {
+    const settings = { contextTokens: 32_000, maxTokens: 4_096 }
+    const messages = [
+      { role: "system" as const, content: "당신은 Excel 실무를 돕는 조수입니다." },
+      {
+        role: "user" as const,
+        content: `실행 결과:\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${gridBlock}`,
+      },
+      ...Array.from({ length: 40 }, (_, i) => ({
+        role: "user" as const,
+        content: `실행 결과:\n${gridBlock} #${i}`,
+      })),
+      { role: "assistant" as const, content: "집계를 검토했습니다." },
+      { role: "user" as const, content: "실제 값만 근거로 최종 답변을 다시 쓰세요." },
+    ]
+    const out = fitConversation(messages, settings)
+    // The ceiling binds on the WHOLE request, not the window: measured saturation showed
+    // bounded gates stacking to 209k input tokens. 400k-window settings still cap at 150k.
+    const limit = Math.min(
+      settings.contextTokens - settings.maxTokens - reservedTokensFor(SYSTEM_PROMPT_CHARS),
+      REQUEST_TOKEN_CEILING,
+    )
+    const spent = out.reduce((sum, m) => sum + estimateTokens(m.content), 0)
+    expect(spent).toBeLessThan(limit)
+    expect(out.at(-1)?.content).toBe("실제 값만 근거로 최종 답변을 다시 쓰세요.")
+    // The intake profile is the foundation every later number leans on: it survives
+    // compaction whole even when everything else must shrink.
+    const intakeFull = `실행 결과:\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${gridBlock}`
+    const intake = out.find((m) => m.content === intakeFull)
+    expect(intake).toBeDefined()
+  })
+
+  it("leaves a conversation that already fits untouched", () => {
+    const settings = { contextTokens: 128_000, maxTokens: 16_000 }
+    const messages = [
+      { role: "system" as const, content: "당신은 Excel 실무를 돕는 조수입니다." },
+      { role: "user" as const, content: `실행 결과:\n${gridBlock}` },
+      { role: "user" as const, content: "요약해줘" },
+    ]
+    expect(fitConversation(messages, settings)).toEqual(messages)
+  })
+})
+
+describe("cell-targeted questions", () => {
+  it("skips the intake aggregate profile when a specific cell is interrogated", async () => {
+    // A question that points at one cell wants its formula and references traced;
+    // priming the model with whole-selection aggregates steers it into column analysis
+    // instead (measured in a recorded P1 run).
+    const sheet = {
+      getName: () => "개요",
+      load: () => {},
+    }
+    const context = {
+      workbook: {
+        getSelectedRange: () => ({
+          address: "개요!B2:AF38",
+          load: () => {},
+          worksheet: sheet,
+        }),
+      },
+      sync: async () => {},
+    }
+    vi.mocked(readWorkbookContext).mockResolvedValue({
+      sheets: [{ name: "개요", hidden: false, used: "B2:AF38" }],
+      selection: { address: "개요!G8", cellCount: 1110 },
+      region: undefined,
+    } as never)
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => work(context as unknown as Excel.RequestContext),
+      anchor: () => ({ address: "개요!G8", formula: "=SUM(C8:E8)" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({
+      ...DEFAULT_SETTINGS,
+      apiKey: "sk-test",
+      contextTokens: 400_000,
+    })
+    vi.mocked(askModel).mockResolvedValue("G8은 C8:E8의 합계입니다.")
+    chatting.updateSelection({ sheet: "개요", address: "B2:AF38", cellCount: 1110 })
+    chatting.handlers.onSend(
+      "G8 셀의 값은 어떻게 계산된 건가요? 근거가 되는 수식과 참조 범위를 알려주세요.",
+    )
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+    const firstCall = vi.mocked(askModel).mock.calls.at(0)
+    const outgoing = JSON.stringify(firstCall?.[1] ?? [])
+    expect(outgoing).not.toContain("사전 집계")
+  })
+})
+
+describe("explicit build requests", () => {
+  it("skips the intake aggregate profile when the user asks for a pivot", async () => {
+    // A recorded P2 run: the intake "이 집계를 우선 근거로 사용하세요" prime steered the
+    // model into column analysis and it never called add_pivot despite an explicit
+    // "피벗을 만들어줘" request.
+    const sheet = { getName: () => "sheet 1", load: () => {} }
+    const context = {
+      workbook: {
+        getSelectedRange: () => ({ address: "sheet 1!A8:I300", load: () => {}, worksheet: sheet }),
+      },
+      sync: async () => {},
+    }
+    vi.mocked(readWorkbookContext).mockResolvedValue({
+      sheets: [{ name: "sheet 1", hidden: false, used: "A8:I300" }],
+      selection: { address: "sheet 1!A8:I300", cellCount: 2637 },
+      region: undefined,
+    } as never)
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => work(context as unknown as Excel.RequestContext),
+      anchor: () => ({ address: "sheet 1!A8", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({
+      ...DEFAULT_SETTINGS,
+      apiKey: "sk-test",
+      contextTokens: 400_000,
+    })
+    vi.mocked(askModel).mockResolvedValue("피벗을 만들었습니다.")
+    chatting.updateSelection({ sheet: "sheet 1", address: "A8:I300", cellCount: 2637 })
+    chatting.handlers.onSend(
+      "sheet 1!A8:I300 범위로 요약 시트에 계정과목명별 원화금액 합계 피벗을 만들어줘.",
+    )
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+    const outgoing = JSON.stringify(vi.mocked(askModel).mock.calls.at(0)?.[1] ?? [])
+    expect(outgoing).not.toContain("사전 집계")
   })
 })

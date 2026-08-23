@@ -1,5 +1,7 @@
 import type { ToolCall } from "../ai/tool-schemas"
 import { clampArea, formatArea, type GridArea, parseArea } from "../excel/address"
+import type { RangeEvidence } from "../excel/inspect"
+import type { HarnessEvent } from "./chat-harness"
 
 export type GroundingPlan = {
   readonly calls: readonly GroundingRead[]
@@ -149,4 +151,96 @@ export const groundingCallsCover = (
       held.left + held.width >= wanted.left + wanted.width
     )
   })
+}
+
+/** Every way an observation says "this read is not complete evidence". */
+export const INCOMPLETE_OBSERVATION =
+  /(?:요청을 처리하지 못했습니다|실행하지 못했습니다|시트를 찾을 수 없습니다|너무 넓습니다|… \(생략됨\)|표시 정보 생략됨)/
+
+/** A completed, marker-free observation of exactly one read — reusable without a sync. */
+export type CachedRead = {
+  readonly text: string
+  readonly evidence: RangeEvidence
+}
+
+/**
+ * Find this turn's earlier read of exactly these cells.
+ *
+ * The build loop already read most of what verification re-reads; paying Excel syncs and
+ * conversation bytes for the same rectangle a second time is pure waste. A cached read is
+ * reused only when it is complete — a truncated one is not evidence of anything beyond its
+ * visible part, so it forces a fresh (possibly split) read instead. Cache scope is the
+ * harness ledger itself, which lives for exactly one question turn: the user can edit
+ * while a turn runs, so nothing survives into the next question.
+ */
+export const cachedReadFor = (
+  events: readonly HarnessEvent[],
+  target: GroundingRead,
+): CachedRead | null => {
+  const wanted = parseArea(target.address)
+  if (wanted === null) return null
+  for (const event of [...events].reverse()) {
+    if (event.kind !== "tool" || event.status !== "completed") continue
+    const evidence = event.evidence
+    if (evidence === null || evidence.kind !== "range" || evidence.formulas) continue
+    if (normalizeSheet(evidence.sheet) !== normalizeSheet(target.sheet ?? "")) continue
+    const held = parseArea(splitQualifiedLocal(evidence.address))
+    if (
+      held === null ||
+      held.top !== wanted.top ||
+      held.left !== wanted.left ||
+      held.height !== wanted.height ||
+      held.width !== wanted.width
+    ) {
+      continue
+    }
+    if (INCOMPLETE_OBSERVATION.test(event.text)) return null
+    return { text: event.text, evidence }
+  }
+  return null
+}
+
+const splitQualifiedLocal = (address: string): string => address.slice(address.lastIndexOf("!") + 1)
+
+/** Halve one grounding tile along its longer side; a single cell cannot be split. */
+export const splitGroundingRead = (call: GroundingRead): readonly GroundingRead[] => {
+  const area = parseArea(call.address)
+  if (area === null || (area.height === 1 && area.width === 1)) return []
+  const first =
+    area.height >= area.width
+      ? { ...area, height: Math.ceil(area.height / 2) }
+      : { ...area, width: Math.ceil(area.width / 2) }
+  const second: GridArea =
+    area.height >= area.width
+      ? { ...area, top: area.top + first.height, height: area.height - first.height }
+      : { ...area, left: area.left + first.width, width: area.width - first.width }
+  return [first, second]
+    .filter((half) => half.height > 0 && half.width > 0)
+    .map((half) => ({ tool: "read_range", sheet: call.sheet, address: formatArea(half) }))
+}
+
+/**
+ * Drop every sentence the evidence cannot vouch for.
+ *
+ * The last rung under a failed rewrite: instead of discarding a whole answer because one
+ * number was invented, keep the prose and every claim the real values support, and let the
+ * caller say what was removed. Fail-closed stays intact — an unverifiable number never
+ * reaches the user as fact — but a verified answer no longer dies for its worst sentence.
+ */
+export const stripUnverifiedSentences = (
+  answer: string,
+  vouchesFor: (sentence: string) => boolean,
+): { readonly kept: string; readonly dropped: number } => {
+  let dropped = 0
+  const kept = answer
+    .split(/(?<=[.\n])/)
+    .filter((sentence) => {
+      if (sentence.trim() === "") return true
+      if (!workbookClaim(sentence)) return true
+      if (vouchesFor(sentence)) return true
+      dropped += 1
+      return false
+    })
+    .join("")
+  return { kept, dropped }
 }

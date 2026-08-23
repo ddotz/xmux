@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest"
+import type { ToolCall } from "../ai/tool-schemas"
+import type { RangeEvidence } from "../excel/inspect"
 import {
+  cachedReadFor,
+  type GroundingRead,
   groundingCallsCover,
   groundingPlan,
   selectionGroundingCalls,
   selectionWideClaim,
+  splitGroundingRead,
+  stripUnverifiedSentences,
   workbookClaim,
 } from "./chat-grounding"
+import type { HarnessEvent } from "./chat-harness"
 
 describe("final answer grounding", () => {
   it("extracts and deduplicates local and bound qualified references", () => {
@@ -63,5 +70,93 @@ describe("final answer grounding", () => {
         address: "A100",
       }),
     ).toBe(true)
+  })
+})
+
+describe("cachedReadFor", () => {
+  const read: GroundingRead = { tool: "read_range", sheet: "Main", address: "B2:D5" }
+  const evidence: RangeEvidence = {
+    kind: "range",
+    sheet: "Main",
+    address: "Main!B2:D5",
+    formulas: false,
+    values: [[1, 2]],
+    display: [["1", "2"]],
+  }
+  const event = (text: string): HarnessEvent => ({
+    kind: "tool",
+    call: read as ToolCall,
+    status: "completed",
+    text,
+    evidence,
+  })
+
+  it("reuses a completed earlier read of exactly these cells", () => {
+    expect(cachedReadFor([event("Main!B2:D5\n\tB\tC\n2\t1\t2")], read)).not.toBeNull()
+  })
+
+  it("refuses a truncated read so the tile splits instead of passing as coverage", () => {
+    expect(cachedReadFor([event("Main!B2:D5\n… (생략됨)")], read)).toBeNull()
+  })
+
+  it("ignores other sheets, other shapes, and non-range evidence", () => {
+    const elsewhere = { ...read, address: "B2:E5" }
+    expect(
+      cachedReadFor(
+        [
+          {
+            kind: "tool",
+            call: elsewhere as ToolCall,
+            status: "completed",
+            text: "x",
+            evidence: { ...evidence, address: "Main!B2:E5" },
+          },
+        ],
+        read,
+      ),
+    ).toBeNull()
+    expect(cachedReadFor([{ kind: "analysis", reply: "텍스트" }], read)).toBeNull()
+  })
+})
+
+describe("splitGroundingRead", () => {
+  it("halves a tall tile along its height", () => {
+    const [first, second] = splitGroundingRead({
+      tool: "read_range",
+      sheet: "Main",
+      address: "B2:D11",
+    })
+    expect(first?.address).toBe("B2:D6")
+    expect(second?.address).toBe("B7:D11")
+  })
+
+  it("halves a wide tile along its width and refuses a single cell", () => {
+    const [first, second] = splitGroundingRead({
+      tool: "read_range",
+      sheet: "Main",
+      address: "B2:K2",
+    })
+    expect(first?.address).toBe("B2:F2")
+    expect(second?.address).toBe("G2:K2")
+    expect(splitGroundingRead({ tool: "read_range", sheet: "Main", address: "B2" })).toEqual([])
+  })
+})
+
+describe("stripUnverifiedSentences", () => {
+  it("keeps vouched claims and prose, drops invented numbers", () => {
+    const result = stripUnverifiedSentences(
+      "J5 값은 125입니다. J6 값은 999입니다.\n두 셀을 확인했습니다.",
+      (sentence) => sentence.includes("125"),
+    )
+    expect(result.dropped).toBe(1)
+    expect(result.kept).toContain("J5 값은 125입니다.")
+    expect(result.kept).toContain("두 셀을 확인했습니다.")
+    expect(result.kept).not.toContain("999")
+  })
+
+  it("reports when nothing survives", () => {
+    const result = stripUnverifiedSentences("J5 값은 999입니다.", () => false)
+    expect(result.dropped).toBe(1)
+    expect(result.kept.trim()).toBe("")
   })
 })

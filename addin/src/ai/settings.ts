@@ -69,7 +69,9 @@ export const DEFAULT_SETTINGS: AiSettings = {
   apiKey: "",
   model: "qwen3.6_27b",
   temperature: 0.2,
-  maxTokens: 4_096,
+  // Reasoning models spend this budget on deliberation too: a 4,096 cap was measured to
+  // end finish=length with null content on stealth/ox-alpha. 16k leaves room for both.
+  maxTokens: 16_000,
   // What the server is actually run with: a 128k window with thinking turned off.
   reasoning: "off",
   contextTokens: 128_000,
