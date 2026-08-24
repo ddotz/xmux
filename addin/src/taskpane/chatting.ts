@@ -35,6 +35,7 @@ import {
   verifiedBy,
 } from "./chat-action-verification"
 import { serializeWorkbookContext } from "./chat-context"
+import { enumeratesColumns, requestPinsColumns, uncoveredColumns } from "./chat-coverage"
 import { aggregateAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
 import {
   cachedReadFor,
@@ -1322,6 +1323,23 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             }
           }
         }
+      }
+      // Coverage over the enumerable scope: a column-composition answer that tabulates 13
+      // of 15 covered columns is wrong by omission even when every number is right. The
+      // note costs no model call; the user sees exactly what was left out.
+      if (
+        aggregateHandled &&
+        attachment !== null &&
+        reply !== SELECTION_NOT_VERIFIED &&
+        enumeratesColumns(reply) &&
+        !requestPinsColumns(request)
+      ) {
+        const missing = uncoveredColumns(
+          reply,
+          aggregateEvidenceForSelection(harness.aggregateEvidence(), attachment),
+        )
+        if (missing.length > 0)
+          reply = `${reply}\n\n(선택 범위의 열 ${missing.join(", ")}은(는) 이 답변에서 다루지 않았습니다.)`
       }
       const finalPlan = aggregateHandled
         ? { calls: [], hasClaim: false, complete: true }
