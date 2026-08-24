@@ -289,3 +289,56 @@ describe("filled-count vocabulary", () => {
     expect(aggregateAnswerMatches("A열: 채워진 칸 299건입니다.", evidence)).toBe(false)
   })
 })
+
+describe("markdown table verification", () => {
+  // Measured on eval L1 (3rd run): models answer column analyses as bare-number markdown
+  // tables. Prose matching cannot bind "34,680" without a metric word, so the filter
+  // shredded a correct 13-row table. The table's own header carries the binding.
+  const letters = ["A", "B", "C"]
+  const evidence = [
+    {
+      kind: "column_stats" as const,
+      sheet: "Main",
+      address: "Main!A1:C34979",
+      rowCount: 34_979,
+      hasHeaders: true,
+      columns: letters.map((letter, index) => ({
+        index: index + 1,
+        letter,
+        count: 34_978,
+        filled: 298 - index,
+        blank: 34_680 + index,
+        sum: null,
+        average: null,
+        min: null,
+        max: null,
+      })),
+    },
+  ]
+
+  it("verifies a bare-number table through its header metrics and row letters", () => {
+    const answer = [
+      "| 열 | 값 | 빈칸 |",
+      "|---|---|---|",
+      "| A열 | 298 | 34,680 |",
+      "| B열 | 297 | 34,681 |",
+      "| C열 | 296 | 34,682 |",
+    ].join("\n")
+    expect(aggregateAnswerMatches(answer, evidence)).toBe(true)
+  })
+
+  it("rejects a table where one cell carries another row's value", () => {
+    const answer = [
+      "| 열 | 값 | 빈칸 |",
+      "|---|---|---|",
+      "| A열 | 297 | 34,680 |",
+      "| B열 | 297 | 34,681 |",
+    ].join("\n")
+    expect(aggregateAnswerMatches(answer, evidence)).toBe(false)
+  })
+
+  it("fails closed when the header maps no metric at all", () => {
+    const answer = ["|---|---|---|", "| A열 | 298 | 34,680 |"].join("\n")
+    expect(aggregateAnswerMatches(answer, evidence)).toBe(false)
+  })
+})

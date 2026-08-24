@@ -504,6 +504,13 @@ const shiftFormulaRefs = (formula: string, rowDelta: number, columnDelta: number
         },
       },
       names: { load: () => {}, items: [] },
+      // recalculate reads the mode and fires a full recalc; the fixture's values are
+      // already the recomputed truth, so there is nothing to redo.
+      application: {
+        calculationMode: "Automatic",
+        load: () => {},
+        calculate: (_type: string) => {},
+      },
       functions: {
         sum: (range) => result(() => numbersIn(range).reduce((total, v) => total + v, 0)),
         average: (range) => {

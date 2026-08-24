@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { ToolCall } from "../ai/tool-schemas"
 import type { RangeEvidence } from "../excel/inspect"
+import { aggregateAnswerMatches } from "./chat-evidence"
 import {
   cachedReadFor,
   type GroundingRead,
@@ -194,5 +195,38 @@ describe("stripUnverifiedSentences", () => {
     const result = stripUnverifiedSentences("J5 값은 999입니다.", () => false)
     expect(result.dropped).toBe(1)
     expect(result.kept.trim()).toBe("")
+  })
+})
+
+describe("tables survive sentence filtering as one unit", () => {
+  const evidence = [
+    {
+      kind: "column_stats" as const,
+      sheet: "Main",
+      address: "Main!A1:B100",
+      rowCount: 100,
+      hasHeaders: true,
+      columns: [
+        { index: 1, letter: "A", count: 99, filled: 10, blank: 89, sum: null, average: null, min: null, max: null },
+        { index: 2, letter: "B", count: 99, filled: 20, blank: 79, sum: null, average: null, min: null, max: null },
+      ],
+    },
+  ]
+  const vouchesFor = (sentence: string): boolean => aggregateAnswerMatches(sentence, evidence)
+
+  it("keeps a correct bare-number table intact while dropping an invented prose claim", () => {
+    const answer = [
+      "열 구성은 아래와 같습니다.",
+      "| 열 | 채워진 칸 | 빈칸 |",
+      "|---|---|---|",
+      "| A열 | 10 | 89 |",
+      "| B열 | 20 | 79 |",
+      "B열 합계는 999,999입니다.",
+    ].join("\n")
+    const out = stripUnverifiedSentences(answer, vouchesFor)
+    expect(out.dropped).toBe(1)
+    expect(out.kept).toContain("| A열 | 10 | 89 |")
+    expect(out.kept).toContain("| B열 | 20 | 79 |")
+    expect(out.kept).not.toContain("999,999")
   })
 })

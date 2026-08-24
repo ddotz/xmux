@@ -77,14 +77,87 @@ const digitFreeBlankClaim = (
   return false
 }
 
+/**
+ * A markdown table is the format finance answers actually arrive in: one row per column,
+ * numbers under metric headers (값 · 빈칸 · 합계 …). Prose-pattern matching cannot see a
+ * bare "34,680" inside a cell — but the table itself carries the binding, header word →
+ * metric, first-cell letter → column — so each numeric cell is checked positionally against
+ * that (letter, metric) pair. A block whose header maps no metric, or a numeric cell with no
+ * resolvable pair, fails closed.
+ */
+type TableBlock = { readonly header: readonly string[]; readonly rows: readonly (readonly string[])[] }
+
+const cellsOf = (line: string): readonly string[] =>
+  line
+    .split("|")
+    .slice(1, -1)
+    .map((cell) => cell.trim())
+    .filter((cell) => !/^[\-:\s]*$/.test(cell))
+
+const splitTableBlocks = (
+  text: string,
+): { readonly tables: readonly TableBlock[]; readonly prose: string } => {
+  const tables: TableBlock[] = []
+  const proseLines: string[] = []
+  let block: string[] | null = null
+  const flush = (): void => {
+    if (block === null) return
+    const rows = block.map(cellsOf).filter((cells) => cells.length > 0)
+    if (rows.length >= 2) tables.push({ header: rows[0] ?? [], rows: rows.slice(1) })
+    else proseLines.push(...block)
+    block = null
+  }
+  for (const line of text.split("\n")) {
+    if (/^\s*\|/.test(line)) {
+      ;(block ??= []).push(line)
+      continue
+    }
+    flush()
+    proseLines.push(line)
+  }
+  flush()
+  return { tables, prose: proseLines.join("\n") }
+}
+
+const tableNumbersMatch = (
+  block: TableBlock,
+  evidence: readonly ColumnStatsEvidence[],
+): boolean => {
+  const metrics = block.header.map((cell) => aggregateMetric(cell))
+  const columns = [
+    ...new Map(
+      evidence.flatMap((item) => item.columns).map((held) => [held.letter.toUpperCase(), held]),
+    ).values(),
+  ]
+  return block.rows.every((row) => {
+    const letter = (row[0] ?? "")
+      .match(/(?<![A-Za-z])([A-Za-z]{1,2})(?![A-Za-z0-9])/)
+      ?.[1]?.toUpperCase()
+    if (letter === undefined) return !/[0-9]/.test(row.join(" "))
+    return row.every((cell, position) => {
+      const value = Number(cell.replaceAll(",", ""))
+      if (!Number.isFinite(value)) return true
+      const metric = metrics[position]
+      if (metric === null || metric === undefined || position === 0) return false
+      const held = columns.find((candidate) => candidate.letter === letter)
+      if (held === undefined) return false
+      return held[metric] !== null && sameNumber(value, held[metric])
+    })
+  })
+}
+
 export const aggregateAnswerMatches = (
   answer: string,
   evidence: readonly ColumnStatsEvidence[],
 ): boolean => {
   if (evidence.length === 0) return false
-  const checked = withoutAnnotations(withoutReferences(answer))
+  const normalized = withoutAnnotations(withoutReferences(answer)).replaceAll("\u0001", "\n")
+  const { tables, prose } = splitTableBlocks(normalized)
+  if (tables.some((block) => !tableNumbersMatch(block, evidence))) return false
+  const checked = prose
   const claims = [...checked.matchAll(NUMBER)]
-  if (claims.length === 0) return digitFreeBlankClaim(checked, evidence)
+  if (claims.length === 0)
+    return tables.length > 0 ? true : digitFreeBlankClaim(checked, evidence)
   return claims.every((claim) => {
     const token = claim[0]
     const value = Number(token.replaceAll(",", "").replace("%", ""))

@@ -236,7 +236,16 @@ export const stripUnverifiedSentences = (
   // a line that starts with a bare number and "·" chains. The numbers vouch fine, but
   // without the label they read as nonsense, so they fall with their parent.
   let parentDropped = false
-  const kept = answer
+  // A markdown table is ONE unit: its rows carry bare numbers that only the block's own
+  // header can bind, so splitting it into sentences would shred a correct table row by row.
+  const units: string[] = []
+  for (const line of answer.split("\n")) {
+    if (/^\s*\|/.test(line) && units.length > 0 && /^\s*\|/.test(units[units.length - 1] ?? ""))
+      units[units.length - 1] = `${units[units.length - 1] ?? ""}\u0001${line}`
+    else units.push(line)
+  }
+  const kept = units
+    .join("\n")
     .split(/(?<=[.\n])(?<!\d\.)(?!\d)/)
     .filter((sentence) => {
       const trimmed = sentence.trim()
@@ -258,5 +267,6 @@ export const stripUnverifiedSentences = (
       return false
     })
     .join("")
+    .replaceAll("\u0001", "\n")
   return { kept, dropped }
 }
