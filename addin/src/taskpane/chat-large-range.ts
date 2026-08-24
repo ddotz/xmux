@@ -5,10 +5,6 @@ import { splitQualified } from "../excel/resolve"
 import type { SelectionAttachment } from "./chat"
 
 const COLUMNS_PER_CALL = 12
-const AGGREGATE_CLAIM =
-  /(?:숫자|값|빈칸|공백|건수|합계|총합|평균|최소|최대|count|sum|average|min|max)/i
-
-export type ColumnStatsCall = Extract<ToolCall, { readonly tool: "column_stats" }>
 
 const contains = (outer: GridArea, inner: GridArea): boolean =>
   outer.top <= inner.top &&
@@ -16,7 +12,8 @@ const contains = (outer: GridArea, inner: GridArea): boolean =>
   outer.top + outer.height >= inner.top + inner.height &&
   outer.left + outer.width >= inner.left + inner.width
 
-export const aggregateClaim = (answer: string): boolean => AGGREGATE_CLAIM.test(answer)
+/** One column_stats call per 12-column band, so a wide selection verifies from aggregates. */
+export type ColumnStatsCall = Extract<ToolCall, { readonly tool: "column_stats" }>
 
 export const aggregateCallsForSelection = (
   selection: SelectionAttachment,

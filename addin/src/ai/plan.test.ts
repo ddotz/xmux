@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest"
-import { describeApplied, describeEdit, parsePlan, planTouchesWorkbook, resolveEdits } from "./plan"
+import { parsePlan, planTouchesWorkbook } from "./plan"
 import {
   DEFAULT_SETTINGS,
   endpointFor,
@@ -76,16 +76,6 @@ describe("parsePlan", () => {
     const plan = parsePlan('{"edits":"모두 지워"}')
 
     expect(plan.edits).toEqual([])
-  })
-})
-
-describe("describeEdit", () => {
-  it("names the sheet the edit lands on", () => {
-    expect(describeEdit({ sheet: "Data", address: "B2", value: "7" }, "Main")).toBe("Data!B2 ← 7")
-  })
-
-  it("falls back to the mirrored cell's sheet when the model left it out", () => {
-    expect(describeEdit({ address: "B2", value: "7" }, "Main")).toBe("Main!B2 ← 7")
   })
 })
 
@@ -177,32 +167,6 @@ describe("storing the connection", () => {
   })
 })
 
-describe("resolveEdits", () => {
-  it("fills the missing sheet with the cell the pane is mirroring", () => {
-    const plan = { say: "", edits: [{ address: "B6", value: "7" }], blocks: [], newSheets: [] }
-
-    expect(resolveEdits(plan, "Main")).toEqual([{ sheet: "Main", address: "B6", value: "7" }])
-  })
-
-  it("keeps the sheet the model named", () => {
-    const plan = {
-      say: "",
-      edits: [{ sheet: "Data", address: "B2", value: "=A1" }],
-      blocks: [],
-      newSheets: [],
-    }
-
-    expect(resolveEdits(plan, "Main")).toEqual([{ sheet: "Data", address: "B2", value: "=A1" }])
-  })
-
-  it("drops an edit that names no sheet and has none to fall back to", () => {
-    // Given: nothing mirrored yet, so there is no honest place to put it
-    const plan = { say: "", edits: [{ address: "B6", value: "7" }], blocks: [], newSheets: [] }
-
-    expect(resolveEdits(plan, "")).toEqual([])
-  })
-})
-
 describe("tables and new sheets", () => {
   it("reads a table as one block instead of a cell at a time", () => {
     // Given: "tidy this onto a new sheet" is a rectangle, not a list of cells.
@@ -234,12 +198,11 @@ describe("tables and new sheets", () => {
     expect(plan.newSheets).toEqual([])
   })
 
-  it("counts what the plan does in words the approval step can show", () => {
+  it("touches the workbook when sheets, blocks and edits are present", () => {
     const plan = parsePlan(
       '{"newSheets":[{"name":"정리"}],"blocks":[{"address":"A1","rows":[["a"],["b"]]}],"edits":[{"address":"B6","value":"1"}]}',
     )
 
-    expect(describeApplied(plan)).toBe("새 시트 1개, 표 1개(2행), 셀 1건")
     expect(planTouchesWorkbook(plan)).toBe(true)
   })
 

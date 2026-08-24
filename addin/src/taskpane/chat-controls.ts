@@ -1,7 +1,6 @@
-import { describeApplied, type Plan, planTouchesWorkbook } from "../ai/plan"
 import { quoteSheetName } from "../formula/reference"
 import type { ChatHandlers, ChatState, SelectionAttachment } from "./chat"
-import { createIcon, iconButton } from "./chat-icons"
+import { iconButton } from "./chat-icons"
 import { matchingSkills, renderSkillChip, renderSkillMenu } from "./chat-skill-ui"
 import type { ChatSkill, ChatSkillId } from "./chat-skills"
 
@@ -136,43 +135,5 @@ export const renderComposer = (state: ChatState, handlers: ChatHandlers): HTMLEl
   )
   surface.append(input, actions)
   block.append(surface)
-  return block
-}
-
-const actionButton = (
-  label: string,
-  icon: "apply" | "discard",
-  action: string,
-  onClick: () => void,
-): HTMLButtonElement => {
-  const button = document.createElement("button")
-  button.type = "button"
-  button.className = "plan-action"
-  button.setAttribute("data-plan-action", action)
-  button.append(createIcon(icon), document.createTextNode(label))
-  button.addEventListener("click", onClick)
-  return button
-}
-
-export const renderPlan = (
-  plan: Plan | null,
-  sheet: string,
-  handlers: ChatHandlers,
-  describe: (plan: Plan, sheet: string) => readonly string[],
-): HTMLElement | null => {
-  // A plan that creates a sheet and writes a table has no single-cell edits at all. Gating
-  // on edits alone meant those proposals rendered nothing: the model had answered, the plan
-  // had parsed, and the user had no button to approve it — the request simply did nothing.
-  if (plan === null || !planTouchesWorkbook(plan)) return null
-  const block = element("div", "plan")
-  block.append(text("div", "plan-title", `제안된 변경: ${describeApplied(plan)}`))
-  const list = element("ul", "plan-list")
-  for (const item of describe(plan, sheet)) list.append(text("li", "plan-item payload", item))
-  const actions = element("div", "plan-actions")
-  actions.append(
-    actionButton("적용", "apply", "apply", handlers.onApply),
-    actionButton("취소", "discard", "discard", handlers.onDiscard),
-  )
-  block.append(list, actions)
   return block
 }

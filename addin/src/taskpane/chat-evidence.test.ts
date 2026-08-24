@@ -1,43 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { aggregateAnswerMatches, groundedAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
-import type { GroundingRead } from "./chat-grounding"
-
-const calls: readonly GroundingRead[] = [
-  { tool: "read_range", sheet: "Main", address: "J5" },
-  { tool: "read_range", sheet: "Main", address: "J6" },
-]
-
-const observations = ["Main!J5\n\tJ\n5\t125", "Main!J6\n\tJ\n6\t250"] as const
-
-describe("grounded answer evidence", () => {
-  it("rejects a number copied from the neighboring cited cell", () => {
-    expect(groundedAnswerMatches("J5는 250이고 J6은 125입니다.", calls, observations)).toBe(false)
-  })
-
-  it("accepts numbers attached to their actual cited cells", () => {
-    expect(groundedAnswerMatches("J5는 125이고 J6은 250입니다.", calls, observations)).toBe(true)
-  })
-
-  it("rejects a blank claim when the cited cell contains a number", () => {
-    expect(groundedAnswerMatches("J5는 빈 값입니다.", calls, observations)).toBe(false)
-  })
-
-  it("checks an addressless answer against the grounded selection", () => {
-    expect(groundedAnswerMatches("선택한 셀은 빈 값입니다.", calls.slice(0, 1), observations)).toBe(
-      false,
-    )
-    expect(
-      groundedAnswerMatches("선택한 셀 값은 125입니다.", calls.slice(0, 1), observations),
-    ).toBe(true)
-  })
-
-  it("allows an aggregate only when it is derived from the observed numbers", () => {
-    expect(groundedAnswerMatches("두 셀의 합계는 375입니다.", calls, observations)).toBe(true)
-    expect(groundedAnswerMatches("두 셀의 합계는 400입니다.", calls, observations)).toBe(false)
-    expect(groundedAnswerMatches("두 셀의 평균은 187.5입니다.", calls, observations)).toBe(true)
-    expect(groundedAnswerMatches("두 셀의 평균은 375입니다.", calls, observations)).toBe(false)
-  })
-})
+import { aggregateAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
 
 describe("display annotations in answers", () => {
   it("ignores format-code digits when verifying a value answer", () => {

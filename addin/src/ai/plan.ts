@@ -112,41 +112,6 @@ export const parsePlan = (reply: string): Plan => {
   }
 }
 
-/** One line per edit, so the user approves something they can actually read. */
-export const describeEdit = (edit: ProposedEdit, fallbackSheet: string): string =>
-  `${edit.sheet ?? fallbackSheet}!${edit.address} ← ${edit.value}`
-
-/** The concrete cells an approved plan would write, with the mirrored sheet filling gaps. */
-export const resolveEdits = (
-  plan: Plan,
-  fallbackSheet: string,
-): readonly { readonly sheet: string; readonly address: string; readonly value: string }[] =>
-  plan.edits
-    .map((edit) => ({
-      sheet: edit.sheet ?? fallbackSheet,
-      address: edit.address,
-      value: edit.value,
-    }))
-    .filter((edit) => edit.sheet !== "")
-
-/** One line per block, naming its size rather than listing every cell. */
-export const describeBlock = (block: ProposedBlock, fallbackSheet: string): string => {
-  const width = Math.max(...block.rows.map((row) => row.length))
-  return `${block.sheet ?? fallbackSheet}!${block.address} ← ${block.rows.length}행 × ${width}열`
-}
-
-/** What the plan does, in the words the approval button and the receipt both use. */
-export const describeApplied = (plan: Plan): string => {
-  const parts: string[] = []
-  if (plan.newSheets.length > 0) parts.push(`새 시트 ${plan.newSheets.length}개`)
-  if (plan.blocks.length > 0) {
-    const rows = plan.blocks.reduce((total, block) => total + block.rows.length, 0)
-    parts.push(`표 ${plan.blocks.length}개(${rows}행)`)
-  }
-  if (plan.edits.length > 0) parts.push(`셀 ${plan.edits.length}건`)
-  return parts.length === 0 ? "변경 없음" : parts.join(", ")
-}
-
 /** Whether an approved plan would change anything at all. */
 export const planTouchesWorkbook = (plan: Plan): boolean =>
   plan.edits.length > 0 || plan.blocks.length > 0 || plan.newSheets.length > 0

@@ -9,7 +9,6 @@ import { attachSelection } from "./selection-refresh"
 const noop = (): void => {}
 const handlers = (overrides: Partial<ChatHandlers> = {}): ChatHandlers => ({
   onSend: noop,
-  onApply: noop,
   onDiscard: noop,
   onToggleSettings: noop,
   onSelectSkill: noop,
@@ -290,27 +289,6 @@ describe("the compact chat screen", () => {
     expect(root.querySelector('[data-icon="settings"]')).toBeNull()
   })
 
-  it("keeps proposal approval explicit and uses icon-plus-short-label actions", () => {
-    let applied = 0
-    const root = mount(
-      state({
-        plan: {
-          say: "",
-          edits: [{ sheet: "Main", address: "B6", value: "=SUM(B2:B5)" }],
-          blocks: [],
-          newSheets: [],
-        },
-      }),
-      handlers({ onApply: () => (applied += 1) }),
-    )
-    expect(applied).toBe(0)
-    const apply = root.querySelector<HTMLButtonElement>('[data-plan-action="apply"]')
-    expect(apply?.querySelector("svg")).not.toBeNull()
-    expect(root.querySelector('[data-plan-action="discard"] svg')).not.toBeNull()
-    apply?.click()
-    expect(applied).toBe(1)
-  })
-
   it("keeps connection settings functional without exposing a stored key", () => {
     const root = mount(
       state({ settingsOpen: true, settings: { ...DEFAULT_SETTINGS, apiKey: "sk-abcdefghijkl" } }),
@@ -371,48 +349,5 @@ describe("settings form drafts", () => {
 
     const inputs = [...root.querySelectorAll<HTMLInputElement>(".settings-input")]
     expect(inputs.map((input) => input.value)).toContain("https://saved.example/api")
-  })
-})
-
-describe("approving a table the model built", () => {
-  const tablePlan = {
-    say: "정리했습니다.",
-    edits: [],
-    blocks: [
-      {
-        sheet: "정리",
-        address: "A1",
-        rows: [
-          ["항목", "금액"],
-          ["대출채권", "1200"],
-        ],
-      },
-    ],
-    newSheets: [{ name: "정리" }],
-  }
-
-  it("offers a plan that only creates a sheet and writes a table", () => {
-    // Given: such a plan has no single-cell edits. Gating on edits meant the proposal
-    // rendered nothing at all and the request appeared to do nothing.
-    const root = mount(state({ plan: tablePlan }))
-
-    expect(root.querySelector(".plan")).not.toBeNull()
-    expect(root.querySelector('[data-plan-action="apply"]')).not.toBeNull()
-  })
-
-  it("names the sheet and the table in what the user approves", () => {
-    const root = mount(state({ plan: tablePlan }))
-
-    const items = [...root.querySelectorAll(".plan-item")].map((item) => item.textContent)
-    expect(items).toEqual(["새 시트: 정리", "정리!A1 ← 2행 × 2열"])
-    expect(root.querySelector(".plan-title")?.textContent).toContain("새 시트 1개")
-  })
-
-  it("still renders nothing when the plan changes nothing", () => {
-    const root = mount(
-      state({ plan: { say: "설명입니다.", edits: [], blocks: [], newSheets: [] } }),
-    )
-
-    expect(root.querySelector(".plan")).toBeNull()
   })
 })

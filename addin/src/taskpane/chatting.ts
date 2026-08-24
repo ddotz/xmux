@@ -8,13 +8,7 @@ import {
   SYSTEM_PROMPT_CHARS,
 } from "../ai/budget"
 import { AiError, askModel, type ChatMessage, testConnection } from "../ai/client"
-import {
-  describeApplied,
-  type Plan,
-  parsePlan,
-  planTouchesWorkbook,
-  resolveEdits,
-} from "../ai/plan"
+import { type Plan, parsePlan, planTouchesWorkbook } from "../ai/plan"
 import { announcesWork, displayReply } from "../ai/reply"
 import { DEFAULT_SETTINGS, loadSettings, redactKey, saveSettings } from "../ai/settings"
 import { isWrite, outsideUndo, type ToolCall } from "../ai/tool-schemas"
@@ -27,7 +21,6 @@ import {
 } from "../ai/tools"
 import { formatArea, parseArea } from "../excel/address"
 import type { History } from "../excel/history"
-import { recordWrite } from "../excel/history"
 import { type InspectObservation, observeTool, type RangeEvidence } from "../excel/inspect"
 import type { InspectContext, OperateContext } from "../excel/office-shapes"
 import { runWrite } from "../excel/operate"
@@ -1567,70 +1560,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     }
   }
 
-  const apply = (): void => {
-    const plan = state.plan
-    if (plan === null) return
-    const fallback = state.sheet
-    const write = async (): Promise<void> => {
-      try {
-        await deps.run(async (context) => {
-          // A sheet has to exist before anything can be written into it, and creating one
-          // is not undoable through the cell history — there is no prior value to restore.
-          // So sheets are made first, in their own sync, and the history covers the cells.
-          for (const sheet of plan.newSheets) {
-            const existing = context.workbook.worksheets.getItemOrNullObject(sheet.name)
-            existing.load("isNullObject")
-            await context.sync()
-            if (existing.isNullObject) context.workbook.worksheets.add(sheet.name)
-          }
-          if (plan.newSheets.length > 0) await context.sync()
-
-          const edits = resolveEdits(plan, fallback)
-          const label = describeApplied(plan)
-          await recordWrite(context, deps.history, label, edits, () => {
-            for (const edit of edits) {
-              context.workbook.worksheets.getItem(edit.sheet).getRange(edit.address).formulas = [
-                [edit.value],
-              ]
-            }
-            // A block lands as one rectangle: one range assignment instead of one per cell.
-            for (const block of plan.blocks) {
-              const width = Math.max(...block.rows.map((row) => row.length))
-              const padded = block.rows.map((row) => [
-                ...row,
-                ...Array.from({ length: width - row.length }, () => ""),
-              ])
-              // A plan that creates one sheet and writes one table usually names the sheet
-              // once, in newSheets. Falling back to the mirrored sheet — which may be "" —
-              // dropped that table without a word.
-              const sheetName =
-                block.sheet ?? (plan.newSheets.length === 1 ? plan.newSheets[0]?.name : fallback)
-              if (sheetName === undefined || sheetName === "") continue
-              const target = context.workbook.worksheets
-                .getItem(sheetName)
-                .getRange(block.address)
-                .getResizedRange(padded.length - 1, width - 1)
-              target.formulas = padded
-            }
-          })
-        })
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error)
-        set({ error: `변경을 적용하지 못했습니다: ${detail}` })
-        return
-      }
-      set({
-        plan: null,
-        error: null,
-        turns: [
-          ...state.turns,
-          { role: "assistant", text: `${describeApplied(plan)}을 적용했습니다.` },
-        ],
-      })
-    }
-    void write()
-  }
-
   const handlers: ChatHandlers = {
     onSend: (question) => {
       // A fresh thread is a command, not a question: nothing is sent to the server. It
@@ -1656,7 +1585,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       set({ sheet: anchor === null ? state.sheet : sheetOf(anchor.address) })
       void ask(question)
     },
-    onApply: apply,
     onDiscard: () => set({ plan: null }),
     onToggleSettings: () =>
       // Closing the form throws the unsaved draft away; reopening shows what is stored.
@@ -1674,19 +1602,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         skill,
       )
       saveLocalSkills(localStorage, localSkills)
-      const remainingPlan =
-        state.plan !== null && planTouchesWorkbook(state.plan)
-          ? {
-              say: state.plan.say,
-              edits: state.plan.edits,
-              blocks: state.plan.blocks,
-              newSheets: state.plan.newSheets,
-            }
-          : null
+      // state.plan only ever holds a skill proposal; workbook plans are never stored.
       set({
         skills: [...CHAT_SKILLS, ...localSkills],
         selectedSkillId: savedId,
-        plan: remainingPlan,
+        plan: null,
         error: null,
         turns: [...state.turns, { role: "assistant", text: `${skill.label} 스킬을 저장했습니다.` }],
       })

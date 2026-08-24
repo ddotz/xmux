@@ -1,6 +1,6 @@
-import { describeBlock, describeEdit, type Plan, type ProposedSkill } from "../ai/plan"
+import type { Plan, ProposedSkill } from "../ai/plan"
 import type { AiSettings } from "../ai/settings"
-import { renderComposer, renderPlan } from "./chat-controls"
+import { renderComposer } from "./chat-controls"
 import { renderSettings } from "./chat-settings"
 import { renderSkillProposal } from "./chat-skill-ui"
 import type { ChatSkill, ChatSkillId } from "./chat-skills"
@@ -47,7 +47,6 @@ export type ChatState = {
 
 export type ChatHandlers = {
   readonly onSend: (text: string) => void
-  readonly onApply: () => void
   readonly onDiscard: () => void
   readonly onToggleSettings: () => void
   readonly onSelectSkill: (id: ChatSkillId | null) => void
@@ -71,13 +70,6 @@ const text = (tag: string, className: string, content: string): HTMLElement => {
   node.textContent = content
   return node
 }
-/** Every part of the plan, so the user approves the whole thing and not just its cells. */
-const describePlan = (plan: Plan, sheet: string): readonly string[] => [
-  ...plan.newSheets.map((added) => `새 시트: ${added.name}`),
-  ...plan.blocks.map((block) => describeBlock(block, sheet)),
-  ...plan.edits.map((edit) => describeEdit(edit, sheet)),
-]
-
 /**
  * The log is rebuilt on every redraw, so the browser has nothing to restore and starts at
  * the top — pressing 적용 threw the user back to the first message they had already read.
@@ -146,8 +138,6 @@ export const renderChat = (
   }
 
   layout.append(renderConversation(state, navigation))
-  const plan = renderPlan(state.plan, state.sheet, handlers, describePlan)
-  if (plan !== null) layout.append(plan)
   const proposedSkill = state.plan?.skill
   if (proposedSkill !== undefined)
     layout.append(

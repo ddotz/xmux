@@ -2,7 +2,6 @@ import { columnLetters, parseArea } from "../excel/address"
 import type { ColumnStatsEvidence } from "../excel/column-stats"
 import type { RangeEvidence } from "../excel/inspect"
 import { splitQualified } from "../excel/resolve"
-import type { GroundingRead } from "./chat-grounding"
 
 type EvidenceCell = {
   readonly address: string
@@ -112,44 +111,6 @@ export const aggregateAnswerMatches = (
   })
 }
 
-const sheetFrom = (call: GroundingRead, observation: string): string => {
-  const heading = observation.split("\n")[0] ?? ""
-  const bang = heading.lastIndexOf("!")
-  return (call.sheet ?? (bang < 0 ? "" : heading.slice(0, bang))).replaceAll("'", "").trim()
-}
-
-const cellsFrom = (call: GroundingRead, observation: string): readonly EvidenceCell[] => {
-  const sheet = sheetFrom(call, observation)
-  const lines = observation.split("\n")
-  const headerAt = lines.findIndex((line) => line.startsWith("\t"))
-  if (headerAt < 0) return []
-  const columns = (lines[headerAt] ?? "").split("\t").slice(1)
-  const cells = new Map<string, string[]>()
-  for (const line of lines.slice(headerAt + 1)) {
-    const row = /^([1-9][0-9]*)\t(.*)$/.exec(line)
-    if (row === null) break
-    const rowNumber = row[1] ?? ""
-    const body = row[2] ?? ""
-    if (body === "(빈 행)") {
-      for (const column of columns) cells.set(`${sheet}!${column}${rowNumber}`, [""])
-      continue
-    }
-    for (const [index, value] of body.split("\t").entries()) {
-      const column = columns[index]
-      if (column !== undefined)
-        cells.set(`${sheet}!${column}${rowNumber}`, [value === "·" ? "" : value])
-    }
-  }
-  for (const line of lines) {
-    const display = /^([A-Z]{1,3}[1-9][0-9]*): 표시 "([^"]*)"/.exec(line)
-    if (display === null) continue
-    const key = `${sheet}!${display[1]}`
-    const held = cells.get(key)
-    if (held !== undefined) held.push(display[2] ?? "")
-  }
-  return [...cells].map(([address, values]) => ({ address, values }))
-}
-
 const withoutReferences = (answer: string): string =>
   answer.replace(
     CELL_REFERENCE,
@@ -246,16 +207,6 @@ const answerMatchesCells = (answer: string, cells: readonly EvidenceCell[]): boo
     number === 0 && blanks > 0 ? true : allowed.some((held) => sameNumber(number, held)),
   )
 }
-
-export const groundedAnswerMatches = (
-  answer: string,
-  calls: readonly GroundingRead[],
-  observations: readonly string[],
-): boolean =>
-  answerMatchesCells(
-    answer,
-    calls.flatMap((call, index) => cellsFrom(call, observations[index] ?? "")),
-  )
 
 export const rangeAnswerMatches = (answer: string, evidence: readonly RangeEvidence[]): boolean => {
   const cells = evidence.flatMap((item) => {
