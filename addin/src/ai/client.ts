@@ -20,16 +20,55 @@ export type ChatMessage = {
   readonly content: string
 }
 
-/** Delay before each retry attempt after the first; tests zero this out. */
-export const retryBackoffMs = [2_000, 10_000]
+/**
+ * How a failure behaves, because "transient" is not one thing.
+ *
+ * A connect error or a 502 fails in milliseconds and costs nothing to repeat; a 240-second
+ * timeout costs four minutes each time; a deterministic length overflow never clears at all.
+ * One schedule for all of them means either the cheap class gives up too early or the
+ * expensive one hangs the composer. Measured: a provider 502 burst exhausted three attempts
+ * in 14 seconds and killed a turn that had produced nothing (eval T1, 2026-08-24).
+ */
+export type FailureClass = "connect" | "rateLimit" | "timeout" | "incomplete" | "fatal"
+
+/** Attempts and backoff per class. */
+const RETRY_PLAN: Record<FailureClass, { readonly attempts: number; readonly backoff: number[] }> =
+  {
+    // Fails fast and free: five attempts ride out a ~60s provider blip in ~70s.
+    connect: { attempts: 5, backoff: [1_000, 5_000, 15_000, 45_000] },
+    // The server usually says when to come back; this schedule is the fallback.
+    rateLimit: { attempts: 4, backoff: [5_000, 20_000, 60_000] },
+    // Each attempt already burned the full request timeout.
+    timeout: { attempts: 2, backoff: [1_000] },
+    // A reasoning burst clears on the second try; a deterministic overflow never does.
+    incomplete: { attempts: 2, backoff: [1_000] },
+    fatal: { attempts: 1, backoff: [] },
+  }
+
+/** Test hook: any entry here replaces the planned delay, so the suite never waits. */
+export const retryBackoffMs: number[] = []
+
+/** ±25% so a room full of panes does not retry in lockstep against one server. */
+const jittered = (delay: number): number =>
+  Math.max(0, Math.round(delay * (0.75 + Math.random() * 0.5)))
 
 export class AiError extends Error {
-  /** True when the failure is measured to be transient: one retry is worth spending. */
+  /** True when the failure is measured to be transient: a retry is worth spending. */
   readonly retryable: boolean
-  constructor(message: string, retryable = false) {
+  readonly failureClass: FailureClass
+  /** How long the server asked us to wait, when it said so. */
+  readonly retryAfterMs: number | null
+  constructor(
+    message: string,
+    retryable = false,
+    failureClass: FailureClass = retryable ? "connect" : "fatal",
+    retryAfterMs: number | null = null,
+  ) {
     super(message)
     this.name = "AiError"
     this.retryable = retryable
+    this.failureClass = failureClass
+    this.retryAfterMs = retryAfterMs
   }
 }
 
@@ -210,14 +249,27 @@ const askOnce = async (
   } catch (error) {
     // A pane has no console the user will read, so the reason has to survive as text.
     const reason = error instanceof Error ? redactKey(error.message, settings.apiKey) : "알 수 없음"
-    throw new AiError(`AI 서버에 연결하지 못했습니다: ${reason}`, true)
+    // An abort is the 240-second timeout firing — a different cost class from a connection
+    // that refused in a millisecond.
+    const timedOut =
+      error instanceof Error && /abort|timeout/i.test(`${error.name}${error.message}`)
+    throw new AiError(
+      `AI 서버에 연결하지 못했습니다: ${reason}`,
+      true,
+      timedOut ? "timeout" : "connect",
+    )
   }
 
-  if (!response.ok)
+  if (!response.ok) {
+    const retryAfter = Number(response.headers.get("retry-after") ?? "")
     throw new AiError(
       describeFailure(response.status, await response.text(), settings),
       response.status === 429 || response.status >= 500,
+      response.status === 429 ? "rateLimit" : response.status >= 500 ? "connect" : "fatal",
+      // Capped: a server asking for ten minutes asks for more than a pane may wait.
+      Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1_000, 60_000) : null,
     )
+  }
 
   // A 200 carrying something that is not JSON (a proxy error page, a half-written body)
   // used to escape as a raw SyntaxError, which nothing upstream caught.
@@ -225,10 +277,10 @@ const askOnce = async (
   try {
     body = await response.json()
   } catch {
-    throw new AiError("AI 응답을 이해하지 못했습니다.", true)
+    throw new AiError("AI 응답을 이해하지 못했습니다.", true, "incomplete")
   }
   const completion = completionOf(body)
-  if (completion === null) throw new AiError("AI 응답을 이해하지 못했습니다.", true)
+  if (completion === null) throw new AiError("AI 응답을 이해하지 못했습니다.", true, "incomplete")
   if (completion.refusal !== null)
     throw new AiError(`AI가 요청을 거부했습니다: ${completion.refusal.trim().slice(0, 300)}`)
   if (
@@ -241,6 +293,7 @@ const askOnce = async (
         ? "AI 답변이 길이 제한으로 중간에 잘렸습니다. 요청 범위를 나눠 다시 시도해 주세요."
         : `AI 답변이 완료되지 않았습니다: ${completion.finishReason}`,
       true,
+      "incomplete",
     )
   }
   // A thinking model's deliberation arrives inside `content` on a server that does not
@@ -250,7 +303,11 @@ const askOnce = async (
   if (visible.trim() === "")
     // A deliberation-only reply clears on a second attempt as often as not — the same
     // transient class as a length truncation — so the turn must not die on it.
-    throw new AiError("AI가 실행 가능한 답변을 만들지 못했습니다. 다시 시도해 주세요.", true)
+    throw new AiError(
+      "AI가 실행 가능한 답변을 만들지 못했습니다. 다시 시도해 주세요.",
+      true,
+      "incomplete",
+    )
   return visible
 }
 
@@ -268,14 +325,11 @@ export const askModel = async (
   messages: readonly ChatMessage[],
   fetcher: typeof fetch = fetch,
 ): Promise<string> => {
-  // Three attempts with a short backoff: production is a dedicated self-hosted server,
-  // and this bounds the worst case near twelve minutes with the composer locked. The
-  // five-attempt schedule with a 90-second tail was measured against a congested shared
-  // eval key, not against the deployment users wait on. The transient classes it covered
-  // (429/5xx bursts, HTTP-200 ghost failures, network blips) clear within two retries.
-  const backoffMs = retryBackoffMs
+  // Each failure class gets the budget its cost justifies (RETRY_PLAN). A cheap 502 burst
+  // may be hammered; a 240-second timeout may not; a deterministic length overflow is
+  // surfaced at once rather than paying for two more full-context generations.
   let last: AiError | null = null
-  for (let attempt = 0; attempt < 3; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
       return await askOnce(settings, messages, fetcher)
     } catch (error) {
@@ -284,12 +338,13 @@ export const askModel = async (
           ? error
           : new AiError(error instanceof Error ? error.message : "알 수 없음")
       if (!last.retryable) throw last
-      if (attempt < backoffMs.length) {
-        await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt]))
-      }
+      const plan = RETRY_PLAN[last.failureClass]
+      if (attempt + 1 >= plan.attempts) throw last
+      const override = retryBackoffMs[attempt] ?? retryBackoffMs.at(-1)
+      const delay = override ?? jittered(last.retryAfterMs ?? plan.backoff[attempt] ?? 0)
+      if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
     }
   }
-  throw last ?? new AiError("AI 요청이 반복 실패했습니다.")
 }
 
 export const testConnection = async (

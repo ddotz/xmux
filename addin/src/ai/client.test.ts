@@ -37,7 +37,9 @@ type RequestBody = {
 const productionBackoff = [...retryBackoffMs]
 
 beforeEach(() => {
-  retryBackoffMs.splice(0, retryBackoffMs.length, 0, 0)
+  // One zero per possible retry of the longest schedule (connect: 5 attempts), so no test
+  // ever waits on a real backoff.
+  retryBackoffMs.splice(0, retryBackoffMs.length, 0, 0, 0, 0)
 })
 afterEach(() => {
   retryBackoffMs.splice(0, retryBackoffMs.length, ...productionBackoff)
@@ -389,13 +391,15 @@ describe("transient failure retry", () => {
     expect(seq.count()).toBe(2)
   })
 
-  it("still fails after the retry instead of looping", async () => {
+  it("surfaces a length overflow after exactly two attempts instead of paying for a third", async () => {
+    // A deterministic overflow never clears: attempt three is a wasted full-context
+    // generation and two more minutes of the user staring at a locked composer.
     const truncated = {
       choices: [{ message: { role: "assistant", content: null }, finish_reason: "length" }],
     }
     const seq = sequencing([truncated])
     await expect(askModel(SETTINGS, messages, seq.fetcher)).rejects.toThrow(AiError)
-    expect(seq.count()).toBe(3)
+    expect(seq.count()).toBe(2)
   })
 
   it("retries a deliberation-only reply and accepts the answer that follows", async () => {
@@ -422,38 +426,61 @@ describe("transient failure retry", () => {
 describe("provider flap tolerance", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "B6 값을 알려줘" }]
 
-  it("survives two consecutive ghost failures on the third attempt", async () => {
-    // HTTP 200 with null content arrives in bursts; two retries cover the burst on a
-    // dedicated server without hanging the composer for a quarter hour.
-    const bad = {
-      status: 200,
-      choices: [{ finish_reason: "stop", message: { role: "assistant", content: null } }],
-    }
+  it("rides out a provider 502 burst that outlasts four attempts", async () => {
+    // Recorded eval T1 (2026-08-24): three 502s inside 14 seconds killed a turn that had
+    // produced nothing. A connect-class failure costs milliseconds, so it earns a bigger
+    // budget than an expensive class does.
     let sent = 0
     const fetcher = async (): Promise<Response> => {
       sent += 1
-      return new Response(
-        JSON.stringify(
-          sent < 3 ? bad : { choices: [{ message: { role: "assistant", content: "2044160" } }] },
-        ),
-        {
-          status: 200,
-        },
-      )
+      return sent < 5
+        ? new Response(JSON.stringify({ error: { message: "Unable to connect" } }), {
+            status: 502,
+          })
+        : new Response(
+            JSON.stringify({ choices: [{ message: { role: "assistant", content: "2044160" } }] }),
+            { status: 200 },
+          )
     }
     const answer = await askModel(SETTINGS, messages, fetcher)
     expect(answer).toContain("2044160")
-    expect(sent).toBe(3)
+    expect(sent).toBe(5)
   })
 
-  it("still fails after three attempts instead of hanging the conversation", async () => {
-    const bad = { status: 502, error: { message: "upstream" } }
+  it("still gives up on a sustained outage instead of hanging the conversation", async () => {
     let sent = 0
     const fetcher = async (): Promise<Response> => {
       sent += 1
-      return new Response(JSON.stringify(bad), { status: 502 })
+      return new Response(JSON.stringify({ error: { message: "upstream" } }), { status: 502 })
     }
     await expect(askModel(SETTINGS, messages, fetcher)).rejects.toThrow(AiError)
-    expect(sent).toBe(3)
+    expect(sent).toBe(5)
+  })
+
+  it("honors Retry-After on a rate limit and stops after four attempts", async () => {
+    const waited: number[] = []
+    retryBackoffMs.splice(0, retryBackoffMs.length)
+    const realTimeout = globalThis.setTimeout
+    const spy = (handler: TimerHandler, delay?: number): ReturnType<typeof setTimeout> => {
+      waited.push(delay ?? 0)
+      if (typeof handler === "function") handler()
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }
+    globalThis.setTimeout = spy as unknown as typeof globalThis.setTimeout
+    const sleep = { mockRestore: (): void => void (globalThis.setTimeout = realTimeout) }
+    let sent = 0
+    const fetcher = async (): Promise<Response> => {
+      sent += 1
+      return new Response(JSON.stringify({ error: { message: "rate" } }), {
+        status: 429,
+        headers: { "retry-after": "3" },
+      })
+    }
+    await expect(askModel(SETTINGS, messages, fetcher)).rejects.toThrow(AiError)
+    sleep.mockRestore()
+    retryBackoffMs.splice(0, retryBackoffMs.length, 0, 0, 0, 0)
+    expect(sent).toBe(4)
+    // The server's own number, jittered, not the fallback schedule.
+    expect(waited.every((delay) => delay >= 2_250 && delay <= 3_750)).toBe(true)
   })
 })
