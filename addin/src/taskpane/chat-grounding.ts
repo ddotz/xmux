@@ -241,11 +241,7 @@ export const stripUnverifiedSentences = (
     .filter((sentence) => {
       const trimmed = sentence.trim()
       if (trimmed === "") return true
-      if (
-        parentDropped &&
-        workbookClaim(sentence) &&
-        /^\d[\d,]*\s*·/.test(trimmed)
-      ) {
+      if (parentDropped && workbookClaim(sentence) && /^\d[\d,]*\s*·/.test(trimmed)) {
         dropped += 1
         return false
       }
