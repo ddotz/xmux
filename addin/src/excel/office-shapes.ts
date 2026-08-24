@@ -209,8 +209,8 @@ export type InspectRange = {
   readonly load: (properties: string) => void
   /** select_range lands here through the write side's cast. */
   readonly select?: () => void
-  /** fill_formula's fill-down probe lands here through the write side's cast. */
-  readonly autoFill?: () => void
+  /** fill_formula's fill-down lands here through the write side's cast. */
+  readonly autoFill?: (destination: InspectRange, type: string) => void
 }
 
 export type InspectSheet = {

@@ -31,7 +31,7 @@ type AggregateMetric = "count" | "filled" | "blank" | "sum" | "average" | "min" 
 const aggregateMetric = (before: string): AggregateMetric | null => {
   const candidates = [
     { metric: "count", pattern: /(?:숫자|numeric|count)/gi },
-    { metric: "filled", pattern: /(?:값|건수|filled)/gi },
+    { metric: "filled", pattern: /(?:값|건수|filled|채워진|채움)/gi },
     { metric: "blank", pattern: /(?:빈칸|공백|blank)/gi },
     { metric: "sum", pattern: /(?:합계|총합|sum)/gi },
     { metric: "average", pattern: /(?:평균|average)/gi },

@@ -247,3 +247,45 @@ describe("digit-free blank claims", () => {
     expect(aggregateAnswerMatches("일부가 비어 있습니다.", evidence(10))).toBe(false)
   })
 })
+
+describe("filled-count vocabulary", () => {
+  // Measured on eval L1 (run 2026-08-24T05-09): a correct column table phrased as
+  // "채워진 칸 298건" failed the matcher (vocabulary only knew 값/건수/filled), so the
+  // sentence filter dropped every row of an otherwise correct analysis.
+  const evidence = [
+    {
+      kind: "column_stats" as const,
+      sheet: "Main",
+      address: "Main!A1:A34979",
+      rowCount: 34_979,
+      hasHeaders: true,
+      columns: [
+        {
+          index: 1,
+          letter: "A",
+          count: 34_978,
+          filled: 298,
+          blank: 34_680,
+          sum: null,
+          average: null,
+          min: null,
+          max: null,
+        },
+      ],
+    },
+  ]
+
+  it("binds a 채워진 count to the filled metric", () => {
+    expect(aggregateAnswerMatches("A열: 채워진 칸 298건입니다.", evidence)).toBe(true)
+  })
+
+  it("keeps binding 빈칸 counts in the same sentence", () => {
+    expect(aggregateAnswerMatches("A열: 채워진 칸 298건 · 빈칸 34,680건입니다.", evidence)).toBe(
+      true,
+    )
+  })
+
+  it("still rejects a wrong filled count", () => {
+    expect(aggregateAnswerMatches("A열: 채워진 칸 299건입니다.", evidence)).toBe(false)
+  })
+})

@@ -70,6 +70,47 @@ export const buildEvalContext = (
   /** Source/destination geometry for queued pivot specs, keyed by the Range object. */
   const rangeMeta = new WeakMap<object, { fixture: SheetFixture; address: string }>()
 
+/** Shifts a column-letter run by a fill offset, clamping at A. */
+const shiftColumnLetters = (letters: string, delta: number): string => {
+  let index = 0
+  for (const ch of letters.toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64)
+  let rest = Math.max(1, index + delta)
+  let out = ""
+  while (rest > 0) {
+    out = String.fromCharCode(65 + ((rest - 1) % 26)) + out
+    rest = Math.floor((rest - 1) / 26)
+  }
+  return out
+}
+
+/**
+ * Excel's FillDefault shifts the RELATIVE parts of every reference by the fill offset and
+ * leaves quoted text alone. The fixture must reproduce both behaviors: without the shift a
+ * per-row fill stores the anchor formula verbatim down the column, and every later read —
+ * including the F9-style per-row checks — sees one formula repeated where row-adjusted ones
+ * belong.
+ */
+const shiftFormulaRefs = (formula: string, rowDelta: number, columnDelta: number): string =>
+  formula
+    .split(/("(?:[^"]|"")*")/g)
+    .map((segment) =>
+      segment.startsWith('"')
+        ? segment
+        : segment.replace(
+            /(?<![A-Za-z0-9_$])(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})(?![0-9A-Za-z_(])/g,
+            (_whole, colDollar, letters, rowDollar, digits) => {
+              const shiftedRow =
+                rowDollar === "$" ? Number(digits) : Math.max(1, Number(digits) + rowDelta)
+              const shiftedLetters =
+                colDollar === "$"
+                  ? letters.toUpperCase()
+                  : shiftColumnLetters(letters, columnDelta)
+              return `${colDollar}${shiftedLetters}${rowDollar}${shiftedRow}`
+            },
+          ),
+    )
+    .join("")
+
   const buildRange = (
     fixture: SheetFixture,
     area: { top: number; left: number; height: number; width: number },
@@ -129,7 +170,36 @@ export const buildEvalContext = (
       load: () => {},
       select: () => {},
       // fill_formula's autofit probe and Excel-style fill reach this via the write cast.
-      autoFill: () => {},
+      // FillDefault repeats the source rectangle across the destination; every copied cell
+      // carries its references shifted by how far its tile sits from the source origin.
+      autoFill: (destination: InspectRange, _type: string): void => {
+        const meta = rangeMeta.get(destination)
+        if (meta === undefined || meta.fixture !== fixture) return
+        const destinationArea = parseArea(localAddress(meta.address))
+        if (destinationArea === null) return
+        if (
+          destinationArea.top === area.top &&
+          destinationArea.left === area.left &&
+          destinationArea.height === area.height &&
+          destinationArea.width === area.width
+        )
+          return
+        const source = slice(fixture.formulas, null)
+        const sourceRows = Math.max(1, area.height)
+        const sourceColumns = Math.max(1, area.width)
+        const writable = destination as InspectRange & { formulas: (string | null)[][] }
+        writable.formulas = Array.from({ length: destinationArea.height }, (_unused, dr) => {
+          const tileRow = Math.floor(dr / sourceRows) * sourceRows
+          return Array.from({ length: destinationArea.width }, (_unused2, dc) => {
+            const tileColumn = Math.floor(dc / sourceColumns) * sourceColumns
+            const cell = source[dr % sourceRows]?.[dc % sourceColumns] ?? null
+            if (cell === null) return null
+            const rowDelta = destinationArea.top - area.top + tileRow
+            const columnDelta = destinationArea.left - area.left + tileColumn
+            return shiftFormulaRefs(cell as string, rowDelta, columnDelta)
+          })
+        })
+      },
     }
     return range
   }
