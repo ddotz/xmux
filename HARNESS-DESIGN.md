@@ -66,9 +66,12 @@ Actions, all inside one `deps.run` (2–4 syncs, ~100–300 ms):
 - `runColumnStats` over the selection width in 12-column batches (existing);
 - new per-column profile (see `excel/profile.ts` below).
 
-The result enters the conversation **before the model's first reply** as
-`{kind:"excel_aggregate_evidence", …}` — the same shape the post-hoc path serializes
-today, so downstream consumers do not change.
+The result enters the conversation **before the model's first reply**, appended to the
+question's own user turn (never as a turn after it — `conversationFor` keeps only the
+newest of consecutive user turns, which silently erased the question until 2026-08-24).
+It carries the same `{kind:"excel_aggregate_evidence", …}` shape the post-hoc path
+serializes, and downstream consumers read aggregates from the harness ledger, not from
+messages, so they do not change.
 
 Effect on latency: the model no longer spends 2–3 rounds discovering structure
 (used_range → column_stats → probing reads). On a self-hosted 27B server the LLM round
@@ -233,7 +236,8 @@ net prompt must not grow — retire a line for every line added.
   re-runs, and the fit gate sums rendered output against `observationChars`.
 - **Phase 4**: budget splits rebalanced (`round = obs·0.8`, `read = round·0.6`, gates vs
   `observationChars`). The prompt needed no swap — it already taught aggregates-first;
-  the dynamic instruction now rides in with the intake profile turn itself. Window hint
+  the dynamic instruction now rides inside the question's own user turn together with
+  the intake profile. Window hint
   table was dropped as unnecessary: the default deployment's window is correct and the
   settings field already exists for everything else.
 - Verification: 697 unit/integration tests, `tsc --noEmit`, Biome clean, plus 15

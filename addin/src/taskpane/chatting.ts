@@ -244,8 +244,15 @@ const NOT_VERIFIED =
   "셀 상태를 다시 확인했지만 답변의 주장과 일치시키지 못했습니다. 확인되지 않은 값은 알 수 없습니다."
 const SELECTION_NOT_VERIFIED = "전체 범위를 모두 읽지 못해 판단할 수 없다."
 
+/**
+ * Claims THIS turn performed work, in the active past the answer format mandates
+ * ("만들었습니다", "적용했습니다"). Passive forms ("적용됐습니다", "변경됐습니다") describe
+ * state the workbook is already in — analysis findings about existing sheets, not work
+ * reports — and used to discard correct zero-write answers wholesale as NOT_PERFORMED.
+ * 만들/쓰/채우 take the vowel-harmony past (었), the 하다-class verbs take 했/하였.
+ */
 const CLAIMS_CHANGE =
-  /(?:만들|쓰|채우|적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정)(?:했|됐|하였)/
+  /(?:만들었|썼|채웠|(?:적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정|생성|입력|작성)(?:했|하였))/
 const AMBIGUOUS_CONTINUATION = /^(?:계속|이어서|마저|그대로)(?:해|하|진행|작업)?/
 
 const ABANDONED = Symbol("abandoned chat generation")
@@ -334,7 +341,9 @@ const INTAKE_PROFILE_CELLS = 500
 /** The exact observation a write tool returns on an answer-only turn. Receipt exclusion
  * keys on this identity — never on prose sniffing, or a sheet literally named 분석 전용
  * could make a genuine failure vanish. */
-const READ_ONLY_REFUSAL = refused("이 요청은 분석 전용입니다. 워크북을 바꾸지 말고 답변으로만 답합니다.")
+const READ_ONLY_REFUSAL = refused(
+  "이 요청은 분석 전용입니다. 워크북을 바꾸지 말고 답변으로만 답합니다.",
+)
 
 const OUT_OF_ROUNDS =
   "도구 실행을 여기서 멈추고 종료합니다. 아래 실행 확인에 기록된 작업만 반영됐으며 나머지는 완료되지 않았습니다."
@@ -364,13 +373,8 @@ export const trimObservations = (
   // the numbers it carried — so later rounds keep citable figures without resending full
   // grids. The observation pool absorbed every number at read time and grounding re-reads
   // live cells before any final answer, so folding costs accuracy nothing.
-  // The intake profile stays whole here as well: it is the shared foundation of every
-  // aggregate claim, not a stale intermediate result.
-  const intakeIdx = messages.findIndex(
-    (m) => m.role === "user" && m.content.includes("선택 영역 사전 집계"),
-  )
   return messages.map((message, index) =>
-    observationIndexes.includes(index) && !whole.has(index) && index !== intakeIdx
+    observationIndexes.includes(index) && !whole.has(index)
       ? { ...message, content: foldObservation(message.content) }
       : message,
   )
@@ -444,13 +448,13 @@ export const fitConversation = (
   // later aggregate claim leans on; stubbing it starves the rewrite of its evidence.
   const isIntake = (content: string): boolean => content.includes("선택 영역 사전 집계")
   let current = [...messages]
-  // Pass 1: every observation except the newest and the intake profile collapses.
+  // Pass 1: every observation except the newest collapses. The intake profile used to be
+  // exempted here by content match; it now rides inside the question's own user turn,
+  // which is never an OBSERVATION_PREFIX message, so there is nothing to exempt.
   const observationIndexes = messages.map((_, index) => index).filter(observationAt)
   const newestObservation = observationIndexes.at(-1) ?? -1
-  const intakeIndex =
-    observationIndexes.find((index) => isIntake(messages[index]?.content ?? "")) ?? -1
   current = current.map((message, index) =>
-    observationAt(index) && index !== newestObservation && index !== intakeIndex
+    observationAt(index) && index !== newestObservation
       ? {
           ...message,
           content: `${message.content.slice(0, TRIMMED_OBSERVATION_CHARS)}\n… (이전 결과 생략)`,
@@ -458,15 +462,19 @@ export const fitConversation = (
       : message,
   )
   if (spent(current) <= limit) return current
-  // Pass 2: drop the oldest turns wholesale, keeping the system message, the intake
-  // profile, and the tail. Protection is by content, not stored index: each removal
-  // shifts positions, so a captured index would start pointing at the wrong turn.
+  // Pass 2: drop the oldest turns wholesale, keeping the system message, the question's
+  // merged turn (question + read-only note + intake profile), and the tail. Protection is
+  // by content, not stored index: each removal shifts positions, so a captured index
+  // would start pointing at the wrong turn.
   while (current.length > 3 && spent(current) > limit) {
+    // Only a USER turn may anchor the intake marker. An assistant reply quoting workbook
+    // text that happens to contain the phrase must stay droppable, or a crafted sheet
+    // name could pin arbitrary bulk into every later request.
     const dropIndex = current.findIndex(
       (message, index) =>
         index > 0 &&
         index < current.length - 1 &&
-        !(isIntake(message.content) && message.content.startsWith(OBSERVATION_PREFIX)),
+        !(message.role === "user" && isIntake(message.content)),
     )
     if (dropIndex < 0) break
     current = [...current.slice(0, dropIndex), ...current.slice(dropIndex + 1)]
@@ -537,6 +545,21 @@ const GLOBAL_TOOLS = new Set<ToolCall["tool"]>([
   "list_names",
   "add_table_column",
   "recalculate",
+])
+
+/**
+ * Running these identically twice never helps: rows, columns, sheets and objects
+ * duplicate. create_sheet/delete_sheet would fail loudly on a repeat anyway; they are
+ * listed so the model gets one specific refusal instead of a generic Excel error.
+ */
+const NON_IDEMPOTENT_TOOLS = new Set<ToolCall["tool"]>([
+  "insert_rows",
+  "insert_columns",
+  "create_sheet",
+  "delete_sheet",
+  "copy_sheet",
+  "add_chart",
+  "add_table_column",
 ])
 
 const bindCallSheet = (call: ToolCall, sheet: string): ToolCall => {
@@ -823,18 +846,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         sheet: targetSheet,
         coverage: attachment === null ? "none" : attachment.cellCount > 72 ? "not_loaded" : "full",
       })
-      const turns = [
-        ...conversation(
-          request,
-          workbook,
-          selectedSkillId,
-          state.skills,
-          attachment,
-          previous,
-          budget,
-        ),
-      ]
-
       // The model works the workbook the way a person would: look, act, look again. Each
       // round it sends one tool call or a batch of them, every call runs against the real
       // sheet as it arrives, and the results go back so it can continue — until it answers.
@@ -844,11 +855,32 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // triggers this: a negative clause inside a write request ("추가하지 말고 F10에 써줘")
       // scopes the write, it does not forbid one.
       const readOnlyRequest = /답변으로만|분석만/.test(request)
-      if (readOnlyRequest)
-        turns.push({
-          role: "user",
-          content: "(참고: 이 요청은 분석 전용입니다. 워크북을 바꾸는 도구는 실행되지 않습니다.)",
-        })
+      // Harness notes ride INSIDE the question's own user turn, never as a turn after it.
+      // conversationFor keeps only the newest of consecutive user turns (an abandoned
+      // request must not replay beside its correction), so anything appended as a separate
+      // user message silently replaced the question on the wire — the model then answered
+      // from the appended material alone without ever reading what was asked.
+      const questionTurn = readOnlyRequest
+        ? `${request}\n\n(참고: 이 요청은 분석 전용입니다. 워크북을 바꾸는 도구는 실행되지 않습니다.)`
+        : request
+      const turns = [
+        ...conversation(
+          questionTurn,
+          workbook,
+          selectedSkillId,
+          state.skills,
+          attachment,
+          previous,
+          budget,
+        ),
+      ]
+
+      /** Grow the question's own user turn instead of adding a turn after it. */
+      const appendToQuestion = (extra: string): void => {
+        const last = turns.at(-1)
+        if (last === undefined || last.role !== "user") return
+        turns[turns.length - 1] = { role: "user", content: `${last.content}\n\n${extra}` }
+      }
       const runCall = async (call: ToolCall): Promise<string> => {
         if (!current()) throw ABANDONED
         commit({ activity: [...state.activity, describeCall(call)] })
@@ -911,6 +943,14 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
       let repeats = 0
       let lastBatch: string | null = null
+      /**
+       * Destructive calls the previous EXECUTED batch landed, plus ones landed inside the
+       * batch in flight, by canonical signature. Refusing their exact repetition is what
+       * stops a grown batch from re-running its prefix; scoping both sets to the immediate
+       * previous batch keeps deliberate redo flows (delete, then redo) free.
+       */
+      const executedBatchWrites = new Set<string>()
+      const pendingBatchWrites = new Set<string>()
       // Every number any real observation has shown this conversation. The final sentence
       // filter accepts a claim when all of its numbers appeared in some observation —
       // read_range evidence alone misses column_stats/explain_cell facts and used to
@@ -953,13 +993,14 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         if (!current()) throw ABANDONED
         if (profiled !== null) {
           for (const observation of profiled) rememberNumbers(observation.text)
-          turns.push({
-            role: "user",
-            content: `${OBSERVATION_PREFIX}\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${boundRound(
+          // Same rule as the read-only note: a profile turn after the question replaces
+          // the question on the wire, so it joins the question's own turn instead.
+          appendToQuestion(
+            `${OBSERVATION_PREFIX}\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${boundRound(
               profiled.map((observation) => observation.text),
               budget,
             )}\n이 집계를 우선 근거로 사용하세요. 개별 셀 값이 필요하면 그 범위만 read_range로 읽습니다.`,
-          })
+          )
         }
       }
 
@@ -1038,10 +1079,31 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         let batchChanged = false
         for (const [index, normalized] of normalizedBatch.entries()) {
           const call = normalized.call
-          const observation =
-            normalized.rejected === null
+          // An identical destructive call carried over from the batch that just ran, or
+          // doubled inside this one, would run twice — insert_rows twice is two rows. The
+          // pane refuses the copy instead. Only the immediately previous EXECUTED batch
+          // counts, and only calls that actually changed the workbook: a failed or
+          // unreachable call must stay retryable, and a delete-then-redo flow must not be
+          // mistaken for a stuck repeat.
+          const callKey =
+            isWrite(call) && NON_IDEMPOTENT_TOOLS.has(call.tool)
+              ? JSON.stringify(stableValue(signatureCall(call)))
+              : null
+          const duplicated =
+            callKey !== null &&
+            (executedBatchWrites.has(callKey) || pendingBatchWrites.has(callKey))
+          // The refusal below deliberately bypasses runCall AND recordAction: nothing ran,
+          // so no ActionReceipt may exist — otherwise withFailures would print a phantom
+          // "실행 실패 확인" line for work whose original call already landed once.
+          const observation = duplicated
+            ? refused(
+                "직전에 똑같이 실행된 호출이라 다시 실행하지 않았습니다. 남은 단계로 진행하거나 답변하세요.",
+              )
+            : normalized.rejected === null
               ? await runCall(call)
               : refused(`${normalized.rejected}. 호출을 실행하지 않았습니다.`)
+          if (callKey !== null && !duplicated && changedWorkbook(observation))
+            pendingBatchWrites.add(callKey)
           if (normalized.rejected !== null && isWrite(call))
             harness.recordAction(call, observation, false)
           if (isWrite(call) && changedWorkbook(observation)) {
@@ -1068,7 +1130,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           const refreshed = await describeWorkbook(attachment)
           if (!current()) throw ABANDONED
           const system = conversation(
-            request,
+            questionTurn,
             refreshed,
             selectedSkillId,
             state.skills,
@@ -1081,6 +1143,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         // A call this side refused goes back to the model to be rewritten. It is not an
         // answer, and it never reaches the screen.
         if (step.rejected !== null) observations.push(step.rejected)
+        // End of an executed batch: what was pending is now the previous batch.
+        executedBatchWrites.clear()
+        for (const key of pendingBatchWrites) executedBatchWrites.add(key)
+        pendingBatchWrites.clear()
         const left = MAX_TOOL_ROUNDS - (round + 1)
         if (left <= BUDGET_WARNING_ROUNDS) observations.push(`남은 도구 왕복 ${left}회`)
         turns.push({ role: "assistant", content: reply })

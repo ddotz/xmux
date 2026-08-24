@@ -513,7 +513,9 @@ describe("workbook lookups before answering", () => {
       sync: async () => {},
     }
     vi.mocked(askModel)
-      .mockResolvedValueOnce('{"tool":"write_range","sheet":"Main","address":"F10","rows":[["합계"]]}')
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"Main","address":"F10","rows":[["합계"]]}',
+      )
       .mockResolvedValueOnce("F10에 합계를 썼습니다.")
     const chatting = createChatting({
       redraw: () => {},
@@ -1598,6 +1600,52 @@ describe("working through a batch of tool calls", () => {
     expect(said).not.toContain('"tool"')
   })
 
+  it("sends an answer-only request with its question intact", async () => {
+    // conversationFor keeps only the newest of consecutive user turns, so a note pushed as
+    // its own turn after the question replaced the question on the wire: the model was
+    // told the turn is read-only without ever reading what to analyze. The note now rides
+    // inside the question's own user message.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue("열 구성은 A열 코드, B열 금액입니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("표를 만들지 말고 열 구성만 답변으로만 요약해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const messages = vi.mocked(askModel).mock.calls.at(0)?.[1] ?? []
+    const questionTurn = messages.at(-1)
+    expect(questionTurn?.role).toBe("user")
+    expect(questionTurn?.content).toContain("열 구성만 답변으로만 요약해줘")
+    expect(questionTurn?.content).toContain("분석 전용")
+  })
+
+  it("stops an answer that claims work nothing ran", async () => {
+    // Given: the model says the build landed while the ledger holds zero receipts.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue("정리 시트를 만들었습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toContain("워크북 작업을 실행하지 못했습니다")
+  })
+
+  it("keeps an analysis answer that describes state in the passive past", async () => {
+    // Given: zero writes and an answer whose passive forms ("적용됐") describe the workbook
+    // as it already is. Reading those as work reports replaced correct analyses wholesale.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue(
+      "B열에는 이미 회계 서식이 적용됐고 별도 조치는 필요 없습니다.",
+    )
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("서식 상태 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toContain("이미 회계 서식이 적용됐고")
+  })
+
   it("does not run the same batch twice, and stops asking when it comes back a third time", async () => {
     // Given: the way a long build actually fails. The model cannot see why its call did
     // nothing, sends it again unchanged, and used to spend the whole round budget doing it
@@ -1632,6 +1680,51 @@ describe("working through a batch of tool calls", () => {
     chatting.handlers.onSend("3행을 한 번 삽입해")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
+    expect(book.inserted).toEqual(["$3:$3:Down"])
+  })
+
+  it("refuses a destructive call that returns inside a changed batch it already ran", async () => {
+    // The batch-level repeat gate only catches fully identical batches. A batch that adds
+    // one new call re-ran everything identical in front of it — insert_rows twice is two
+    // inserted rows — so destructive calls are also refused per-call by signature.
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"insert_rows","sheet":"정리","address":"$3:$3"}')
+      .mockResolvedValueOnce(
+        '[{"tool":"insert_rows","sheet":"정리","address":"$3:$3"},' +
+          '{"tool":"add_chart","sheet":"정리","address":"A1:B2","chartType":"ColumnClustered"}]',
+      )
+      .mockResolvedValueOnce("행 삽입과 차트를 마쳤습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "정리", address: "A1", cellCount: 1 })
+    chatting.handlers.onSend("3행 삽입하고 차트도 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // The row went in exactly once, whatever the model asked for on top of it.
+    expect(book.inserted).toEqual(["$3:$3:Down"])
+  })
+
+  it("lets a destructive call retry once whatever blocked it is gone", async () => {
+    // Given: the first insert_rows fails (no sheet yet), and the model's recovery batch
+    // repeats it beside create_sheet. Only calls that actually CHANGED the workbook are
+    // repeat-guarded, so a failed call stays retryable — marking signatures before the
+    // outcome would have refused the retry and stranded the build.
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"insert_rows","sheet":"정리","address":"$3:$3"}')
+      .mockResolvedValueOnce(
+        '[{"tool":"create_sheet","name":"정리"},' +
+          '{"tool":"insert_rows","sheet":"정리","address":"$3:$3"}]',
+      )
+      .mockResolvedValueOnce("시트를 만들고 행을 삽입했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트에 3행 삽입해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.added).toEqual(["정리"])
     expect(book.inserted).toEqual(["$3:$3:Down"])
   })
 
@@ -2029,8 +2122,9 @@ describe("whole-request window fit", () => {
     const messages = [
       { role: "system" as const, content: "당신은 Excel 실무를 돕는 조수입니다." },
       {
+        // Merged shape since the profile joined the question's own user turn.
         role: "user" as const,
-        content: `실행 결과:\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${gridBlock}`,
+        content: `지점별 합계를 요약해줘\n\n실행 결과:\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${gridBlock}`,
       },
       ...Array.from({ length: 40 }, (_, i) => ({
         role: "user" as const,
@@ -2051,9 +2145,9 @@ describe("whole-request window fit", () => {
     expect(out.at(-1)?.content).toBe("실제 값만 근거로 최종 답변을 다시 쓰세요.")
     // The intake profile is the foundation every later number leans on: it survives
     // compaction whole even when everything else must shrink.
-    const intakeFull = `실행 결과:\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${gridBlock}`
-    const intake = out.find((m) => m.content === intakeFull)
-    expect(intake).toBeDefined()
+    const intake = out.find((m) => m.content.includes("사전 집계"))
+    expect(intake?.role).toBe("user")
+    expect(intake?.content).toContain("지점별 합계를 요약해줘")
   })
 
   it("leaves a conversation that already fits untouched", () => {
@@ -2064,6 +2158,100 @@ describe("whole-request window fit", () => {
       { role: "user" as const, content: "요약해줘" },
     ]
     expect(fitConversation(messages, settings)).toEqual(messages)
+  })
+
+  it("protects the merged question turn through pass 2 when pressure forces drops", () => {
+    // The profile lives inside the question's own turn now; pass-2 protection keyed on
+    // the old standalone observation shape would silently re-drop the question on long
+    // threads while every existing test stayed green.
+    const settings = { contextTokens: 32_000, maxTokens: 4_096 }
+    const mergedQuestionTurn = {
+      role: "user" as const,
+      content: `지점별 합계를 요약해줘\n\n실행 결과:\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${gridBlock}`,
+    }
+    const messages = [
+      { role: "system" as const, content: "당신은 Excel 실무를 돕는 조수입니다." },
+      mergedQuestionTurn,
+      ...Array.from({ length: 30 }, (_, i) => ({
+        role: "user" as const,
+        content: `실행 결과:\n${gridBlock} #${i}`,
+      })),
+      { role: "assistant" as const, content: "집계를 검토했습니다." },
+      { role: "user" as const, content: "실제 값만 근거로 최종 답변을 다시 쓰세요." },
+    ]
+    const out = fitConversation(messages, settings)
+    const survivor = out.find((m) => m.content.includes("사전 집계"))
+    expect(survivor?.role).toBe("user")
+    expect(survivor?.content).toContain("지점별 합계를 요약해줘")
+  })
+
+  it("lets an assistant echo of the intake phrase drop under compaction pressure", () => {
+    // Pass-2 protection anchors on USER turns carrying the marker. A reply quoting a
+    // crafted sheet name that happens to contain the phrase must stay droppable, or the
+    // phrase pins arbitrary bulk into every later request.
+    const settings = { contextTokens: 128_000, maxTokens: 16_000 }
+    const bulk = "선택 영역 사전 집계 ".repeat(60_000)
+    const out = fitConversation(
+      [
+        { role: "system" as const, content: "sys" },
+        { role: "user" as const, content: "첫 질문" },
+        { role: "assistant" as const, content: `${bulk}#1` },
+        { role: "user" as const, content: "두 번째 질문" },
+        { role: "assistant" as const, content: "답변입니다." },
+        { role: "user" as const, content: "마지막 질문" },
+      ],
+      settings,
+    )
+    expect(out.some((m) => m.role === "assistant" && m.content.includes("사전 집계"))).toBe(false)
+  })
+})
+
+describe("intake profile delivery", () => {
+  it("keeps the question on the wire when the intake profile rides along", async () => {
+    // The profile used to go back as its own user turn right after the question, and
+    // conversationFor's newest-consecutive-user rule dropped the question: every wide
+    // selection reached the model as aggregates with nothing asked about them.
+    const sheet = { getName: () => "데이터", load: () => {} }
+    const context = {
+      workbook: {
+        getSelectedRange: () => ({ address: "데이터!A1:T40", load: () => {}, worksheet: sheet }),
+        worksheets: {
+          getItemOrNullObject: () => ({ isNullObject: true, load: () => {} }),
+        },
+      },
+      sync: async () => {},
+    }
+    vi.mocked(readWorkbookContext).mockResolvedValue({
+      sheets: [{ name: "데이터", hidden: false, used: "A1:T40" }],
+      selection: { address: "데이터!A1:T40", cellCount: 800 },
+      region: undefined,
+    } as never)
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => work(context as unknown as Excel.RequestContext),
+      anchor: () => ({ address: "데이터!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({
+      ...DEFAULT_SETTINGS,
+      apiKey: "sk-test",
+      contextTokens: 400_000,
+    })
+    vi.mocked(askModel).mockResolvedValue("요약을 완료했습니다.")
+    chatting.updateSelection({ sheet: "데이터", address: "A1:T40", cellCount: 800 })
+    chatting.handlers.onSend("선택한 범위의 열 구성을 요약해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+
+    const messages = vi.mocked(askModel).mock.calls.at(0)?.[1] ?? []
+    // The question survives, and the profile rides in the same turn — not as a later user
+    // message that would erase it before the request leaves the pane.
+    const questionTurn = messages.at(-1)
+    expect(questionTurn?.role).toBe("user")
+    expect(questionTurn?.content).toContain("열 구성을 요약해줘")
+    expect(questionTurn?.content).toContain("사전 집계")
+    expect(messages.some((m) => m.role === "user" && m.content.startsWith("실행 결과:"))).toBe(
+      false,
+    )
   })
 })
 
