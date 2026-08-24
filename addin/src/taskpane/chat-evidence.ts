@@ -56,6 +56,27 @@ const aggregateColumn = (before: string): string | null => {
 const distinctColumnCount = (evidence: readonly ColumnStatsEvidence[]): number =>
   new Set(evidence.flatMap((item) => item.columns.map((held) => held.letter.toUpperCase()))).size
 
+/**
+ * A digit-free sentence can still be a claim — "모두 비어 있습니다" asserts every cell is
+ * blank — and only a UNIVERSAL qualifier is checkable against column evidence: it holds
+ * exactly when no evidence item has room left uncounted. Partial qualifiers ("일부 비어")
+ * name no scope the aggregates can bound, so they stay unverifiable and fail closed.
+ */
+const UNIVERSAL_BLANK = /(?:모두|전부|다)\s*비어|(?:모두|전부|다)\s*(?:빈칸|공백)/u
+const UNIVERSAL_NO_BLANK = /(?:빈칸|공백)(?:이|은|는)?\s*없|비어\s*있지\s*않/u
+
+const digitFreeBlankClaim = (
+  checked: string,
+  evidence: readonly ColumnStatsEvidence[],
+): boolean => {
+  const columns = evidence.flatMap((item) => item.columns)
+  if (UNIVERSAL_BLANK.test(checked))
+    return columns.length > 0 && columns.every((column) => column.filled === 0)
+  if (UNIVERSAL_NO_BLANK.test(checked))
+    return columns.length > 0 && columns.every((column) => column.blank === 0)
+  return false
+}
+
 export const aggregateAnswerMatches = (
   answer: string,
   evidence: readonly ColumnStatsEvidence[],
@@ -63,7 +84,7 @@ export const aggregateAnswerMatches = (
   if (evidence.length === 0) return false
   const checked = withoutAnnotations(withoutReferences(answer))
   const claims = [...checked.matchAll(NUMBER)]
-  if (claims.length === 0) return false
+  if (claims.length === 0) return digitFreeBlankClaim(checked, evidence)
   return claims.every((claim) => {
     const token = claim[0]
     const value = Number(token.replaceAll(",", "").replace("%", ""))

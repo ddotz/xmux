@@ -927,7 +927,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             } else {
               inspected = await observeTool(context as unknown as InspectContext, call, budget)
               observation = inspected.text
-              rememberNumbers(observation)
             }
           })
         } catch (error) {
@@ -954,7 +953,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             for (const call of calls) {
               const observed = await observeTool(context as unknown as InspectContext, call, budget)
               harness.recordTool(call, observed, true)
-              rememberNumbers(observed.text)
               observations.push(observed)
             }
           })
@@ -975,17 +973,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
        */
       const executedBatchWrites = new Set<string>()
       const pendingBatchWrites = new Set<string>()
-      // Every number any real observation has shown this conversation. The final sentence
-      // filter accepts a claim when all of its numbers appeared in some observation —
-      // read_range evidence alone misses column_stats/explain_cell facts and used to
-      // reject honest, fully grounded answers.
-      const observedNumbers = new Set<number>()
-      const rememberNumbers = (text: string): void => {
-        for (const match of text.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)) {
-          const value = Number(match[0].replaceAll(",", ""))
-          if (Number.isFinite(value)) observedNumbers.add(value)
-        }
-      }
       let nudged = false
       let planNudged = false
       let verificationNudged = false
@@ -1021,7 +1008,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         const profiled = await runGroundingBatch(intake)
         if (!current()) throw ABANDONED
         if (profiled !== null) {
-          for (const observation of profiled) rememberNumbers(observation.text)
           // Same rule as the read-only note: a profile turn after the question replaces
           // the question on the wire, so it joins the question's own turn instead.
           appendToQuestion(
@@ -1295,13 +1281,8 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             })
           }
           if (!corrected) {
-            const filtered = stripUnverifiedSentences(
-              reply,
-              (sentence) =>
-                aggregateAnswerMatches(sentence, aggregateEvidence) ||
-                [...sentence.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)].every((match) =>
-                  observedNumbers.has(Number(match[0].replaceAll(",", ""))),
-                ),
+            const filtered = stripUnverifiedSentences(reply, (sentence) =>
+              aggregateAnswerMatches(sentence, aggregateEvidence),
             )
             if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
               reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
@@ -1464,13 +1445,8 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               )
           }
           if (!groundedReplyIsValid(reply)) {
-            const filtered = stripUnverifiedSentences(
-              reply,
-              (sentence) =>
-                rangeAnswerMatches(sentence, rangeEvidence) ||
-                [...sentence.matchAll(/-?\d[\d,]*(?:\.\d+)?/g)].every((match) =>
-                  observedNumbers.has(Number(match[0].replaceAll(",", ""))),
-                ),
+            const filtered = stripUnverifiedSentences(reply, (sentence) =>
+              rangeAnswerMatches(sentence, rangeEvidence),
             )
             if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
               reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`

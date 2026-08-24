@@ -202,3 +202,48 @@ describe("aggregateAnswerMatches", () => {
     expect(aggregateAnswerMatches("B열의 합계는 860입니다.", evidence)).toBe(false)
   })
 })
+
+describe("digit-free blank claims", () => {
+  const col = (blank: number, filled: number) => ({
+    index: 2,
+    letter: "B",
+    count: 10,
+    filled,
+    blank,
+    sum: null,
+    average: null,
+    min: null,
+    max: null,
+  })
+  const evidence = (blank: number, filled = 10 - blank) => [
+    {
+      kind: "column_stats" as const,
+      sheet: "Main",
+      address: "Main!A1:B10",
+      rowCount: 10,
+      hasHeaders: true,
+      columns: [col(blank, filled)],
+    },
+  ]
+
+  it("accepts a universal emptiness claim only when nothing is filled", () => {
+    expect(aggregateAnswerMatches("모두 비어 있습니다.", evidence(10))).toBe(true)
+    expect(aggregateAnswerMatches("전부 빈칸입니다.", evidence(10))).toBe(true)
+  })
+
+  it("rejects a universal emptiness claim when any cell holds a value", () => {
+    expect(aggregateAnswerMatches("모두 비어 있습니다.", evidence(9))).toBe(false)
+  })
+
+  it("accepts a no-blank claim when every cell is filled", () => {
+    expect(aggregateAnswerMatches("빈칸이 없습니다.", evidence(0))).toBe(true)
+  })
+
+  it("rejects a no-blank claim when blanks exist", () => {
+    expect(aggregateAnswerMatches("빈칸이 없습니다.", evidence(3))).toBe(false)
+  })
+
+  it("fails closed on a partial qualifier the aggregates cannot bound", () => {
+    expect(aggregateAnswerMatches("일부가 비어 있습니다.", evidence(10))).toBe(false)
+  })
+})
