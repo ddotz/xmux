@@ -395,16 +395,33 @@ describe("transient failure retry", () => {
     }
     const seq = sequencing([truncated])
     await expect(askModel(SETTINGS, messages, seq.fetcher)).rejects.toThrow(AiError)
-    expect(seq.count()).toBe(5)
+    expect(seq.count()).toBe(3)
+  })
+
+  it("retries a deliberation-only reply and accepts the answer that follows", async () => {
+    // The same transient class as a length truncation: thinking consumed the reply, the
+    // visible answer is empty, and one retry brings the content through.
+    const thinkingOnly = {
+      choices: [
+        { message: { role: "assistant", content: "<think>합계를 어디서 구할까...</think>" }, finish_reason: "stop" },
+      ],
+    }
+    const good = {
+      choices: [{ message: { role: "assistant", content: "L8의 값은 2,044,160입니다." } }],
+    }
+    const seq = sequencing([thinkingOnly, good])
+    const answer = await askModel(SETTINGS, messages, seq.fetcher)
+    expect(answer).toContain("2,044,160")
+    expect(seq.count()).toBe(2)
   })
 })
 
 describe("provider flap tolerance", () => {
   const messages: ChatMessage[] = [{ role: "user", content: "B6 값을 알려줘" }]
 
-  it("survives four consecutive ghost failures on the fifth attempt", async () => {
-    // Measured against opencodex under a congested shared key: HTTP 200 with null content
-    // and native_finish_reason=network_error arrives in bursts that outlast four attempts.
+  it("survives two consecutive ghost failures on the third attempt", async () => {
+    // HTTP 200 with null content arrives in bursts; two retries cover the burst on a
+    // dedicated server without hanging the composer for a quarter hour.
     const bad = {
       status: 200,
       choices: [{ finish_reason: "stop", message: { role: "assistant", content: null } }],
@@ -414,7 +431,7 @@ describe("provider flap tolerance", () => {
       sent += 1
       return new Response(
         JSON.stringify(
-          sent < 5 ? bad : { choices: [{ message: { role: "assistant", content: "2044160" } }] },
+          sent < 3 ? bad : { choices: [{ message: { role: "assistant", content: "2044160" } }] },
         ),
         {
           status: 200,
@@ -423,10 +440,10 @@ describe("provider flap tolerance", () => {
     }
     const answer = await askModel(SETTINGS, messages, fetcher)
     expect(answer).toContain("2044160")
-    expect(sent).toBe(5)
+    expect(sent).toBe(3)
   })
 
-  it("still fails after five attempts instead of hanging the conversation", async () => {
+  it("still fails after three attempts instead of hanging the conversation", async () => {
     const bad = { status: 502, error: { message: "upstream" } }
     let sent = 0
     const fetcher = async (): Promise<Response> => {
@@ -434,6 +451,6 @@ describe("provider flap tolerance", () => {
       return new Response(JSON.stringify(bad), { status: 502 })
     }
     await expect(askModel(SETTINGS, messages, fetcher)).rejects.toThrow(AiError)
-    expect(sent).toBe(5)
+    expect(sent).toBe(3)
   })
 })

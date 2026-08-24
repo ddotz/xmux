@@ -21,7 +21,7 @@ export type ChatMessage = {
 }
 
 /** Delay before each retry attempt after the first; tests zero this out. */
-export const retryBackoffMs = [2_000, 10_000, 30_000, 90_000]
+export const retryBackoffMs = [2_000, 10_000]
 
 export class AiError extends Error {
   /** True when the failure is measured to be transient: one retry is worth spending. */
@@ -248,7 +248,9 @@ const askOnce = async (
   // downstream can mistake a draft call inside it for the call the model settled on.
   const visible = visibleReply(completion.content)
   if (visible.trim() === "")
-    throw new AiError("AI가 실행 가능한 답변을 만들지 못했습니다. 다시 시도해 주세요.")
+    // A deliberation-only reply clears on a second attempt as often as not — the same
+    // transient class as a length truncation — so the turn must not die on it.
+    throw new AiError("AI가 실행 가능한 답변을 만들지 못했습니다. 다시 시도해 주세요.", true)
   return visible
 }
 
@@ -266,14 +268,14 @@ export const askModel = async (
   messages: readonly ChatMessage[],
   fetcher: typeof fetch = fetch,
 ): Promise<string> => {
-  // Five attempts with an escalating backoff: under a congested shared key the upstream
-  // returns 502/429 bursts and HTTP-200 ghost failures (null content, native
-  // network_error) that were measured to outlast shorter schedules — five 429s landed
-  // inside fifty seconds in a recorded L1 run. The long tail (90s) rides out a rate-limit
-  // window without stalling the conversation the way a queue-and-forget would.
+  // Three attempts with a short backoff: production is a dedicated self-hosted server,
+  // and this bounds the worst case near twelve minutes with the composer locked. The
+  // five-attempt schedule with a 90-second tail was measured against a congested shared
+  // eval key, not against the deployment users wait on. The transient classes it covered
+  // (429/5xx bursts, HTTP-200 ghost failures, network blips) clear within two retries.
   const backoffMs = retryBackoffMs
   let last: AiError | null = null
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       return await askOnce(settings, messages, fetcher)
     } catch (error) {
