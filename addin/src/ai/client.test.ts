@@ -467,7 +467,9 @@ describe("provider flap tolerance", () => {
       return 0 as unknown as ReturnType<typeof setTimeout>
     }
     globalThis.setTimeout = spy as unknown as typeof globalThis.setTimeout
-    const sleep = { mockRestore: (): void => void (globalThis.setTimeout = realTimeout) }
+    const restoreTimeout = (): void => {
+      globalThis.setTimeout = realTimeout
+    }
     let sent = 0
     const fetcher = async (): Promise<Response> => {
       sent += 1
@@ -477,7 +479,7 @@ describe("provider flap tolerance", () => {
       })
     }
     await expect(askModel(SETTINGS, messages, fetcher)).rejects.toThrow(AiError)
-    sleep.mockRestore()
+    restoreTimeout()
     retryBackoffMs.splice(0, retryBackoffMs.length, 0, 0, 0, 0)
     expect(sent).toBe(4)
     // The server's own number, jittered, not the fallback schedule.
