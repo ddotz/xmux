@@ -111,6 +111,16 @@ describe("the analysis-only prompt variant", () => {
     expect(readOnly).toContain("## 응답 프로토콜")
   })
 
+  it("keeps the finance reporting rules on an analysis-only turn", () => {
+    // Task 3 dropped FINANCE wholesale, taking REPORTING rules with it: analysis answers
+    // must still state 기준일·단위·통화 and report 단수차이 instead of smoothing it.
+    expect(readOnly).toContain("기준일·기간·단위·통화")
+    expect(readOnly).toContain("단수차이")
+    // ...while the write-only rules stay gone.
+    expect(readOnly).not.toContain("## 쓰기 도구")
+    expect(full.length - readOnly.length).toBeGreaterThan(3_000)
+  })
+
   it("is meaningfully smaller than the full prompt and still inside the reservation", () => {
     expect(full.length - readOnly.length).toBeGreaterThan(3_000)
     expect(readOnly.length).toBeLessThanOrEqual(SYSTEM_PROMPT_CHARS)

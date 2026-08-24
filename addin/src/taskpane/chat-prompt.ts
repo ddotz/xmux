@@ -303,6 +303,7 @@ const FINANCE = [
 const READ_ONLY_TURN = [
   "이 요청은 분석 전용입니다. 쓰기 도구는 이 턴에서 실행되지 않으므로 보내지 않습니다.",
   "조회 도구만 사용해 실제 값을 확인하고, 결과는 한국어 답변으로만 제시합니다.",
+  "분석 답변에도 금융 보고 규칙은 그대로입니다: 기준일·기간·단위·통화를 명시하고, 단수차이는 임의로 맞추지 말고 어디서 얼마가 차이 나는지 밝힙니다.",
 ]
 
 /** The two rules that cost the most when they are forgotten, restated at the end. */
