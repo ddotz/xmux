@@ -35,7 +35,7 @@ DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `
 | Cell appearance, editor, focus outline | `sheet.ts` (`focusClasses`, `baseCellClass`, `editorNode`) |
 | Selection event storms / stale refreshes | `selection-refresh.ts` |
 | New chat handler | `chat.ts` `ChatHandlers` → `chatting.ts` `handlers` → renderer in `chat-controls.ts` |
-| What the model is told | `chat-prompt.ts` (`systemPrompt(skillId, registry, budget)`, `assistantPolicy`), payload in `chat-context.ts` — harness layout: named section constants (PROTOCOL, ANSWER_FORMAT, EXAMPLE with two wire-format episodes, CONTEXT_SPEC, PIPELINE, tool catalogs, domain rules) composed by `section()`. The prompt discloses what the loop does to its own memory: trimmed observations and the `남은 도구 왕복 N회` line `chatting.ts` appends in the last rounds |
+| What the model is told | `chat-prompt.ts` (`systemPrompt(skillId, registry, budget, readOnly)` — an answer-only turn drops the write catalogs, the build pipeline and the finance write rules, saving ~2,950 tokens per round; `assistantPolicy`), payload in `chat-context.ts` — harness layout: named section constants (PROTOCOL, ANSWER_FORMAT, EXAMPLE with two wire-format episodes, CONTEXT_SPEC, PIPELINE, tool catalogs, domain rules) composed by `section()`. The prompt discloses what the loop does to its own memory: trimmed observations and the `남은 도구 왕복 N회` line `chatting.ts` appends in the last rounds |
 | New built-in skill | `chat-skills.ts` `CHAT_SKILLS` + icon case in `chat-skill-ui.ts` `iconForSkill` |
 | Keyboard shortcut on the sheet tab | `reference-keys.ts` then `tabs.ts` `SHEET_SHORTCUTS` (a11y string) |
 | Markup ids, host chrome safe area | `index.html` + `accessibility.test.ts` (asserts CSS custom props too) |
@@ -56,7 +56,7 @@ DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `
 - Never build grid cells fresh on every draw. `view.ts` keeps `mounted` and only re-runs `applyFocus` while `window` and `editing` are identical.
 - Never render workbook or model text with `innerHTML`. Markdown is syntax, not trusted markup: `markdown.ts` consumes its AST and creates only allowlisted elements with text-node leaves.
 - Never blank on a cell-edit-mode error. `main.ts` `guarded` resets `lastKey` and shows a badge instead.
-- Never write to the workbook without `recordWrite` (`viewport.ts` commit, `commands.ts` `writeFormula`, `chatting.ts` apply). Skipping it breaks pane undo.
+- Never write to the workbook without `recordWrite` (`viewport.ts` commit, `commands.ts` `writeFormula`, `chatting.ts` `runCall` → `excel/operate.ts`). Skipping it breaks pane undo.
 - Never hardcode what the harness may spend. The window is a setting; `readCells`, `roundChars`, `observationChars`, `keptObservations` and `carriedTurns` all come from `budgetFor`, and the number in the prompt's read catalog is the same one `inspect.ts` enforces. A catalog promising 500 cells on a box that allows 1,629 costs rounds that never needed splitting.
 - Never put a raw model reply on screen. Tool JSON is removed first; canonical Markdown is preserved in state and rendered only through `markdown.ts`'s allowlisted AST-to-DOM path.
 - Never let a chat write skip `deps.history`. The assistant operates the workbook directly (`chatting.ts` `runCall` → `excel/operate.ts`), so the undo entry is the only thing between a wrong answer and a damaged sheet. Formatting, borders, conditional formats, charts and sheet deletion are outside the cell history and must say so in their own reply.
