@@ -5,6 +5,7 @@ import { DEFAULT_BUDGET } from "../ai/budget"
 import { DEFAULT_SETTINGS } from "../ai/settings"
 import { MAX_TOOL_ROUNDS } from "../ai/tools"
 import { columnLetters } from "../excel/address"
+import type { ColumnStatsEvidence } from "../excel/column-stats"
 import type { SheetFixture } from "../excel/eval-context"
 import { buildEvalContext, type EvalWorkbook } from "../excel/eval-context"
 import { createHistory } from "../excel/history"
@@ -173,8 +174,64 @@ const citedNumbers = (text: string): number[] =>
       // count is not a claim about the sheet.
       .replace(/\(근거를 확인할 수 없는 문장 \d+개는 제외했습니다\.\)/g, " ")
       .replace(/\b[A-Za-z]{1,3}\d+(?::[A-Za-z]{1,3}\d+)?\b/g, " ")
-      .replace(/\d[\d,]*\s*(?:행|칸|번째)/g, " "),
+      // Row spans are addresses too: "9~300행", "1~7행" name rows, they do not claim values.
+      .replace(/\d[\d,]*\s*[~\-–]\s*\d[\d,]*\s*(?:행|열|칸)/g, " ")
+      .replace(/\d[\d,]*\s*(?:행|칸|번째|열)/g, " "),
   )
+
+/**
+ * Numbers a correct answer can derive from the evidence without ever seeing them verbatim.
+ *
+ * Measured case (run 2026-08-24T02-03, L1): the answer reported 521,142 total blank cells —
+ * the exact sum of the per-column blank counts across all 15 columns — and the checker called
+ * it untraceable because the truth set held only the per-column values. Punishing correct
+ * arithmetic pushes the harness to "fix" right answers, so the closure over declared
+ * operations is part of the truth: per-metric cross-column sums, and the shape facts a
+ * used_range read states (rows, columns, and their product).
+ */
+const withDerivedTotals = (
+  truth: Set<number>,
+  evidence: readonly ColumnStatsEvidence[],
+  shape: { readonly rows: number; readonly columns: number },
+): Set<number> => {
+  const derived = new Set(truth)
+  const metrics = ["count", "filled", "blank", "sum"] as const
+  const columns = [
+    ...new Map(
+      evidence.flatMap((item) => item.columns).map((held) => [held.letter.toUpperCase(), held]),
+    ).values(),
+  ]
+  for (const metric of metrics) {
+    const held = columns.flatMap((column) => (column[metric] === null ? [] : [column[metric]]))
+    if (held.length === 0) continue
+    const total = held.reduce((sum, value) => sum + value, 0)
+    derived.add(total)
+    // The complement against the grid is equally derivable: blanks = cells - filled.
+    derived.add(shape.rows * shape.columns - total)
+  }
+  derived.add(shape.rows * shape.columns)
+  derived.add(shape.rows)
+  derived.add(shape.columns)
+  return derived
+}
+
+/**
+ * Which members of an enumerable scope the answer actually covered.
+ *
+ * L1's real defect was invisible to every existing check: asked to analyse the column
+ * composition of a 15-column selection, the answer tabulated 13 and silently dropped H and I.
+ * Traceability cannot see an omission — only coverage can. Membership here is string
+ * containment against a known finite set, never NLU.
+ */
+const uncoveredColumns = (answer: string, evidence: readonly ColumnStatsEvidence[]): string[] => {
+  const letters = [
+    ...new Set(evidence.flatMap((item) => item.columns.map((c) => c.letter.toUpperCase()))),
+  ]
+  // A letter counts as covered when it appears as a column token: "H열", "H ", "·H·", "| H |".
+  return letters.filter(
+    (letter) => !new RegExp(`(?<![A-Za-z])${letter}(?![A-Za-z0-9])`).test(answer),
+  )
+}
 
 const askOnce = async (
   book: EvalWorkbook,
@@ -265,10 +322,12 @@ describe.skipIf(!evalOn)("harness evaluation pilot", () => {
       MAX_TOOL_ROUNDS * 8,
     )
     const truthNumbers = new Set<number>([0, 1, 2])
+    const truthEvidence: ColumnStatsEvidence[] = []
     for (const call of truthCalls ?? []) {
       const observation = await observeTool(truthContext as never, call, DEFAULT_BUDGET)
       for (const n of numbersIn(observation.text)) truthNumbers.add(n)
       for (const n of numbersIn(JSON.stringify(observation.evidence ?? null))) truthNumbers.add(n)
+      if (observation.evidence?.kind === "column_stats") truthEvidence.push(observation.evidence)
     }
     // The model may also peek at the header block itself — 보고서 제목, 기준년월, IFRS9
     // 라벨. Numbers a small header read legitimately surfaces are as traceable to the
@@ -295,7 +354,14 @@ describe.skipIf(!evalOn)("harness evaluation pilot", () => {
       const refused = answer.includes("주장과 일치시키지 못했습니다")
       // Every number the answer cites must be one the harness itself could produce.
       const cited = citedNumbers(answer)
-      const untraceable = cited.filter((n) => !truthNumbers.has(n))
+      const traceable = withDerivedTotals(truthNumbers, truthEvidence, {
+        rows: 34_979,
+        columns: 15,
+      })
+      const untraceable = cited.filter((n) => !traceable.has(n))
+      // Asked for the column composition, an answer that tabulates 13 of 15 columns is
+      // wrong by omission even when every number in it is correct.
+      const uncovered = uncoveredColumns(answer, truthEvidence)
       // An analysis answer with zero numbers is a vacuous pass: the model must actually
       // cite aggregates for traceability to mean anything.
       if (cited.length === 0 && error === null) {
@@ -315,10 +381,13 @@ describe.skipIf(!evalOn)("harness evaluation pilot", () => {
           { name: "no_harness_error", pass: error === null },
           { name: "no_false_refusal", pass: !refused },
           { name: "numbers_traceable", pass: untraceable.length === 0 },
+          { name: "enumeration_complete", pass: uncovered.length === 0 },
         ],
         untraceable,
+        uncovered,
       })
       expect(untraceable, "numbers_traceable").toEqual([])
+      expect(uncovered, "enumeration_complete").toEqual([])
     }
     // Reproducibility: same input, same numeric GOALS met — not byte-identical prose.
     // Two correct analyses may cover different column subsets, so exact list equality
