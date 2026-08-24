@@ -1196,10 +1196,6 @@ describe("operating without approval", () => {
         '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목","금액"],["대출채권","1200"]]}',
       )
       .mockResolvedValueOnce("정리 시트에 표를 만들었습니다.")
-      .mockResolvedValueOnce(
-        '{"tool":"read_range","sheet":"정리","address":"A1:B2","formulas":true}',
-      )
-      .mockResolvedValueOnce("정리 시트에 표를 만들었습니다.")
 
     const history = createHistory()
     const chatting = createChatting({
@@ -1226,9 +1222,11 @@ describe("operating without approval", () => {
     expect(history.last()).not.toBeNull()
     // The turn-start snapshot is refreshed after each write batch before the model continues.
     expect(vi.mocked(readWorkbookContext)).toHaveBeenCalledTimes(3)
-    const verificationRequest = vi.mocked(askModel).mock.calls[3]?.[1].at(-1)?.content ?? ""
-    expect(verificationRequest).toContain("정리!A1:B2")
-    expect(verificationRequest).toContain("read_range(formulas:true)")
+    // The harness verifies the written range itself: the model answered in three calls,
+    // and no verification request ever rode the wire.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(3)
+    for (const call of vi.mocked(askModel).mock.calls)
+      expect(call[1].at(-1)?.content ?? "").not.toContain("read_range(formulas:true)")
     const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).toContain("정리 시트에 표를 만들었습니다.")
     expect(said).toContain("실행 확인")
@@ -1415,7 +1413,7 @@ describe("working through a batch of tool calls", () => {
     chatting.handlers.onSend("정리 시트 만들고 표 넣어줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(4)
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
     expect(book.added).toEqual(["정리"])
     expect(book.written).toEqual([[["항목", "금액"]]])
     // And the model is told which result belongs to which call.
@@ -1476,14 +1474,15 @@ describe("working through a batch of tool calls", () => {
     expect(said).toContain("단위 변환")
   })
 
-  it("does not let an unrelated read clear verification for a written range", async () => {
+  it("verifies a written range itself, ignoring where the model looked instead", async () => {
+    // An unrelated read must neither clear the pending verification nor satisfy it: the
+    // harness probes Main!A1 itself and only its own successful read closes the queue.
     const book = workbook()
     book.context.workbook.worksheets.add("Main")
     vi.mocked(askModel)
       .mockResolvedValueOnce(
         '{"tool":"write_range","sheet":"Main","address":"A1","rows":[["값"],["합계"]]}',
       )
-      .mockResolvedValueOnce("입력을 마쳤습니다.")
       .mockResolvedValueOnce('{"tool":"read_range","sheet":"Other","address":"Z1","formulas":true}')
       .mockResolvedValueOnce("확인했습니다.")
 
@@ -1491,7 +1490,10 @@ describe("working through a batch of tool calls", () => {
     chatting.handlers.onSend("Main A1:A2를 채워줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(chatting.state().turns.at(-1)?.text).toContain("검증 상태")
+    // The model's unrelated look elsewhere changed nothing: verification closed through
+    // the harness's own probe, so no warning reaches the user.
+    expect(chatting.state().turns.at(-1)?.text).not.toContain("검증 상태")
+    expect(chatting.state().turns.at(-1)?.text).toContain("확인했습니다.")
   })
 
   it("verifies a large formula fill with deterministic boundary probes", async () => {
@@ -1502,18 +1504,14 @@ describe("working through a batch of tool calls", () => {
         '{"tool":"fill_formula","sheet":"Main","anchor":"D2","address":"D2:D200000","formula":"=A2"}',
       )
       .mockResolvedValueOnce("D열 수식을 모두 채웠습니다.")
-      .mockResolvedValueOnce(
-        '[{"tool":"read_range","sheet":"Main","address":"D2","formulas":true},' +
-          '{"tool":"read_range","sheet":"Main","address":"D200000","formulas":true}]',
-      )
-      .mockResolvedValueOnce("D열의 첫 행과 마지막 행 수식을 확인했습니다.")
 
     const chatting = chattingOver(book.context)
     chatting.handlers.onSend("D2:D200000에 수식을 채워줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     expect(chatting.state().turns.at(-1)?.text).not.toContain("검증 상태")
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(4)
+    // Two calls: write, then answer. The boundary probes ran on the harness's own sync.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
   })
 
   it("never puts a tool call on screen, and tells the model how to fix it", async () => {

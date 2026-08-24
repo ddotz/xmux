@@ -15,6 +15,7 @@ import { isWrite, outsideUndo, type ToolCall } from "../ai/tool-schemas"
 import {
   containsToolCall,
   describeCall,
+  MAX_CALLS_PER_REPLY,
   MAX_TOOL_ROUNDS,
   readSteps,
   withoutToolCall,
@@ -1047,6 +1048,36 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             reply = await askCurrent(trimObservations(turns, budget))
             step = readSteps(reply)
             continue
+          }
+          if (pendingVerification.length > 0 && !verificationNudged) {
+            // The harness verifies its own writes instead of spending two model rounds
+            // asking the model to re-read: probe every target, and only surface anything
+            // when Excel disagrees with what a write reported. On match the model's
+            // answer stands unchanged.
+            const probes: ToolCall[] = pendingVerification.map((target) => ({
+              tool: "read_range",
+              sheet: target.sheet,
+              address: target.address,
+              formulas: true,
+            }))
+            let verified = true
+            for (let at = 0; at < probes.length; at += MAX_CALLS_PER_REPLY) {
+              const results = await runGroundingBatch(probes.slice(at, at + MAX_CALLS_PER_REPLY))
+              if (
+                results === null ||
+                results.some(
+                  (observation) =>
+                    observation.evidence === null || INCOMPLETE_OBSERVATION.test(observation.text),
+                )
+              ) {
+                verified = false
+                break
+              }
+            }
+            if (verified) {
+              pendingVerification = []
+              break
+            }
           }
           if (pendingVerification.length > 0) {
             if (verificationNudged) break
