@@ -403,7 +403,10 @@ describe("transient failure retry", () => {
     // visible answer is empty, and one retry brings the content through.
     const thinkingOnly = {
       choices: [
-        { message: { role: "assistant", content: "<think>합계를 어디서 구할까...</think>" }, finish_reason: "stop" },
+        {
+          message: { role: "assistant", content: "<think>합계를 어디서 구할까...</think>" },
+          finish_reason: "stop",
+        },
       ],
     }
     const good = {
