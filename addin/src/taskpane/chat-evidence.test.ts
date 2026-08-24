@@ -125,3 +125,80 @@ describe("prose noise tolerance", () => {
     expect(rangeAnswerMatches(answer, evidence)).toBe(false)
   })
 })
+
+describe("aggregateAnswerMatches", () => {
+  const makeEvidence = (
+    rowCount: number,
+    columnCount: number,
+    override?: (index: number) => {
+      count?: number
+      filled?: number
+      blank?: number
+      sum?: number | null
+      average?: number | null
+      min?: number | null
+      max?: number | null
+    },
+  ) => ({
+    kind: "column_stats" as const,
+    sheet: "Main",
+    address: `Main!A1:${String.fromCharCode(64 + columnCount)}${rowCount}`,
+    rowCount,
+    hasHeaders: true,
+    columns: Array.from({ length: columnCount }, (_, index) => ({
+      index,
+      letter: String.fromCharCode(65 + index),
+      count: rowCount,
+      filled: rowCount,
+      blank: 0,
+      sum: null,
+      average: null,
+      min: null,
+      max: null,
+      ...(override?.(index) ?? {}),
+    })),
+  })
+
+  it("accepts a 열 claim equal to the distinct column count", () => {
+    const evidence = [makeEvidence(200, 15)]
+    expect(aggregateAnswerMatches("표는 총 15열로 구성되어 있습니다.", evidence)).toBe(true)
+  })
+
+  it("accepts 칸/셀 claims equal to rowCount times the distinct column count", () => {
+    const evidence = [makeEvidence(200, 15)]
+    expect(aggregateAnswerMatches("전체 3000칸을 집계했습니다.", evidence)).toBe(true)
+    expect(aggregateAnswerMatches("전체 3000셀을 집계했습니다.", evidence)).toBe(true)
+  })
+
+  it("rejects a 열 claim that mismatches the distinct column count", () => {
+    const evidence = [makeEvidence(200, 15)]
+    expect(aggregateAnswerMatches("표는 총 16열로 구성되어 있습니다.", evidence)).toBe(false)
+  })
+
+  it("rejects a 칸 claim that mismatches rowCount times the column count", () => {
+    const evidence = [makeEvidence(200, 15)]
+    expect(aggregateAnswerMatches("전체 2999칸을 집계했습니다.", evidence)).toBe(false)
+  })
+
+  it("accepts the measured eval regression bound to no single column", () => {
+    // 12 columns at 34,743 blanks plus 3 at 34,742 sums to exactly 521,142,
+    // and 34,979 rows x 15 columns equals 524,685 cells.
+    const rowCount = 34979
+    const blankTotal = 521142
+    const base = Math.floor(blankTotal / 15)
+    const remainder = blankTotal % 15
+    const evidence = [
+      makeEvidence(rowCount, 15, (index) => {
+        const blank = base + (index < remainder ? 1 : 0)
+        return { blank, filled: rowCount - blank }
+      }),
+    ]
+    expect(aggregateAnswerMatches("빈칸 521,142개 / 524,685칸", evidence)).toBe(true)
+  })
+
+  it("still rejects a named column carrying another column's value", () => {
+    const sums = [2040, 1200, 860]
+    const evidence = [makeEvidence(200, 3, (index) => ({ sum: sums[index] ?? null }))]
+    expect(aggregateAnswerMatches("B열의 합계는 860입니다.", evidence)).toBe(false)
+  })
+})

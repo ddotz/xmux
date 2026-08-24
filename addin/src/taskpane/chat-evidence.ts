@@ -51,6 +51,11 @@ const aggregateColumn = (before: string): string | null => {
   return found?.[1]?.toUpperCase() ?? null
 }
 
+// Row/column/cell counts stated in an answer describe the evidence's own shape,
+// so they are checked directly against the evidence instead of column metrics.
+const distinctColumnCount = (evidence: readonly ColumnStatsEvidence[]): number =>
+  new Set(evidence.flatMap((item) => item.columns.map((held) => held.letter.toUpperCase()))).size
+
 export const aggregateAnswerMatches = (
   answer: string,
   evidence: readonly ColumnStatsEvidence[],
@@ -71,6 +76,11 @@ export const aggregateAnswerMatches = (
     const before = checked.slice(sentenceStart + 1, at)
     const after = checked.slice(at + token.length)
     if (/^\s*행/.test(after)) return evidence.some((item) => sameNumber(value, item.rowCount))
+    if (/^\s*열/.test(after)) return sameNumber(value, distinctColumnCount(evidence))
+    if (/^\s*[칸셀]/.test(after)) {
+      const width = distinctColumnCount(evidence)
+      return evidence.some((item) => sameNumber(value, item.rowCount * width))
+    }
     const metric = aggregateMetric(before)
     if (metric === null) return false
     const column = aggregateColumn(before)
