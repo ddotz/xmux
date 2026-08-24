@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { SYSTEM_PROMPT_CHARS } from "../ai/budget"
+import { DEFAULT_BUDGET, SYSTEM_PROMPT_CHARS } from "../ai/budget"
 import { toolCallSchema } from "../ai/tool-schemas"
 import { assistantPolicy, systemPrompt } from "./chat-prompt"
 import { CHAT_SKILLS } from "./chat-skills"
@@ -88,6 +88,32 @@ describe("inferred chat policy", () => {
     expect(prompt).toContain('"instructions"')
     expect(prompt).toContain("로컬 스킬")
     expect(prompt).not.toContain("워크플로:")
+  })
+})
+
+describe("the analysis-only prompt variant", () => {
+  // On an answer-only turn every write tool refuses before it runs, so shipping the full
+  // write catalog, the build pipeline and the finance write rules on every round was pure
+  // wire cost. The read-only variant drops them and states the restriction instead.
+  const full = systemPrompt(null)
+  const readOnly = systemPrompt(null, CHAT_SKILLS, DEFAULT_BUDGET, true)
+
+  it("drops the write catalogs and names the restriction", () => {
+    expect(readOnly).not.toContain('"tool":"write_range"')
+    expect(readOnly).not.toContain("## 쓰기 도구")
+    expect(readOnly).not.toContain("## 여러 단계 작업 순서")
+    expect(readOnly).toContain("분석 전용입니다")
+  })
+
+  it("keeps the read catalog and the core protocol", () => {
+    expect(readOnly).toContain("## 조회 도구")
+    expect(readOnly).toContain("column_stats")
+    expect(readOnly).toContain("## 응답 프로토콜")
+  })
+
+  it("is meaningfully smaller than the full prompt and still inside the reservation", () => {
+    expect(full.length - readOnly.length).toBeGreaterThan(3_000)
+    expect(readOnly.length).toBeLessThanOrEqual(SYSTEM_PROMPT_CHARS)
   })
 })
 

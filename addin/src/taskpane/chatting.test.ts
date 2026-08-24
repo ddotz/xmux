@@ -1674,6 +1674,27 @@ describe("working through a batch of tool calls", () => {
     expect(chatting.state().turns.at(-1)?.text).toContain("워크북 작업을 실행하지 못했습니다")
   })
 
+  it("ships the analysis-only system prompt without the write catalog", async () => {
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce("정리 시트에 표를 만들었습니다.")
+      .mockResolvedValueOnce("열 구성은 A열 코드, B열 금액입니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("표를 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+    const normalSystem = vi.mocked(askModel).mock.calls.at(0)?.[1]?.at(0)?.content ?? ""
+
+    chatting.handlers.onSend("열 구성 분석만 해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+    const readOnlySystem = vi.mocked(askModel).mock.calls.at(-1)?.[1]?.at(0)?.content ?? ""
+
+    // A write-shaped request keeps the full catalog; an answer-only request drops it.
+    expect(normalSystem).toContain('"tool":"write_range"')
+    expect(readOnlySystem).not.toContain('"tool":"write_range"')
+    expect(readOnlySystem).toContain("분석 전용입니다")
+  })
+
   it("does not run the same batch twice, and stops asking when it comes back a third time", async () => {
     // Given: the way a long build actually fails. The model cannot see why its call did
     // nothing, sends it again unchanged, and used to spend the whole round budget doing it

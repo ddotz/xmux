@@ -784,6 +784,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     attachment: SelectionAttachment | null,
     previous: readonly ChatTurn[],
     budget: Budget,
+    readOnly: boolean,
   ): readonly ChatMessage[] => {
     const context =
       attachment === null
@@ -796,7 +797,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     return [
       {
         role: "system",
-        content: `${systemPrompt(selectedSkillId, skills, budget)}\n\n현재 통합 문서:\n${context}`,
+        content: `${systemPrompt(selectedSkillId, skills, budget, readOnly)}\n\n현재 통합 문서:\n${context}`,
       },
       ...previous.map((turn): ChatMessage => ({ role: turn.role, content: turn.text })),
       { role: "user", content: question },
@@ -885,6 +886,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           attachment,
           previous,
           budget,
+          readOnlyRequest,
         ),
       ]
 
@@ -1150,6 +1152,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             attachment,
             previous,
             budget,
+            readOnlyRequest,
           )[0]
           if (system?.role === "system") turns[0] = system
         }
