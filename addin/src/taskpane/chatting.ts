@@ -429,6 +429,15 @@ export const isCellTargetedQuestion = (question: string): boolean =>
 export const isExplicitBuildRequest = (question: string): boolean =>
   /(피벗|피봇|요약표|크로스탭)/.test(question) && /(만들|생성|추가)/.test(question)
 
+/** True when the question asks for numbers or judgement about the data, which is what the
+ * intake aggregates prime. Write-shaped requests skip the profile — and skipping it can
+ * never produce an unverified answer, because the aggregate verification route computes
+ * exactly the bands it needs later, only when the answer actually makes the claim. */
+export const isAnalysisQuestion = (question: string): boolean =>
+  /(분석|요약|왜|얼마|몇|평균|합계|총합|최소|최대|건수|개수|검토|확인|알려|설명|비교|추이|분포|이상치|현황)/.test(
+    question,
+  )
+
 /**
  * Force the whole outgoing request under the window before it is sent.
  *
@@ -998,7 +1007,12 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         // An explicit build request ("피벗을 만들어줘") must not be pre-primed into
         // aggregate analysis either — the aggregates are for questions that ask for
         // numbers, and a recorded P2 run never reached add_pivot because of this prime.
-        !isExplicitBuildRequest(request)
+        !isExplicitBuildRequest(request) &&
+        // A write-shaped request over a wide selection has no use for whole-range
+        // aggregates, yet it carried them (compaction-protected) on every round of the
+        // turn. Analysis-only requests always qualify; write requests qualify only when
+        // they also ask a question about the data.
+        (readOnlyRequest || isAnalysisQuestion(request))
       ) {
         const intake: ToolCall[] = [
           { tool: "used_range", sheet: attachment.sheet },

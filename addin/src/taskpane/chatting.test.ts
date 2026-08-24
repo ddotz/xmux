@@ -2388,4 +2388,75 @@ describe("explicit build requests", () => {
     const outgoing = JSON.stringify(vi.mocked(askModel).mock.calls.at(0)?.[1] ?? [])
     expect(outgoing).not.toContain("사전 집계")
   })
+
+  it("skips the intake aggregate profile for a write-shaped request", async () => {
+    // A wide selection plus a write request used to compute and carry whole-range
+    // aggregates on every round of the turn. The aggregates are for questions about the
+    // data; a fill request needs none, and the verification route recomputes exactly the
+    // bands it needs later if the answer ever claims them.
+    const sheet = { getName: () => "sheet 1", load: () => {} }
+    const context = {
+      workbook: {
+        getSelectedRange: () => ({ address: "sheet 1!A8:I300", load: () => {}, worksheet: sheet }),
+      },
+      sync: async () => {},
+    }
+    vi.mocked(readWorkbookContext).mockResolvedValue({
+      sheets: [{ name: "sheet 1", hidden: false, used: "A8:I300" }],
+      selection: { address: "sheet 1!A8:I300", cellCount: 2637 },
+      region: undefined,
+    } as never)
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => work(context as unknown as Excel.RequestContext),
+      anchor: () => ({ address: "sheet 1!A8", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({
+      ...DEFAULT_SETTINGS,
+      apiKey: "sk-test",
+      contextTokens: 400_000,
+    })
+    vi.mocked(askModel).mockResolvedValue("D열에 수식을 채웠습니다.")
+    chatting.updateSelection({ sheet: "sheet 1", address: "A8:I300", cellCount: 2637 })
+    chatting.handlers.onSend("선택한 범위 D열에 수식 채워줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+
+    const firstCall = vi.mocked(askModel).mock.calls.at(0)
+    const outgoing = JSON.stringify(firstCall?.[1] ?? [])
+    expect(outgoing).not.toContain("사전 집계")
+  })
+
+  it("still primes the intake profile for an analysis question over a wide selection", async () => {
+    const sheet = { getName: () => "sheet 1", load: () => {} }
+    const context = {
+      workbook: {
+        getSelectedRange: () => ({ address: "sheet 1!A8:I300", load: () => {}, worksheet: sheet }),
+      },
+      sync: async () => {},
+    }
+    vi.mocked(readWorkbookContext).mockResolvedValue({
+      sheets: [{ name: "sheet 1", hidden: false, used: "A8:I300" }],
+      selection: { address: "sheet 1!A8:I300", cellCount: 2637 },
+      region: undefined,
+    } as never)
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => work(context as unknown as Excel.RequestContext),
+      anchor: () => ({ address: "sheet 1!A8", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({
+      ...DEFAULT_SETTINGS,
+      apiKey: "sk-test",
+      contextTokens: 400_000,
+    })
+    vi.mocked(askModel).mockResolvedValue("합계를 분석했습니다.")
+    chatting.updateSelection({ sheet: "sheet 1", address: "A8:I300", cellCount: 2637 })
+    chatting.handlers.onSend("선택한 범위를 분석해서 합계를 알려줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+
+    const outgoing = JSON.stringify(vi.mocked(askModel).mock.calls.at(0)?.[1] ?? [])
+    expect(outgoing).toContain("사전 집계")
+  })
 })
