@@ -96,6 +96,18 @@ const TRIMMED_OBSERVATION_CHARS = 200
 const OBSERVATION_PREFIX = "실행 결과:"
 
 /**
+ * Turns carrying grounding evidence are the one observation the ladder may not lose.
+ *
+ * The evidence is injected once, before the first rewrite; every later retry refers back
+ * to it instead of resending the grids. That referral is only sound while the turn survives
+ * trimming, so both trimming passes exempt it by marker.
+ */
+const GROUNDING_EVIDENCE_MARKERS = ["실제 Excel 값:", '"kind":"excel_aggregate_evidence"'] as const
+
+const carriesGroundingEvidence = (content: string): boolean =>
+  GROUNDING_EVIDENCE_MARKERS.some((marker) => content.includes(marker))
+
+/**
  * One round of results, with nobody cut until it is over its share of what is left.
  *
  * A reply may ask for eight calls, and eight wide reads in one message is more than any
@@ -389,7 +401,9 @@ export const trimObservations = (
   // grids. The observation pool absorbed every number at read time and grounding re-reads
   // live cells before any final answer, so folding costs accuracy nothing.
   return messages.map((message, index) =>
-    observationIndexes.includes(index) && !whole.has(index)
+    observationIndexes.includes(index) &&
+    !whole.has(index) &&
+    !carriesGroundingEvidence(message.content)
       ? { ...message, content: foldObservation(message.content) }
       : message,
   )
@@ -478,7 +492,9 @@ export const fitConversation = (
   const observationIndexes = messages.map((_, index) => index).filter(observationAt)
   const newestObservation = observationIndexes.at(-1) ?? -1
   current = current.map((message, index) =>
-    observationAt(index) && index !== newestObservation
+    observationAt(index) &&
+    index !== newestObservation &&
+    !carriesGroundingEvidence(message.content)
       ? {
           ...message,
           content: `${message.content.slice(0, TRIMMED_OBSERVATION_CHARS)}\n… (이전 결과 생략)`,
@@ -1309,7 +1325,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             turns.push({ role: "assistant", content: reply })
             turns.push({
               role: "user",
-              content: `${OBSERVATION_PREFIX}\n직전 답변의 숫자·열·연산이 Excel 집계 근거와 불일치합니다. 아래 근거만 사용해 한 번 더 고치세요.\n${serializedEvidence}`,
+              content: `${OBSERVATION_PREFIX}\n직전 답변의 숫자·열·연산이 위의 Excel 집계 근거와 불일치합니다. 위 근거만 사용해 한 번 더 고치세요.`,
             })
           }
           if (!corrected) {
@@ -1475,7 +1491,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             turns.push({ role: "assistant", content: reply })
             turns.push({
               role: "user",
-              content: `${OBSERVATION_PREFIX}\n${instruction}\n실제 Excel 값:\n${boundRound(observations, budget)}`,
+              content: `${OBSERVATION_PREFIX}\n${instruction}`,
             })
             return askCurrent(trimObservations(turns, budget)).then((next) => {
               reply = next
@@ -1486,11 +1502,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // error. The ladder below only runs when validation actually fails.
           if (!groundedReplyIsValid(reply)) {
             await rewriteAsk(
-              "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 아래 실제 값만 사용해 최종 답변을 다시 쓰세요.",
+              "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 위에 보낸 실제 값만 사용해 최종 답변을 다시 쓰세요.",
             )
             if (!groundedReplyIsValid(reply))
               await rewriteAsk(
-                "직전 답변이 다시 통과하지 못했습니다. 아래 실제 값만 사용해 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
+                "직전 답변이 다시 통과하지 못했습니다. 위의 실제 값만 근거로 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
               )
           }
           if (!groundedReplyIsValid(reply)) {

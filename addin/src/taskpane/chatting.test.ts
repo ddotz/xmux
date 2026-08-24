@@ -2458,3 +2458,51 @@ describe("explicit build requests", () => {
     expect(outgoing).toContain("사전 집계")
   })
 })
+
+describe("grounding evidence survives the ladder", () => {
+  const evidenceTurn = {
+    role: "user" as const,
+    content: "실행 결과:\n최종 답변 근거 확인:\nMain!A1:B2\n실제 Excel 값:\n1\t항목\n2\t1200",
+  }
+  const filler = {
+    role: "user" as const,
+    content: `실행 결과:\n${Array(200).fill("2044160\t2044160").join("\n")}`,
+  }
+
+  it("trimObservations never stubs a turn that carries grounding evidence", () => {
+    const messages = [
+      { role: "system" as const, content: "시스템" },
+      { role: "user" as const, content: "분석해줘" },
+      filler,
+      evidenceTurn,
+      { role: "assistant" as const, content: "첫 답변" },
+      { role: "user" as const, content: "실행 결과:\n위의 실제 값만 근거로 다시 쓰세요." },
+    ]
+    const out = trimObservations(messages, DEFAULT_BUDGET)
+    const kept = out.find((m) => m.content.includes("실제 Excel 값:"))
+    expect(kept?.content).toContain("항목")
+    // Ordinary observations still fold.
+    expect(
+      out.find((m) => m.content.includes("#") === false && m.content.includes("2044160")),
+    ).toBeDefined()
+  })
+
+  it("fitConversation pass 1 exempts the evidence turn from stubbing too", () => {
+    const settings = { contextTokens: 32_000, maxTokens: 4_096 }
+    const messages = [
+      { role: "system" as const, content: "당신은 Excel 실무를 돕는 조수입니다." },
+      { role: "user" as const, content: "분석해줘" },
+      ...Array.from({ length: 30 }, (_, i) => ({
+        role: "user" as const,
+        content: `실행 결과:\n${filler.content} #${i}`,
+      })),
+      evidenceTurn,
+      { role: "assistant" as const, content: "첫 답변" },
+      { role: "user" as const, content: "실행 결과:\n위의 실제 값만 근거로 다시 쓰세요." },
+    ]
+    const out = fitConversation(messages, settings)
+    const kept = out.find((m) => m.content.includes("실제 Excel 값:"))
+    expect(kept?.content).toContain("항목")
+    expect(kept?.content).not.toContain("(이전 결과 생략)")
+  })
+})
