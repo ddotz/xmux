@@ -1646,6 +1646,34 @@ describe("working through a batch of tool calls", () => {
     expect(chatting.state().turns.at(-1)?.text).toContain("이미 회계 서식이 적용됐고")
   })
 
+  it("drops only the unperformed work-report sentences and keeps the analysis", async () => {
+    // Given: zero writes and an answer that is mostly a correct observation plus one
+    // sentence reading as this-turn work ("생성했습니다"). Replacing the WHOLE answer with
+    // NOT_PERFORMED discarded the verified content over its worst sentence.
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue("A열은 수치 데이터입니다. 요약표를 생성했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("열 구성 분석만 해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("수치 데이터입니다")
+    expect(said).not.toContain("생성했습니다")
+    expect(said).toContain("1개는 제외했습니다")
+  })
+
+  it("still fails closed when every sentence reports unperformed work", async () => {
+    const book = workbook()
+    vi.mocked(askModel).mockResolvedValue("요약표를 생성했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("요약표 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(chatting.state().turns.at(-1)?.text).toContain("워크북 작업을 실행하지 못했습니다")
+  })
+
   it("does not run the same batch twice, and stops asking when it comes back a third time", async () => {
     // Given: the way a long build actually fails. The model cannot see why its call did
     // nothing, sends it again unchanged, and used to spend the whole round budget doing it

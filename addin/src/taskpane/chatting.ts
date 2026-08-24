@@ -253,6 +253,26 @@ const SELECTION_NOT_VERIFIED = "전체 범위를 모두 읽지 못해 판단할 
  */
 const CLAIMS_CHANGE =
   /(?:만들었|썼|채웠|(?:적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정|생성|입력|작성)(?:했|하였))/
+
+/**
+ * With zero performed writes, sentences that read as this-turn work reports are removed
+ * individually instead of discarding the whole answer: an analysis that mentions workbook
+ * history in the active past ("담당자가 5월에 입력했습니다") keeps its verified content.
+ * The split is identical to stripUnverifiedSentences in chat-grounding.ts.
+ */
+const dropChangeClaims = (answer: string): { readonly kept: string; readonly dropped: number } => {
+  let dropped = 0
+  const kept = answer
+    .split(/(?<=[.\n])(?<!\d\.)(?!\d)/)
+    .filter((sentence) => {
+      if (sentence.trim() === "" || !CLAIMS_CHANGE.test(sentence)) return true
+      dropped += 1
+      return false
+    })
+    .join("")
+  return { kept, dropped }
+}
+
 const AMBIGUOUS_CONTINUATION = /^(?:계속|이어서|마저|그대로)(?:해|하|진행|작업)?/
 
 const ABANDONED = Symbol("abandoned chat generation")
@@ -1469,7 +1489,13 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         carriesCall && spoken === "" && performed.length === 0
           ? UNRUNNABLE_CALL
           : displayReply(spoken)
-      if (performed.length === 0 && CLAIMS_CHANGE.test(answer)) answer = NOT_PERFORMED
+      if (performed.length === 0 && CLAIMS_CHANGE.test(answer)) {
+        const filtered = dropChangeClaims(answer)
+        answer =
+          filtered.kept.trim() === ""
+            ? NOT_PERFORMED
+            : `${filtered.kept.trim()}\n\n(실행되지 않은 작업을 보고한 문장 ${filtered.dropped}개는 제외했습니다.)`
+      }
       answer = withFailures(answer, actionReceipts)
       if (pendingVerification.length > 0)
         answer = `${answer}\n\n검증 상태: 마지막 변경 범위를 다시 읽어 확인하지 못했습니다.`.trim()
