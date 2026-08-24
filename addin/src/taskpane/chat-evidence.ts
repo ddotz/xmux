@@ -15,6 +15,10 @@ const BLANK = /(?:빈|공백)\s*(?:값|셀|칸)?(?:\s*\(0\))?\s*(?:입니다|이
 const NO_BLANK = /(?:빈|공백)\s*(?:값|셀|칸)?(?:이|은|는)?\s*없/
 const COLUMN = /([A-Z]{1,3})열/gi
 
+/** Models also write the letter alone before a Korean label: "E 거래상대방 …", "L값".
+ * The lookahead keeps words (IFRS, KITE) out; the evidence filter keeps bogus letters out. */
+const BARE_COLUMN = /(?<![A-Za-z0-9])([A-Za-z]{1,2})(?=\s*(?:[가-힇(]))/g
+
 const numbersIn = (text: string): readonly number[] =>
   [...text.matchAll(NUMBER)].flatMap((match) => {
     const token = match[0].replaceAll(",", "")
@@ -47,7 +51,12 @@ const aggregateMetric = (before: string): AggregateMetric | null => {
 }
 
 const aggregateColumn = (before: string): string | null => {
-  const found = [...before.matchAll(COLUMN)].at(-1)
+  // Whichever spelling appears closest to the number wins: "B열 합계 120" vs
+  // "E 거래상대방 채움(filled) 154".
+  const candidates = [[...before.matchAll(COLUMN)].at(-1), [...before.matchAll(BARE_COLUMN)].at(-1)]
+    .filter((match) => match !== undefined)
+    .sort((left, right) => (right.index ?? -1) - (left.index ?? -1))
+  const found = candidates[0]
   return found?.[1]?.toUpperCase() ?? null
 }
 
@@ -85,14 +94,17 @@ const digitFreeBlankClaim = (
  * that (letter, metric) pair. A block whose header maps no metric, or a numeric cell with no
  * resolvable pair, fails closed.
  */
-type TableBlock = { readonly header: readonly string[]; readonly rows: readonly (readonly string[])[] }
+type TableBlock = {
+  readonly header: readonly string[]
+  readonly rows: readonly (readonly string[])[]
+}
 
 const cellsOf = (line: string): readonly string[] =>
   line
     .split("|")
     .slice(1, -1)
     .map((cell) => cell.trim())
-    .filter((cell) => !/^[\-:\s]*$/.test(cell))
+    .filter((cell) => !/^[-:\s]*$/.test(cell))
 
 const splitTableBlocks = (
   text: string,
@@ -131,8 +143,8 @@ const tableNumbersMatch = (
   ]
   return block.rows.every((row) => {
     const letter = (row[0] ?? "")
-      .match(/(?<![A-Za-z])([A-Za-z]{1,2})(?![A-Za-z0-9])/)
-      ?.[1]?.toUpperCase()
+      .match(/(?<![A-Za-z])([A-Za-z]{1,2})(?![A-Za-z0-9])/)?.[1]
+      ?.toUpperCase()
     if (letter === undefined) return !/[0-9]/.test(row.join(" "))
     return row.every((cell, position) => {
       const value = Number(cell.replaceAll(",", ""))
@@ -156,8 +168,7 @@ export const aggregateAnswerMatches = (
   if (tables.some((block) => !tableNumbersMatch(block, evidence))) return false
   const checked = prose
   const claims = [...checked.matchAll(NUMBER)]
-  if (claims.length === 0)
-    return tables.length > 0 ? true : digitFreeBlankClaim(checked, evidence)
+  if (claims.length === 0) return tables.length > 0 ? true : digitFreeBlankClaim(checked, evidence)
   return claims.every((claim) => {
     const token = claim[0]
     const value = Number(token.replaceAll(",", "").replace("%", ""))

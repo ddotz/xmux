@@ -342,3 +342,72 @@ describe("markdown table verification", () => {
     expect(aggregateAnswerMatches(answer, evidence)).toBe(false)
   })
 })
+
+describe("bare-letter column binding", () => {
+  // Measured on eval L1 (4th run): "E 거래상대방 채움(filled) 154" — the letter without
+  // the 열 suffix — failed to bind, so correct group bullets were filtered away.
+  const evidence = [
+    {
+      kind: "column_stats" as const,
+      sheet: "Main",
+      address: "Main!A1:O34979",
+      rowCount: 34_979,
+      hasHeaders: true,
+      columns: [
+        {
+          index: 5,
+          letter: "E",
+          count: 34_978,
+          filled: 154,
+          blank: 34_824,
+          sum: null,
+          average: null,
+          min: null,
+          max: null,
+        },
+        {
+          index: 10,
+          letter: "J",
+          count: 34_978,
+          filled: 158,
+          blank: 34_820,
+          sum: null,
+          average: null,
+          min: null,
+          max: null,
+        },
+        {
+          index: 1,
+          letter: "A",
+          count: 34_978,
+          filled: 298,
+          blank: 34_680,
+          sum: null,
+          average: null,
+          min: null,
+          max: null,
+        },
+      ],
+    },
+  ]
+
+  it("binds a standalone letter before a Korean label", () => {
+    expect(
+      aggregateAnswerMatches("E 거래상대방 채움(filled) 154 · 빈칸(blank) 34,824입니다.", evidence),
+    ).toBe(true)
+  })
+
+  it("keeps 열-suffixed binding working alongside it", () => {
+    expect(aggregateAnswerMatches("E열 채움(filled)은 154건입니다.", evidence)).toBe(true)
+  })
+
+  it("rejects a wrong value under the bare-letter form", () => {
+    expect(aggregateAnswerMatches("E 거래상대방 채움(filled) 155입니다.", evidence)).toBe(false)
+  })
+
+  it("does not let letters inside codes become columns", () => {
+    // "IFRS" must not bind I; and a value no column holds still fails.
+    expect(aggregateAnswerMatches("IFRS 기준 값은 154입니다.", evidence)).toBe(true)
+    expect(aggregateAnswerMatches("IFRS 기준 값은 999입니다.", evidence)).toBe(false)
+  })
+})
