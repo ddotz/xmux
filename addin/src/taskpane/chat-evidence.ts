@@ -17,7 +17,7 @@ const COLUMN = /([A-Z]{1,3})열/gi
 
 /** Models also write the letter alone before a Korean label: "E 거래상대방 …", "L값".
  * The lookahead keeps words (IFRS, KITE) out; the evidence filter keeps bogus letters out. */
-const BARE_COLUMN = /(?<![A-Za-z0-9])([A-Za-z]{1,2})(?=\s*(?:[가-힇(]))/g
+const BARE_COLUMN = /(?<![A-Za-z0-9])([A-Za-z]{1,2})(?=\s*(?:[가-힣(]))/g
 
 const numbersIn = (text: string): readonly number[] =>
   [...text.matchAll(NUMBER)].flatMap((match) => {
@@ -74,16 +74,20 @@ const distinctColumnCount = (evidence: readonly ColumnStatsEvidence[]): number =
 const UNIVERSAL_BLANK = /(?:모두|전부|다)\s*비어|(?:모두|전부|다)\s*(?:빈칸|공백)/u
 const UNIVERSAL_NO_BLANK = /(?:빈칸|공백)(?:이|은|는)?\s*없|비어\s*있지\s*않/u
 
+/** boolean = verified/unverified claim; null = the sentence makes no universal blank claim. */
 const digitFreeBlankClaim = (
   checked: string,
   evidence: readonly ColumnStatsEvidence[],
-): boolean => {
+): boolean | null => {
   const columns = evidence.flatMap((item) => item.columns)
   if (UNIVERSAL_BLANK.test(checked))
     return columns.length > 0 && columns.every((column) => column.filled === 0)
   if (UNIVERSAL_NO_BLANK.test(checked))
     return columns.length > 0 && columns.every((column) => column.blank === 0)
-  return false
+  // Blank vocabulary without a UNIVERSAL qualifier ("일부가 비어") names no scope the
+  // aggregates can bound — unverifiable, so it fails closed rather than passing silently.
+  if (/(?:비어|빈칸|공백)/.test(checked)) return false
+  return null
 }
 
 /**
@@ -121,7 +125,8 @@ const splitTableBlocks = (
   }
   for (const line of text.split("\n")) {
     if (/^\s*\|/.test(line)) {
-      ;(block ??= []).push(line)
+      if (block === null) block = []
+      block.push(line)
       continue
     }
     flush()
@@ -147,8 +152,11 @@ const tableNumbersMatch = (
       ?.toUpperCase()
     if (letter === undefined) return !/[0-9]/.test(row.join(" "))
     return row.every((cell, position) => {
-      const value = Number(cell.replaceAll(",", ""))
-      if (!Number.isFinite(value)) return true
+      // A cell carrying digits is a claim even when punctuation rides along (원, %, ranges):
+      // failing to parse it must fail closed, not wave it through.
+      if (!/[0-9]/.test(cell)) return true
+      const value = Number(cell.replaceAll(",", "").replace("%", ""))
+      if (!Number.isFinite(value)) return false
       const metric = metrics[position]
       if (metric === null || metric === undefined || position === 0) return false
       const held = columns.find((candidate) => candidate.letter === letter)
@@ -168,62 +176,68 @@ export const aggregateAnswerMatches = (
   if (tables.some((block) => !tableNumbersMatch(block, evidence))) return false
   const checked = prose
   const claims = [...checked.matchAll(NUMBER)]
-  if (claims.length === 0) return tables.length > 0 ? true : digitFreeBlankClaim(checked, evidence)
-  return claims.every((claim) => {
-    const token = claim[0]
-    const value = Number(token.replaceAll(",", "").replace("%", ""))
-    if (!Number.isFinite(value)) return false
-    const at = claim.index ?? 0
-    const sentenceStart = Math.max(
-      checked.lastIndexOf(".", at - 1),
-      checked.lastIndexOf("\n", at - 1),
-    )
-    const before = checked.slice(sentenceStart + 1, at)
-    const after = checked.slice(at + token.length)
-    if (/^\s*행/.test(after)) return evidence.some((item) => sameNumber(value, item.rowCount))
-    if (/^\s*열/.test(after)) return sameNumber(value, distinctColumnCount(evidence))
-    if (/^\s*[칸셀]/.test(after)) {
-      const width = distinctColumnCount(evidence)
-      return evidence.some((item) => sameNumber(value, item.rowCount * width))
-    }
-    const metric = aggregateMetric(before)
-    if (metric === null) return false
-    const column = aggregateColumn(before)
-    const columns = [
-      ...new Map(
-        evidence
-          .flatMap((item) => item.columns)
-          .map((held) => [held.letter.toUpperCase(), held] as const),
-      ).values(),
-    ]
-    const matching = column === null ? columns : columns.filter((held) => held.letter === column)
-    if (matching.some((held) => held[metric] !== null && sameNumber(value, held[metric])))
-      return true
-    if (column !== null) return false
-    if (metric === "average") {
-      const weighted = matching.flatMap((item) =>
-        item.average === null || item.count === null
-          ? []
-          : [{ total: item.average * item.count, count: item.count }],
-      )
-      const count = weighted.reduce((total, item) => total + item.count, 0)
-      return (
-        count > 0 &&
-        sameNumber(value, weighted.reduce((total, item) => total + item.total, 0) / count)
-      )
-    }
-    const held = matching.flatMap((item) => (item[metric] === null ? [] : [item[metric]]))
-    if (held.length === 0) return false
-    const combined =
-      metric === "sum" || metric === "count" || metric === "filled" || metric === "blank"
-        ? held.reduce((total, item) => total + item, 0)
-        : metric === "min"
-          ? Math.min(...held)
-          : metric === "max"
-            ? Math.max(...held)
-            : null
-    return combined !== null && sameNumber(value, combined)
-  })
+  // A verified table does not excuse prose claims beside it: digit-free universal claims
+  // still answer to the blank counts, and prose numbers still bind to their own facts.
+  const claimsOk =
+    claims.length > 0
+      ? claims.every((claim) => {
+          const token = claim[0]
+          const value = Number(token.replaceAll(",", "").replace("%", ""))
+          if (!Number.isFinite(value)) return false
+          const at = claim.index ?? 0
+          const sentenceStart = Math.max(
+            checked.lastIndexOf(".", at - 1),
+            checked.lastIndexOf("\n", at - 1),
+          )
+          const before = checked.slice(sentenceStart + 1, at)
+          const after = checked.slice(at + token.length)
+          if (/^\s*행/.test(after)) return evidence.some((item) => sameNumber(value, item.rowCount))
+          if (/^\s*열/.test(after)) return sameNumber(value, distinctColumnCount(evidence))
+          if (/^\s*[칸셀]/.test(after)) {
+            const width = distinctColumnCount(evidence)
+            return evidence.some((item) => sameNumber(value, item.rowCount * width))
+          }
+          const metric = aggregateMetric(before)
+          if (metric === null) return false
+          const column = aggregateColumn(before)
+          const columns = [
+            ...new Map(
+              evidence
+                .flatMap((item) => item.columns)
+                .map((held) => [held.letter.toUpperCase(), held] as const),
+            ).values(),
+          ]
+          const matching =
+            column === null ? columns : columns.filter((held) => held.letter === column)
+          if (matching.some((held) => held[metric] !== null && sameNumber(value, held[metric])))
+            return true
+          if (column !== null) return false
+          if (metric === "average") {
+            const weighted = matching.flatMap((item) =>
+              item.average === null || item.count === null
+                ? []
+                : [{ total: item.average * item.count, count: item.count }],
+            )
+            const count = weighted.reduce((total, item) => total + item.count, 0)
+            return (
+              count > 0 &&
+              sameNumber(value, weighted.reduce((total, item) => total + item.total, 0) / count)
+            )
+          }
+          const held = matching.flatMap((item) => (item[metric] === null ? [] : [item[metric]]))
+          if (held.length === 0) return false
+          const combined =
+            metric === "sum" || metric === "count" || metric === "filled" || metric === "blank"
+              ? held.reduce((total, item) => total + item, 0)
+              : metric === "min"
+                ? Math.min(...held)
+                : metric === "max"
+                  ? Math.max(...held)
+                  : null
+          return combined !== null && sameNumber(value, combined)
+        })
+      : (digitFreeBlankClaim(checked, evidence) ?? tables.length > 0)
+  return claimsOk
 }
 
 const withoutReferences = (answer: string): string =>

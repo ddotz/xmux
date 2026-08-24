@@ -1084,7 +1084,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
                 results === null ||
                 results.some(
                   (observation) =>
-                    observation.evidence === null || INCOMPLETE_OBSERVATION.test(observation.text),
+                    observation.evidence === null ||
+                    // A probe that lands on error literals is not a verified write — the
+                    // fill reached the cells but produced #REF!/#DIV/0! there.
+                    /#REF!|#DIV\/0!|#VALUE!|#NAME\?|#N\/A|#NULL!|#NUM!/.test(observation.text) ||
+                    INCOMPLETE_OBSERVATION.test(observation.text),
                 )
               ) {
                 verified = false

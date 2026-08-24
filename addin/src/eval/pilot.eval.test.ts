@@ -195,7 +195,9 @@ const withDerivedTotals = (
   shape: { readonly rows: number; readonly columns: number },
 ): Set<number> => {
   const derived = new Set(truth)
-  const metrics = ["count", "filled", "blank", "sum"] as const
+  // Only the blank/filled pair gets the grid complement — blanks = cells − filled. Adding
+  // complements for count/sum too would mint numbers no answer could legitimately derive.
+  const metrics = ["filled", "blank"] as const
   const columns = [
     ...new Map(
       evidence.flatMap((item) => item.columns).map((held) => [held.letter.toUpperCase(), held]),

@@ -70,46 +70,46 @@ export const buildEvalContext = (
   /** Source/destination geometry for queued pivot specs, keyed by the Range object. */
   const rangeMeta = new WeakMap<object, { fixture: SheetFixture; address: string }>()
 
-/** Shifts a column-letter run by a fill offset, clamping at A. */
-const shiftColumnLetters = (letters: string, delta: number): string => {
-  let index = 0
-  for (const ch of letters.toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64)
-  let rest = Math.max(1, index + delta)
-  let out = ""
-  while (rest > 0) {
-    out = String.fromCharCode(65 + ((rest - 1) % 26)) + out
-    rest = Math.floor((rest - 1) / 26)
+  /** Shifts a column-letter run by a fill offset, clamping at A. */
+  const shiftColumnLetters = (letters: string, delta: number): string => {
+    let index = 0
+    for (const ch of letters.toUpperCase()) index = index * 26 + (ch.charCodeAt(0) - 64)
+    let rest = Math.max(1, index + delta)
+    let out = ""
+    while (rest > 0) {
+      out = String.fromCharCode(65 + ((rest - 1) % 26)) + out
+      rest = Math.floor((rest - 1) / 26)
+    }
+    return out
   }
-  return out
-}
 
-/**
- * Excel's FillDefault shifts the RELATIVE parts of every reference by the fill offset and
- * leaves quoted text alone. The fixture must reproduce both behaviors: without the shift a
- * per-row fill stores the anchor formula verbatim down the column, and every later read —
- * including the F9-style per-row checks — sees one formula repeated where row-adjusted ones
- * belong.
- */
-const shiftFormulaRefs = (formula: string, rowDelta: number, columnDelta: number): string =>
-  formula
-    .split(/("(?:[^"]|"")*")/g)
-    .map((segment) =>
-      segment.startsWith('"')
-        ? segment
-        : segment.replace(
-            /(?<![A-Za-z0-9_$])(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})(?![0-9A-Za-z_(])/g,
-            (_whole, colDollar, letters, rowDollar, digits) => {
-              const shiftedRow =
-                rowDollar === "$" ? Number(digits) : Math.max(1, Number(digits) + rowDelta)
-              const shiftedLetters =
-                colDollar === "$"
-                  ? letters.toUpperCase()
-                  : shiftColumnLetters(letters, columnDelta)
-              return `${colDollar}${shiftedLetters}${rowDollar}${shiftedRow}`
-            },
-          ),
-    )
-    .join("")
+  /**
+   * Excel's FillDefault shifts the RELATIVE parts of every reference by the fill offset and
+   * leaves quoted text alone. The fixture must reproduce both behaviors: without the shift a
+   * per-row fill stores the anchor formula verbatim down the column, and every later read —
+   * including the F9-style per-row checks — sees one formula repeated where row-adjusted ones
+   * belong.
+   */
+  const shiftFormulaRefs = (formula: string, rowDelta: number, columnDelta: number): string =>
+    formula
+      .split(/("(?:[^"]|"")*")/g)
+      .map((segment) =>
+        segment.startsWith('"')
+          ? segment
+          : segment.replace(
+              /(?<![A-Za-z0-9_$])(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})(?![0-9A-Za-z_(])/g,
+              (_whole, colDollar, letters, rowDollar, digits) => {
+                const shiftedRow =
+                  rowDollar === "$" ? Number(digits) : Math.max(1, Number(digits) + rowDelta)
+                const shiftedLetters =
+                  colDollar === "$"
+                    ? letters.toUpperCase()
+                    : shiftColumnLetters(letters, columnDelta)
+                return `${colDollar}${shiftedLetters}${rowDollar}${shiftedRow}`
+              },
+            ),
+      )
+      .join("")
 
   const buildRange = (
     fixture: SheetFixture,

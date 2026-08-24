@@ -2506,3 +2506,106 @@ describe("grounding evidence survives the ladder", () => {
     expect(kept?.content).not.toContain("(이전 결과 생략)")
   })
 })
+
+describe("pane-side write verification failure path", () => {
+  const probeBook = () => {
+    const range = (address: string) => ({
+      address,
+      rowCount: 1,
+      columnCount: 1,
+      values: [["값"]],
+      formulas: [["=A1"]],
+      cellCount: 1,
+      isNullObject: false,
+      worksheet: { name: "Main" },
+      format: {
+        fill: { color: "" },
+        font: { bold: false, italic: false, color: "" },
+        horizontalAlignment: "",
+        columnWidth: 0,
+        rowHeight: 0,
+        wrapText: false,
+        autofitColumns: () => {},
+        autofitRows: () => {},
+      },
+      load: () => {},
+      getResizedRange: () => range(`${address}#`),
+      autoFill: () => {},
+      insert: () => {},
+      delete: () => {},
+      clear: () => {},
+      sort: { apply: () => {} },
+    })
+    const sheet = {
+      isNullObject: false,
+      name: "Main",
+      getRange: (address: string) => range(address),
+      getUsedRangeOrNullObject: () => range("A1:A2"),
+      load: () => {},
+    }
+    return {
+      added: [] as string[],
+      context: {
+        workbook: {
+          worksheets: {
+            add: (name: string) => {
+              sheet.name = name
+              return name
+            },
+            getActiveWorksheet: () => sheet,
+            getItem: () => sheet,
+            getItemOrNullObject: () => ({
+              ...sheet,
+              get isNullObject() {
+                return false
+              },
+            }),
+            load: () => {},
+            items: [{ name: "Main" }],
+          },
+          getSelectedRange: () => range("A1"),
+        },
+        sync: async (): Promise<void> => {},
+      },
+    }
+  }
+
+  it("falls back to the model nudge when its own probes cannot read", async () => {
+    // The harness verifies writes itself; only when its own probes fail does the model
+    // get asked to look — and the user still sees an explicit unverified note.
+    const book = probeBook()
+    let probesMustFail = false
+    const baseSync = book.context.sync.bind(book.context)
+    book.context.sync = async (): Promise<void> => {
+      if (probesMustFail) throw new Error("probe sync failure")
+      await baseSync()
+    }
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"Main","address":"A1","rows":[["값"],["합계"]]}',
+      )
+      .mockImplementationOnce(() => {
+        probesMustFail = true
+        return Promise.resolve("입력을 마쳤습니다.")
+      })
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"A1","formulas":true}')
+      .mockResolvedValueOnce("확인했습니다.")
+
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(book.context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("Main A1:A2를 채워줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+
+    const nudgeRequest = vi.mocked(askModel).mock.calls[2]?.[1].at(-1)?.content ?? ""
+    expect(nudgeRequest).toContain("Main!A1")
+    expect(nudgeRequest).toContain("read_range(formulas:true)")
+    expect(chatting.state().turns.at(-1)?.text).toContain("검증 상태")
+  })
+})

@@ -57,7 +57,11 @@ describe("fixture autoFill reference adjustment", () => {
     })
 
     const column = (working.sheets[0]?.formulas ?? []).map((row) => row?.[10])
-    expect(column.slice(1, 4)).toEqual(['=IF(A$2="","",$B$1&I2)', '=IF(A$2="","",$B$1&I3)', '=IF(A$2="","",$B$1&I4)'])
+    expect(column.slice(1, 4)).toEqual([
+      '=IF(A$2="","",$B$1&I2)',
+      '=IF(A$2="","",$B$1&I3)',
+      '=IF(A$2="","",$B$1&I4)',
+    ])
   })
 
   it("does not alter other columns when filling one cell in place", async () => {

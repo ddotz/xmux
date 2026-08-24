@@ -341,7 +341,8 @@ export const askModel = async (
       const plan = RETRY_PLAN[last.failureClass]
       if (attempt + 1 >= plan.attempts) throw last
       const override = retryBackoffMs[attempt] ?? retryBackoffMs.at(-1)
-      const delay = override ?? jittered(last.retryAfterMs ?? plan.backoff[attempt] ?? 0)
+      // The server's own number is honored as-is; only our fallback schedules get jitter.
+      const delay = override ?? last.retryAfterMs ?? jittered(plan.backoff[attempt] ?? 0)
       if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay))
     }
   }
