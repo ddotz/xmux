@@ -1973,9 +1973,10 @@ describe("working through a batch of tool calls", () => {
 
   it("still says what it changed when the server drops the turn mid-build", async () => {
     // Given: the writes have already landed and the connection dies on the way to the
-    // answer. An error line alone leaves the user looking at a workbook that changed for
-    // reasons nobody described — unable to tell whether to press 되돌리기. What the pane ran
-    // is the one account that survives a dead server, because the pane ran it.
+    // answer. The receipt is the answer — the harness verified those writes on its own
+    // sync — so the failure is stated beside it in the transcript, not as an error
+    // banner in front of finished work (a recorded P2 run built and verified its pivot
+    // over 876 s, then surfaced a hard 429 error because the closing call died).
     const book = workbook()
     book.context.workbook.worksheets.add("정리")
     vi.mocked(askModel)
@@ -1989,10 +1990,12 @@ describe("working through a batch of tool calls", () => {
     chatting.handlers.onSend("정리 시트에 표 넣어줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    // The failure is still reported as a failure.
-    expect(chatting.state().error).toContain("timeout")
+    // The failure is still reported — inside the transcript, next to the receipt.
+    expect(chatting.state().error).toBeNull()
+    const failureNote = chatting.state().turns.at(-1)?.text ?? ""
+    expect(failureNote).toContain("timeout")
     // And the work that landed before it is on screen, not lost with the turn.
-    const said = chatting.state().turns.at(-1)?.text ?? ""
+    const said = chatting.state().turns.at(-2)?.text ?? ""
     expect(said).toContain("표 입력")
     expect(said).toContain("서식 적용")
   })
@@ -2762,8 +2765,9 @@ describe("deterministic floors under the verification ladder", () => {
     return context
   }
 
-  it("answers with the harness's own aggregate table when the rewrite ladder exhausts", async () => {
-    // The model insists on a number the aggregates cannot vouch for, on every rung.
+  it("answers with the harness's own aggregate table when the draft's numbers are unvouched", async () => {
+    // The model insists on a number the aggregates cannot vouch for. No rewrite is
+    // asked: with complete aggregates the harness authors the table itself.
     vi.mocked(askModel).mockResolvedValue("선택 데이터 전체의 합계는 999999입니다.")
     const chatting = createChatting({
       redraw: () => {},
@@ -2779,8 +2783,10 @@ describe("deterministic floors under the verification ladder", () => {
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     const said = chatting.state().turns.at(-1)?.text ?? ""
-    // The ladder stays bounded: initial answer plus exactly two rewrite attempts.
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(3)
+    // One model call total: the two-rewrite ladder is gone from the aggregate route —
+    // a measured L1 run paid two full-length regenerations (8k→14k→32k chars, 200+ s)
+    // only to end on this same filter-plus-table floor.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
     expect(said).toContain("열별 확인된 집계입니다")
     expect(said).toContain("4,020")
     expect(said).not.toContain("999999")

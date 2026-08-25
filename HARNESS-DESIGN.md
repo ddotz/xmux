@@ -173,6 +173,21 @@ discarding the whole answer, so fail-closed survives while verified prose does t
 Sentence filtering reuses the per-sentence machinery of the evidence matchers;
 unverifiable numerics never reach the user as fact.
 
+**Amended 2026-08-25 — the aggregate route no longer rewrites at all.** The
+two-rewrite argument above predates the deterministic floors: it was weighed against a
+refusal, and against a refusal a recovered answer justified two round trips. Once the
+floor became filtered-prose-plus-verified-table (§ Deterministic floors), the ladder's
+yield went to zero — the rewrites only retyped numbers the table already carries
+verbatim, and each retype was a full-length regeneration. Measured on eval run 22:42
+(L1, 34,979×15): draft 8k chars → rewrite 14k → nudged retry 32k, 200+ s of a 278 s
+turn, all discarded by the same filter-plus-table floor the harness could have authored
+after the draft. The aggregate route now goes draft → sentence filter → table, zero
+extra LLM calls; rungs 1–2 survive only in the range-grounded ladder, where no table
+can stand in for prose, and those rewrite instructions now demand brevity (the nudge
+without a length bound is what inflated 8k→32k). Re-measured L1: 278 s → 66 s (rep0),
+188 s → 42 s (median), generated output 54k → 9k chars, accuracy and reproducibility
+checks 100% on both reps, Jaccard 1.00 across reps.
+
 ### Deterministic floors (2026-08-24, after eval run 09:23)
 
 The 09:23 pilot run scored 50% with three distinct failure shapes, all sharing one
@@ -206,6 +221,13 @@ harness discarded evidence it already held. Four floors replaced that, each zero
 
 Ladder calls themselves became loss-proof: a mid-ladder `AiError` falls through to
 the floors (`askOrNull`) instead of erasing the turn.
+
+Added 2026-08-25: the write-turn receipt floor extends into the `AiError` catch path.
+A turn whose harness-verified writes already landed commits its receipt as the answer
+with the failure stated beside it in the transcript, instead of a hard error banner in
+front of finished work — a recorded P2 run built and verified its pivot over 876 s,
+then surfaced a raw 429 because only the closing narration call died. A turn with no
+landed writes keeps the error banner: with nothing built, the error is the truth.
 
 ### Fast path
 

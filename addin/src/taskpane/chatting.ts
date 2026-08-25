@@ -1164,7 +1164,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               budget,
             )}\n${
               intakeComplete
-                ? "위 집계는 선택 범위의 모든 열을 포괄합니다. 추가 도구 호출 없이 이 집계만으로 지금 바로 답하세요. 개별 셀 인용이 반드시 필요한 경우에만 그 범위를 read_range로 읽습니다."
+                ? "위 집계는 선택 범위의 모든 열을 포괄합니다. 추가 도구 호출 없이 이 집계만으로 지금 바로 답하세요. 인용하는 숫자는 위 집계의 표기 그대로 쓰고, 핵심 관찰 위주로 간결히 답하세요. 개별 셀 인용이 반드시 필요한 경우에만 그 범위를 read_range로 읽습니다."
                 : "이 집계를 우선 근거로 사용하세요. 개별 셀 값이 필요하면 그 범위만 read_range로 읽습니다."
             }`,
           )
@@ -1542,7 +1542,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         hasWorkbookClaim &&
         (selectionWideClaim(reply) || draftPlan.calls.length === 0)
       let aggregateHandled = false
-      let aggregateDropped = false
+      let aggregateTableOwed = false
       if (aggregateRoute) {
         aggregateHandled = true
         let aggregateEvidence = aggregateEvidenceForSelection(
@@ -1578,55 +1578,33 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               )
           }
         }
-        const serializedEvidence = JSON.stringify({
-          kind: "excel_aggregate_evidence",
-          selection: attachment,
-          evidence: aggregateEvidence,
-        })
         if (
           aggregateEvidence.length === 0 ||
-          !aggregateEvidenceComplete(aggregateEvidence, attachment) ||
-          estimateTokens(serializedEvidence) > budget.observationTokens
+          !aggregateEvidenceComplete(aggregateEvidence, attachment)
         ) {
-          // Incomplete evidence keeps the refusal; complete evidence that merely
-          // cannot travel (or that the model failed to narrate) becomes the harness's
-          // own table: every number verbatim from the aggregates, zero model calls.
+          // Incomplete evidence keeps the refusal — a partial table would claim a
+          // coverage it does not have (aggregateAnswerTable returns null here).
           reply = aggregateAnswerTable(aggregateEvidence, attachment) ?? SELECTION_NOT_VERIFIED
         } else if (!aggregateAnswerMatches(reply, aggregateEvidence)) {
-          turns.push({ role: "assistant", content: reply })
-          turns.push({
-            role: "user",
-            content: `${OBSERVATION_PREFIX}\n아래 Excel 집계 근거만 사용해 최종 답변을 다시 쓰세요. 각 숫자는 열과 연산(건수·빈칸·합계·평균·최소·최대)을 함께 명시하세요.\n${serializedEvidence}`,
-          })
-          // One rewrite, one nudged retry against the same evidence, then the sentence
-          // filter keeps only the numbers the aggregates actually vouch for.
-          let corrected = false
-          for (let attempt = 0; attempt < 2 && !corrected; attempt += 1) {
-            // A model failure mid-ladder falls through to the deterministic floor
-            // below instead of erasing the turn.
-            const next = await askOrNull(trimObservations(turns, budget))
-            if (next === null) break
-            reply = next
-            if (aggregateAnswerMatches(reply, aggregateEvidence)) {
-              corrected = true
-              break
-            }
-            turns.push({ role: "assistant", content: reply })
-            turns.push({
-              role: "user",
-              content: `${OBSERVATION_PREFIX}\n직전 답변의 숫자·열·연산이 위의 Excel 집계 근거와 불일치합니다. 위 근거만 사용해 한 번 더 고치세요.`,
-            })
-          }
-          if (!corrected) {
-            const filtered = stripUnverifiedSentences(reply, (sentence) =>
-              aggregateAnswerMatches(sentence, aggregateEvidence),
-            )
-            if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
-              aggregateDropped = true
-              reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
-            } else {
-              reply = aggregateAnswerTable(aggregateEvidence, attachment) ?? SELECTION_NOT_VERIFIED
-            }
+          // Complete evidence makes the harness table authorable, and filtered prose
+          // above that verbatim table is exactly the floor the old two-rewrite ladder
+          // ended on. Once that floor exists the rewrites buy no accuracy back — a
+          // measured L1 run paid two full-length regenerations (8k→14k→32k chars,
+          // 200+ s of a 278 s turn) plus two resends of the serialized evidence to
+          // arrive at the same filter-plus-table answer. Zero model calls here; the
+          // coverage block below appends the table wherever the prose fell short.
+          const filtered = stripUnverifiedSentences(reply, (sentence) =>
+            aggregateAnswerMatches(sentence, aggregateEvidence),
+          )
+          aggregateTableOwed = true
+          if (filtered.kept.trim() === "") {
+            reply = aggregateAnswerTable(aggregateEvidence, attachment) ?? SELECTION_NOT_VERIFIED
+          } else if (filtered.dropped > 0) {
+            reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
+          } else {
+            // Every sentence is vouched or claim-free (a numberless narrative): the
+            // prose stands and the table below supplies the numbers it never named.
+            reply = filtered.kept.trim()
           }
         }
       }
@@ -1637,7 +1615,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         aggregateHandled &&
         attachment !== null &&
         reply !== SELECTION_NOT_VERIFIED &&
-        (enumeratesColumns(reply) || aggregateDropped) &&
+        (enumeratesColumns(reply) || aggregateTableOwed) &&
         !requestPinsColumns(request)
       ) {
         const held = aggregateEvidenceForSelection(harness.aggregateEvidence(), attachment)
@@ -1776,7 +1754,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           turns.push({ role: "assistant", content: reply })
           turns.push({
             role: "user",
-            content: `${OBSERVATION_PREFIX}\n최종 답변 근거 확인 (원래 주장):\n${reply}\n실제 Excel 값:\n${boundRound(observations, budget)}\n위 실제 값만 근거로 한국어 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.`,
+            content: `${OBSERVATION_PREFIX}\n최종 답변 근거 확인 (원래 주장):\n${reply}\n실제 Excel 값:\n${boundRound(observations, budget)}\n위 실제 값만 근거로 한국어 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요. 질문에 답하는 데 필요한 문장만 간결히 쓰세요.`,
           })
           const groundedReplyIsValid = (answer: string): boolean => {
             const rewritten = groundingPlan(
@@ -1812,11 +1790,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // error. The ladder below only runs when validation actually fails.
           if (!groundedReplyIsValid(reply)) {
             await rewriteAsk(
-              "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 위에 보낸 실제 값만 사용해 최종 답변을 다시 쓰세요.",
+              "직전 답변이 실제 Excel 근거 검증을 통과하지 못했습니다. 새 주소나 확인되지 않은 숫자를 넣지 말고 위에 보낸 실제 값만 사용해, 필요한 문장만 간결히 최종 답변을 다시 쓰세요.",
             )
             if (!groundedReplyIsValid(reply))
               await rewriteAsk(
-                "직전 답변이 다시 통과하지 못했습니다. 위의 실제 값만 근거로 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
+                "직전 답변이 다시 통과하지 못했습니다. 위의 실제 값만 근거로 짧게 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요.",
               )
           }
           if (!groundedReplyIsValid(reply)) {
@@ -1960,6 +1938,28 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               {
                 role: "assistant" as const,
                 text: `${aggregateFallback}\n\n(AI 응답 오류로 모델 답변 대신 확인된 집계를 표시합니다: ${error.message})`,
+                sheet: targetSheet,
+              },
+            ],
+            pending: false,
+            activity: [],
+          })
+          return
+        }
+        // Same doctrine as the write-receipt floor inside the ladder: a turn whose
+        // writes landed and were receipted is an ANSWERED turn even when the model
+        // dies before narrating it. The receipt already accounts for every change;
+        // the failure is stated beside it, not as an error banner in front of
+        // finished work (a recorded P2 run built and verified its pivot over 876 s,
+        // then surfaced a hard 429 error because the closing narration call died).
+        if (done.length > 0) {
+          commit({
+            turns: [
+              ...state.turns,
+              ...done,
+              {
+                role: "assistant" as const,
+                text: `(작업은 위 실행 확인대로 반영되었습니다. 이후 AI 응답 오류로 설명을 마치지 못했습니다: ${error.message})`,
                 sheet: targetSheet,
               },
             ],

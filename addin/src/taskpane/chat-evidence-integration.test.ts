@@ -223,34 +223,39 @@ describe("chat evidence gate", () => {
 
   it("routes a narrative wide-selection answer through aggregates, not raw coverage", async () => {
     const loaded: string[] = []
-    vi.mocked(askModel)
-      .mockResolvedValueOnce("선택한 범위의 B열 데이터가 정리되어 있습니다.")
-      .mockResolvedValueOnce("B열 합계는 2,040이고 최대는 1,200입니다.")
+    vi.mocked(askModel).mockResolvedValueOnce("선택한 범위의 B열 데이터가 정리되어 있습니다.")
     const chatting = chattingForLargeSelection(loaded)
 
     chatting.handlers.onSend("선택 범위 분석해줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
     // The old regex gate let this narrative draft fall into full-coverage tiling that
-    // could never fit; structurally it belongs to the aggregate route.
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
-    expect(chatting.state().turns.at(-1)?.text).toBe("B열 합계는 2,040이고 최대는 1,200입니다.")
+    // could never fit. A numberless selection-wide narrative over complete aggregates
+    // now costs zero extra model calls: the unvouched prose drops and the harness's
+    // own verified table is the answer.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+    const answer = chatting.state().turns.at(-1)?.text ?? ""
+    expect(answer).toContain("열별 확인된 집계입니다")
+    expect(answer).toContain("2,040")
     expect(loaded.some((properties) => /values|formulas/.test(properties))).toBe(false)
   })
 
-  it("retries aggregate answers against the same typed Excel evidence", async () => {
+  it("answers a mismatched aggregate claim with the harness's own table, not a rewrite", async () => {
     const loaded: string[] = []
-    vi.mocked(askModel)
-      .mockResolvedValueOnce("B열 합계는 999입니다.")
-      .mockResolvedValueOnce("B열 합계는 500입니다.")
-      .mockResolvedValueOnce("B열 합계는 2,040입니다.")
+    vi.mocked(askModel).mockResolvedValueOnce("B열 합계는 999입니다.")
     const chatting = chattingForLargeSelection(loaded)
 
     chatting.handlers.onSend("선택 범위 합계를 분석해줘")
     await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
 
-    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(3)
-    expect(chatting.state().turns.at(-1)?.text).toBe("B열 합계는 2,040입니다.")
+    // The two-rewrite ladder is gone from the aggregate route: with complete column
+    // aggregates in hand, the unvouched sentence drops and the verified table IS the
+    // answer — one model call, and the wrong number never reaches the user.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(1)
+    const answer = chatting.state().turns.at(-1)?.text ?? ""
+    expect(answer).not.toContain("합계는 999")
+    expect(answer).toContain("열별 확인된 집계입니다")
+    expect(answer).toContain("2,040")
     expect(loaded.some((properties) => /values|formulas/.test(properties))).toBe(false)
   })
 })
