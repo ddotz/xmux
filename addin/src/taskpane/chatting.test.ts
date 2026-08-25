@@ -2927,6 +2927,26 @@ describe("selection-scoped reads", () => {
     expect(observation).toContain("Main!C100:F200")
   })
 
+  it("expands to the whole sheet once the attachment is X-ed off", async () => {
+    // The X on the attachment card is the escape hatch: detaching the drag-selected
+    // range returns the turn to whole-sheet scope, so the same A1-walking read that a
+    // live attachment clamps now runs exactly as asked.
+    const book = recordingContext()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"A1:F300"}')
+      .mockResolvedValue("확인했습니다.")
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "C100:F200", cellCount: 404 })
+    chatting.handlers.onDetachSelection()
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위를 자세히 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.requested).toContain("A1:F300")
+    const observation = vi.mocked(askModel).mock.calls[1]?.[1].at(-1)?.content ?? ""
+    expect(observation).not.toContain("만 읽었습니다")
+  })
+
   it("leaves reads alone when the request itself names an address", async () => {
     // 요청에 적힌 범위 outranks the drag: a request that spells A1:B99 keeps its
     // own scope even with a selection attached.
