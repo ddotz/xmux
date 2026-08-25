@@ -173,6 +173,40 @@ discarding the whole answer, so fail-closed survives while verified prose does t
 Sentence filtering reuses the per-sentence machinery of the evidence matchers;
 unverifiable numerics never reach the user as fact.
 
+### Deterministic floors (2026-08-24, after eval run 09:23)
+
+The 09:23 pilot run scored 50% with three distinct failure shapes, all sharing one
+root: every recovery mechanism was another LLM call, and when the model failed the
+harness discarded evidence it already held. Four floors replaced that, each zero-LLM:
+
+- **Aggregate table floor.** When the aggregate route exhausts (or the serialized
+  evidence cannot travel, or the model dies mid-turn on an analysis question), and
+  the ledger holds column-complete aggregates for the selection,
+  `aggregateAnswerTable` authors the answer itself: one markdown row per column,
+  every number in the exact `column_stats` rendering. Enumeration-complete and
+  traceable by construction. Replaces SELECTION_NOT_VERIFIED and the dead
+  `AiError` turn (recorded L1: nine minutes, then an error, with complete
+  aggregates sitting in the ledger).
+- **Write-turn receipt floor.** A turn that performed harness-verified writes never
+  enters the aggregate route or the grounded rewrite ladder: work-report sentences
+  stand (the sync verified those writes), unvouched analysis claims still drop
+  sentence-by-sentence, and if nothing survives the pane's receipt IS the answer.
+  Recorded P2/F9 burned two rewrites each (~4 min) to replace truthful build
+  reports with "전체 범위를 모두 읽지 못해 판단할 수 없다".
+- **Cell-targeted intake.** A why/how question naming one cell gets `explain_cell`
+  plus a formulas read at intake (one sync). The formula chain rides in the question
+  turn — recorded P1 spent four discovery rounds and 708 s on a formula the pane
+  reads in milliseconds — and the explain text is the floor when the model's final
+  prose collapses.
+- **Provenance attribution notes.** For 출처/추적 questions the cited cells' stored
+  formulas are probed once after the answer; any sheet a formula references that the
+  answer never names is appended as a note quoting the formula verbatim. Value
+  equality cannot catch this class: recorded T1 attributed 요약!B4 to its own sheet
+  while the stored formula said =원장!B2-원장!B3 and every number matched.
+
+Ladder calls themselves became loss-proof: a mid-ladder `AiError` falls through to
+the floors (`askOrNull`) instead of erasing the turn.
+
 ### Fast path
 
 When the answer's extracted calls are all cache hits and the aggregate match passes, the

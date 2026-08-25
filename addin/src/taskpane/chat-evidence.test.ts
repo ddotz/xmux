@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { aggregateAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
+import {
+  aggregateAnswerMatches,
+  formulaAttributionNotes,
+  rangeAnswerMatches,
+} from "./chat-evidence"
 
 describe("display annotations in answers", () => {
   it("ignores format-code digits when verifying a value answer", () => {
@@ -409,5 +413,129 @@ describe("bare-letter column binding", () => {
     // "IFRS" must not bind I; and a value no column holds still fails.
     expect(aggregateAnswerMatches("IFRS 기준 값은 154입니다.", evidence)).toBe(true)
     expect(aggregateAnswerMatches("IFRS 기준 값은 999입니다.", evidence)).toBe(false)
+  })
+})
+
+describe("derivation sentences under one reference", () => {
+  const cells = [
+    {
+      kind: "range" as const,
+      sheet: "요약",
+      address: "요약!B2",
+      formulas: false,
+      values: [[5_200_000]],
+      display: [["5,200,000"]],
+    },
+    {
+      kind: "range" as const,
+      sheet: "요약",
+      address: "요약!B3",
+      formulas: false,
+      values: [[3_100_000]],
+      display: [["3,100,000"]],
+    },
+    {
+      kind: "range" as const,
+      sheet: "요약",
+      address: "요약!B4",
+      formulas: false,
+      values: [[2_100_000]],
+      display: [["2,100,000"]],
+    },
+  ]
+
+  it("keeps an arithmetic recap whose numbers all come from cells this turn read", () => {
+    // Measured T1 (2026-08-24): strict segment binding dropped the one sentence
+    // that answered the question, because the subtraction recap rode under B4.
+    expect(
+      rangeAnswerMatches("요약!B4의 순이익은 2,100,000 (= 5,200,000 − 3,100,000)입니다.", cells),
+    ).toBe(true)
+  })
+
+  it("still rejects an invented number inside a derivation sentence", () => {
+    expect(
+      rangeAnswerMatches("요약!B4의 순이익은 2,100,000 (= 9,999,999 − 3,100,000)입니다.", cells),
+    ).toBe(false)
+  })
+
+  it("still rejects a misattributed value in a plain sentence", () => {
+    expect(rangeAnswerMatches("요약!B4의 순이익은 5,200,000입니다.", cells)).toBe(false)
+  })
+
+  it("rejects a value-swapped head even when every number exists in the evidence", () => {
+    // The laundering counterexample from review: B4's value swapped with B3's, all
+    // three numbers present somewhere in cells this turn read. The recap operands
+    // may be vouched anywhere; the head stays bound to the cited cell.
+    expect(
+      rangeAnswerMatches("요약!B4의 순이익은 3,100,000 (= 5,200,000 − 2,100,000)입니다.", cells),
+    ).toBe(false)
+  })
+
+  it("rejects a headless recap that binds nothing to the cited cell", () => {
+    // The omission variant of the swap: drop the head and let the operands imply
+    // B4 = 3,100,000. With no head, operands fall back to strict binding.
+    expect(rangeAnswerMatches("요약!B4 (= 5,200,000 − 2,100,000)입니다.", cells)).toBe(false)
+  })
+
+  it("does not open the exemption for arithmetic words without a literal recap", () => {
+    // "합계" armed the old marker on ordinary prose; only "= N op N" counts now.
+    expect(rangeAnswerMatches("요약!B4 값은 3,100,000이며 합계 검증에 사용됩니다.", cells)).toBe(
+      false,
+    )
+  })
+})
+
+describe("formulaAttributionNotes", () => {
+  const formulaEvidence = [
+    {
+      kind: "range" as const,
+      sheet: "요약",
+      address: "요약!B4",
+      formulas: true,
+      values: [["=원장!B2-원장!B3"]],
+      display: [["2,100,000"]],
+    },
+  ]
+
+  it("quotes the stored formula when a cited cell pulls from a sheet the answer never names", () => {
+    const notes = formulaAttributionNotes(
+      "요약!B4의 순이익 2,100,000은 B2에서 B3을 뺀 값입니다.",
+      formulaEvidence,
+    )
+    expect(notes).toHaveLength(1)
+    expect(notes[0]).toContain("=원장!B2-원장!B3")
+    expect(notes[0]).toContain("원장")
+  })
+
+  it("stays silent when the answer already names the referenced sheet", () => {
+    expect(
+      formulaAttributionNotes("요약!B4는 원장!B2에서 원장!B3을 뺀 값입니다.", formulaEvidence),
+    ).toEqual([])
+  })
+
+  it("stays silent for cells the answer never cites", () => {
+    expect(formulaAttributionNotes("순이익은 2,100,000입니다.", formulaEvidence)).toEqual([])
+  })
+
+  it("ignores value evidence and same-sheet formulas", () => {
+    const sameSheet = [
+      {
+        kind: "range" as const,
+        sheet: "요약",
+        address: "요약!B4",
+        formulas: true,
+        values: [["=B2-B3"]],
+        display: [["2,100,000"]],
+      },
+      {
+        kind: "range" as const,
+        sheet: "요약",
+        address: "요약!B2",
+        formulas: false,
+        values: [[5_200_000]],
+        display: [["5,200,000"]],
+      },
+    ]
+    expect(formulaAttributionNotes("요약!B4는 B2와 B3에서 나온 값입니다.", sameSheet)).toEqual([])
   })
 })

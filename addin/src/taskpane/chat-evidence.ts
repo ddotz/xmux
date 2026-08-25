@@ -2,6 +2,7 @@ import { columnLetters, parseArea } from "../excel/address"
 import type { ColumnStatsEvidence } from "../excel/column-stats"
 import type { RangeEvidence } from "../excel/inspect"
 import { splitQualified } from "../excel/resolve"
+import { scanReferences } from "../formula/scanner"
 
 type EvidenceCell = {
   readonly address: string
@@ -26,6 +27,15 @@ const numbersIn = (text: string): readonly number[] =>
     if (!Number.isFinite(value)) return []
     return token.endsWith("%") ? [value, value / 100] : [value]
   })
+
+/**
+ * An explicit arithmetic recap: "= 5,200,000 \u2212 3,100,000". Only this literal shape
+ * opens the derivation exemption below \u2014 bare arithmetic words (\ud569\uacc4), date slashes
+ * (2026/08), and hyphenated ranges never do, because each was measured to arm the
+ * old marker on ordinary prose and let a misattributed value ride through.
+ */
+const RECAP_SPAN =
+  /[=\uff1d]\s*[-+]?\d[\d,]*(?:\.\d+)?%?(?:\s*[\u2212\-+\u00d7*/]\s*[-+]?\d[\d,]*(?:\.\d+)?%?)+/g
 
 const sameNumber = (left: number, right: number): boolean =>
   Math.abs(left - right) <= Number.EPSILON * Math.max(1, Math.abs(left), Math.abs(right))
@@ -320,11 +330,27 @@ const answerMatchesCells = (answer: string, cells: readonly EvidenceCell[]): boo
     if (NO_BLANK.test(segment) && blank) return false
     const claimed = numbersIn(segment)
     const actual = cell.values.flatMap(numbersIn)
-    if (
-      claimed.length > 0 &&
-      !claimed.every((number) => actual.some((held) => sameNumber(number, held)))
-    )
-      return false
+    if (claimed.length > 0) {
+      // A recap span restates OTHER cited cells' values under one reference:
+      // "요약!B4 → 2,100,000 (= 5,200,000 − 3,100,000)" binds three numbers to B4,
+      // and strict segment binding dropped the one sentence that answered the
+      // question (measured T1, 2026-08-24). Only the operands INSIDE a literal
+      // "=" recap may be vouched by any cell this turn actually read; the head
+      // numbers stay bound to the cited cell, so a value-swapped misattribution
+      // ("B4는 3,100,000 (= 5,200,000 − 2,100,000)") fails on its head even
+      // though every number exists somewhere in the evidence.
+      const spans = [...segment.matchAll(RECAP_SPAN)]
+      const operands = spans.flatMap((span) => numbersIn(span[0]))
+      const heads = numbersIn(spans.reduce((rest, span) => rest.replace(span[0], " "), segment))
+      if (!heads.every((number) => actual.some((held) => sameNumber(number, held)))) return false
+      const everywhere = cells.flatMap((held) => held.values.flatMap(numbersIn))
+      // A headless recap ("B4 (= 5,200,000 − 2,100,000)") binds nothing to the cited
+      // cell — the omission variant of the swap. With no head to check, the operands
+      // themselves fall back to strict segment binding.
+      const operandPool = heads.length > 0 ? everywhere : actual
+      if (!operands.every((number) => operandPool.some((held) => sameNumber(number, held))))
+        return false
+    }
   }
 
   const blanks = cells.filter((cell) => (cell.values[0] ?? "") === "").length
@@ -335,6 +361,71 @@ const answerMatchesCells = (answer: string, cells: readonly EvidenceCell[]): boo
   return prose.every((number) =>
     number === 0 && blanks > 0 ? true : allowed.some((held) => sameNumber(number, held)),
   )
+}
+
+/** How many attribution notes one answer may carry before they stop reading as notes. */
+const MAX_ATTRIBUTION_NOTES = 4
+
+/**
+ * Provenance the values cannot show: a cited cell whose stored formula pulls from a
+ * sheet the answer never names. Value equality passes such an answer — 요약!B4 equals
+ * B2−B3 on its own sheet numerically even when the formula says =원장!B2-원장!B3 — so
+ * the attribution is enforced from the stored formula text itself, as a harness note
+ * quoting the formula verbatim. Zero model calls; fires only on formula evidence for
+ * cells the answer actually cites.
+ */
+export const formulaAttributionNotes = (
+  answer: string,
+  evidence: readonly RangeEvidence[],
+): readonly string[] => {
+  const cited = [...answer.matchAll(CELL_REFERENCE)].flatMap((match) => {
+    const at = match.index ?? 0
+    const before = answer[at - 1] ?? ""
+    const after = answer[at + match[0].length] ?? ""
+    if (/[A-Za-z0-9_$:]/.test(before) || /[A-Za-z0-9_]/.test(after)) return []
+    return [
+      {
+        sheet: (match[1] ?? match[2])?.replaceAll("''", "'").trim() ?? null,
+        address: (match[3] ?? "").replaceAll("$", "").toUpperCase(),
+      },
+    ]
+  })
+  if (cited.length === 0) return []
+  const notes: string[] = []
+  const seen = new Set<string>()
+  for (const item of evidence) {
+    if (!item.formulas) continue
+    const anchor = parseArea(splitQualified(item.address).local)
+    if (anchor === null) continue
+    item.values.forEach((row, rowOffset) => {
+      row.forEach((value, columnOffset) => {
+        if (typeof value !== "string" || !value.startsWith("=")) return
+        const local = `${columnLetters(anchor.left + columnOffset)}${anchor.top + rowOffset}`
+        const named = cited.some(
+          (reference) =>
+            reference.address === local &&
+            (reference.sheet === null || reference.sheet === item.sheet),
+        )
+        if (!named) return
+        const sheets = new Set(
+          scanReferences(value).flatMap((token) =>
+            token.target.kind === "local" && token.target.sheet !== null
+              ? [token.target.sheet]
+              : token.target.kind === "external"
+                ? [token.target.sheet]
+                : [],
+          ),
+        )
+        const missing = [...sheets].filter((sheet) => !answer.includes(sheet))
+        if (missing.length === 0) return
+        const key = `${item.sheet}!${local}`
+        if (seen.has(key) || notes.length >= MAX_ATTRIBUTION_NOTES) return
+        seen.add(key)
+        notes.push(`참고: ${key}의 수식은 ${value} — ${missing.join(", ")} 시트를 참조합니다.`)
+      })
+    })
+  }
+  return notes
 }
 
 export const rangeAnswerMatches = (answer: string, evidence: readonly RangeEvidence[]): boolean => {

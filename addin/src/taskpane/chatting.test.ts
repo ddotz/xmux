@@ -19,8 +19,30 @@ import {
   compactTurns,
   createChatting,
   fitConversation,
+  isWriteShapedRequest,
   trimObservations,
 } from "./chatting"
+
+describe("isWriteShapedRequest", () => {
+  it("matches active request forms", () => {
+    expect(isWriteShapedRequest("A1에 항목을 입력해줘")).toBe(true)
+    expect(isWriteShapedRequest("요약 표를 만들어줘")).toBe(true)
+    expect(isWriteShapedRequest("서식을 적용하세요")).toBe(true)
+    expect(isWriteShapedRequest("B열을 채워 줘")).toBe(true)
+    // The hot path: 넣어줘 is the corpus's most common write phrasing.
+    expect(isWriteShapedRequest("B6에 합계를 넣어줘")).toBe(true)
+  })
+
+  it("does not match passive or adjectival stems describing existing state", () => {
+    // Measured regression: this provenance question skipped the explain intake.
+    expect(isWriteShapedRequest("B4에 입력된 값이 왜 이런가요?")).toBe(false)
+    expect(isWriteShapedRequest("서식이 적용된 이유가 뭐야")).toBe(false)
+  })
+
+  it("does not match a verb subordinated to an answer with -해서", () => {
+    expect(isWriteShapedRequest("B4가 왜 안 맞는지 정리해서 알려줘")).toBe(false)
+  })
+})
 
 vi.mock("../ai/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("../ai/client")>()
@@ -1861,6 +1883,94 @@ describe("working through a batch of tool calls", () => {
     expect(said).not.toContain("select_range")
   })
 
+  it("keeps a verified build report instead of refusing over unverifiable analysis prose", async () => {
+    const book = workbook()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValue("정리!A1에 항목을 입력했습니다. 선택 전체 평균은 123456입니다.")
+    book.context.workbook.worksheets.add("정리")
+    const chatting = chattingOver(book.context)
+    // A wide attachment used to push this write turn into the aggregate route,
+    // which burned two rewrites and replaced the report with a refusal.
+    chatting.updateSelection({ sheet: "정리", address: "A1:A200", cellCount: 200 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("정리 시트 A1에 항목을 입력해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("입력했습니다")
+    expect(said).not.toContain("전체 범위를 모두 읽지 못해")
+    // The unvouched analysis claim still fails closed, as a dropped sentence.
+    expect(said).not.toContain("123456")
+    // No aggregate rewrites: the write turn ends without the analysis ladder.
+    expect(vi.mocked(askModel).mock.calls.length).toBeLessThanOrEqual(3)
+  })
+
+  it("drops a phantom work claim whose verb class has no receipt behind it", async () => {
+    // One verified write must not license unlimited write-verb prose: the sort never
+    // ran, so its sentence drops while the receipted write report stands.
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValue("정리!A1에 항목을 입력했습니다. 또한 B열 전체를 정렬했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트 A1에 항목을 입력해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("입력했습니다")
+    expect(said).not.toContain("정렬했습니다")
+  })
+
+  it("drops a write sentence smuggling a data number the evidence never held", async () => {
+    // The verb rode the sentence through before: a real write plus an embedded
+    // "B열 합계 999,999" claim the turn never measured. The number is unvouched, so
+    // the sentence drops even though it also reports genuine work.
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValue("정리 시트에 표를 만들었습니다. B열 합계 999,999를 계산해서 입력했습니다.")
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트에 표를 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("만들었습니다")
+    expect(said).not.toContain("999,999")
+  })
+
+  it("drops a smuggled aggregate claim wearing a 건-suffix counter", async () => {
+    // "합계 999,999건" is a data claim, not a receipt count: the counter strip must
+    // not launder it past vouching just because 건 follows the number.
+    const book = workbook()
+    book.context.workbook.worksheets.add("정리")
+    vi.mocked(askModel)
+      .mockResolvedValueOnce(
+        '{"tool":"write_range","sheet":"정리","address":"A1","rows":[["항목"]]}',
+      )
+      .mockResolvedValue(
+        "정리 시트에 표를 만들었습니다. B열 합계 999,999건을 계산해서 입력했습니다.",
+      )
+
+    const chatting = chattingOver(book.context)
+    chatting.handlers.onSend("정리 시트에 표를 만들어줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("만들었습니다")
+    expect(said).not.toContain("999,999")
+  })
+
   it("still says what it changed when the server drops the turn mid-build", async () => {
     // Given: the writes have already landed and the connection dies on the way to the
     // answer. An error line alone leaves the user looking at a workbook that changed for
@@ -2607,5 +2717,191 @@ describe("pane-side write verification failure path", () => {
     expect(nudgeRequest).toContain("Main!A1")
     expect(nudgeRequest).toContain("read_range(formulas:true)")
     expect(chatting.state().turns.at(-1)?.text).toContain("검증 상태")
+  })
+})
+
+/**
+ * Measured 2026-08-24 (eval run 09:23): P2/F9 answered with a refusal in front of a
+ * verified build, L1 died on a model failure with complete aggregates in the ledger,
+ * P1 spent four discovery rounds on a formula the harness can read in one sync, and
+ * T1 attributed a cross-sheet formula to its own sheet. Each test pins the floor that
+ * closed one of those.
+ */
+describe("deterministic floors under the verification ladder", () => {
+  const statsContext = (columns = 1) => {
+    const result = (value: number) => ({ value, load: () => {} })
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => ({
+            isNullObject: false,
+            name: "Main",
+            load: () => {},
+            getRange: (address: string) => ({
+              address: `Main!${address}`,
+              isNullObject: false,
+              cellCount: 200,
+              rowCount: 200,
+              columnCount: columns,
+              load: () => {},
+            }),
+          }),
+        },
+        functions: {
+          count: () => result(199),
+          countA: () => result(199),
+          countBlank: () => result(1),
+          sum: () => result(4_020),
+          average: () => result(20.2),
+          min: () => result(1),
+          max: () => result(199),
+        },
+      },
+      sync: async () => {},
+    }
+    return context
+  }
+
+  it("answers with the harness's own aggregate table when the rewrite ladder exhausts", async () => {
+    // The model insists on a number the aggregates cannot vouch for, on every rung.
+    vi.mocked(askModel).mockResolvedValue("선택 데이터 전체의 합계는 999999입니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(statsContext() as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.updateSelection({ sheet: "Main", address: "A1:A200", cellCount: 200 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위 전체를 분석해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    // The ladder stays bounded: initial answer plus exactly two rewrite attempts.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(3)
+    expect(said).toContain("열별 확인된 집계입니다")
+    expect(said).toContain("4,020")
+    expect(said).not.toContain("999999")
+    expect(said).not.toContain("전체 범위를 모두 읽지 못해")
+  })
+
+  it("caps the round budget for an answer-only turn whose intake profile is complete", async () => {
+    // The model keeps exploring with a fresh read every round; without the cap the
+    // loop would grant all MAX_TOOL_ROUNDS of them over data whose aggregates are
+    // already in its context (recorded L1 rep: ten-plus such rounds, minutes each).
+    let round = 0
+    vi.mocked(askModel).mockImplementation(() => {
+      round += 1
+      return Promise.resolve(
+        `{"tool":"read_range","sheet":"Main","address":"A${round}:A${round + 1}"}`,
+      )
+    })
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(statsContext() as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.updateSelection({ sheet: "Main", address: "A1:A600", cellCount: 600 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위 전체를 분석해서 답변으로만 요약해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false), { timeout: 20_000 })
+
+    // 1 initial + 6 capped rounds + 1 closing summary; the full budget would allow
+    // 1 + 16 + 1.
+    expect(vi.mocked(askModel).mock.calls.length).toBeLessThanOrEqual(8)
+    expect(chatting.state().error).toBeNull()
+  })
+
+  it("answers with the aggregate table instead of an error when the model dies mid-turn", async () => {
+    vi.mocked(askModel).mockRejectedValue(new AiError("서버가 응답하지 않습니다"))
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(statsContext() as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    // Wide enough for intake profiling, so the ledger holds complete aggregates
+    // before the first (failing) model call.
+    chatting.updateSelection({ sheet: "Main", address: "A1:A200000", cellCount: 200_000 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위 전체를 분석해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("열별 확인된 집계입니다")
+    expect(said).toContain("서버가 응답하지 않습니다")
+    expect(chatting.state().error).toBeNull()
+  })
+})
+
+describe("provenance handling", () => {
+  const provenanceContext = () => {
+    const read: string[] = []
+    const cell = (address: string, wantsFormulas: boolean) => {
+      const values: Record<string, number> = { B2: 5_200_000, B3: 3_100_000, B4: 2_100_000 }
+      const formulas: Record<string, string> = { B4: "=원장!B2-원장!B3" }
+      const local = address.replace(/^.*!/, "")
+      const value = values[local] ?? 0
+      const formula = wantsFormulas ? (formulas[local] ?? "") : ""
+      return {
+        address: `요약!${local}`,
+        cellCount: 1,
+        rowCount: 1,
+        columnCount: 1,
+        isNullObject: false,
+        values: [[value]],
+        text: [[String(value)]],
+        numberFormat: [["General"]],
+        formulas: [[formula]],
+        load: (properties: string) => read.push(`${local}:${properties}`),
+      }
+    }
+    const sheet = {
+      isNullObject: false,
+      name: "요약",
+      load: () => {},
+      getRange: (address: string) => cell(address, true),
+      getUsedRangeOrNullObject: () => cell("B4", false),
+    }
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => sheet,
+          getActiveWorksheet: () => sheet,
+          load: () => {},
+          items: [{ name: "요약" }],
+        },
+      },
+      sync: async () => {},
+    }
+    return { context, read }
+  }
+
+  it("appends the stored formula when the answer omits the sheet it references", async () => {
+    const book = provenanceContext()
+    vi.mocked(askModel).mockResolvedValue("요약!B4의 순이익 2,100,000은 B2에서 B3을 뺀 값입니다.")
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(book.context as unknown as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "요약!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.updateSelection({ sheet: "요약", address: "A1:B4", cellCount: 8 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("요약 시트의 순이익 값은 어떻게 나온 건가요?")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const said = chatting.state().turns.at(-1)?.text ?? ""
+    expect(said).toContain("=원장!B2-원장!B3")
+    expect(said).toContain("원장")
   })
 })

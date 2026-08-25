@@ -53,7 +53,9 @@ const numberValue = (result: { readonly value: unknown }): number | null => {
   return typeof value === "number" && Number.isFinite(value) ? value : null
 }
 
-const displayedNumber = (value: number | null): string =>
+/** The one rendering of a column-stat number; `aggregateAnswerTable` reuses it so the
+ * harness-authored table is evidence-verbatim by construction, not by coincidence. */
+export const displayedNumber = (value: number | null): string =>
   value === null ? "-" : value.toLocaleString("ko-KR")
 
 export const runColumnStats = async (

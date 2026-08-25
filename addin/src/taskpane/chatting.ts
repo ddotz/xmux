@@ -36,7 +36,11 @@ import {
 } from "./chat-action-verification"
 import { serializeWorkbookContext } from "./chat-context"
 import { enumeratesColumns, requestPinsColumns, uncoveredColumns } from "./chat-coverage"
-import { aggregateAnswerMatches, rangeAnswerMatches } from "./chat-evidence"
+import {
+  aggregateAnswerMatches,
+  formulaAttributionNotes,
+  rangeAnswerMatches,
+} from "./chat-evidence"
 import {
   cachedReadFor,
   groundingCallsCover,
@@ -50,6 +54,7 @@ import {
 } from "./chat-grounding"
 import { type ActionReceipt, createHarnessLedger } from "./chat-harness"
 import {
+  aggregateAnswerTable,
   aggregateCallsForSelection,
   aggregateEvidenceComplete,
   aggregateEvidenceForSelection,
@@ -280,6 +285,75 @@ const dropChangeClaims = (answer: string): { readonly kept: string; readonly dro
   return { kept, dropped }
 }
 
+/**
+ * Completed-write verbs a work report uses. Broader than CLAIMS_CHANGE on purpose:
+ * the write-turn filter keeps these sentences because the harness itself verified
+ * the writes on its own sync — provided their data numbers are vouched and their
+ * verb class is receipted (WRITE_VERB_TOOLS) — and "넣었습니다"-class verbs
+ * outside CLAIMS_CHANGE were measured to drop truthful build reports wholesale.
+ */
+const WRITE_REPORT =
+  /(?:넣었|옮겼|지웠|붙였|바꿨|만들었|썼|채웠|(?:적용|삭제|추가|복사|이동|변경|정리|완료|삽입|병합|설정|생성|입력|작성|정렬)(?:했|하였))/
+
+/**
+ * Verb classes whose receipt is unambiguous: a kept work-report sentence claiming one
+ * of these must be backed by a performed tool of the matching class, or one verified
+ * write licenses unlimited phantom work prose ("A1에 입력했습니다. 또한 B열을
+ * 정렬했습니다" with no sort receipt). Verbs outside this map (입력/작성…) stay under
+ * the blanket performed-writes gate: their tool classes overlap too much to pin.
+ * 선택했 was removed from WRITE_REPORT outright — selecting is not a mutation, and
+ * "이상치 3건을 선택했습니다" is an analysis claim dressed as an action.
+ */
+const WRITE_VERB_TOOLS: readonly (readonly [RegExp, RegExp])[] = [
+  [/정렬(?:했|하였)/, /^sort_range$/],
+  [/병합(?:했|하였)/, /^merge_cells$/],
+  [/(?:이동(?:했|하였)|옮겼)/, /^move_range$/],
+  [/(?:복사(?:했|하였)|붙였)/, /^copy_range$/],
+  [/(?:삭제(?:했|하였)|지웠)/, /^(?:delete_range|delete_sheet|clear_range|remove_duplicates)$/],
+]
+
+/**
+ * Drops work-report sentences whose verb class has no performed tool behind it.
+ * stripUnverifiedSentences cannot do this: it keeps CLAIM-free sentences
+ * unconditionally, and "B열을 정렬했습니다" names no value, blank, or count — the
+ * phantom work report is invisible to the value gate by construction, so the
+ * receipt gate runs as its own pass over the same sentence split.
+ */
+const dropUnreceiptedWork = (
+  answer: string,
+  performedTools: readonly string[],
+): { readonly kept: string; readonly dropped: number } => {
+  let dropped = 0
+  const kept = answer
+    .split(/(?<=[.\n])(?<!\d\.)(?!\d)/)
+    .filter((sentence) => {
+      if (sentence.trim() === "") return true
+      const phantom = WRITE_VERB_TOOLS.some(
+        ([verb, tool]) => verb.test(sentence) && !performedTools.some((name) => tool.test(name)),
+      )
+      if (!phantom) return true
+      dropped += 1
+      return false
+    })
+    .join("")
+  return { kept, dropped }
+}
+
+/** Numbers a work-report sentence claims about DATA — cell references and 행/칸/개-style
+ * bookkeeping counters stripped first, since those are receipt facts, not data claims.
+ * A counter noun after an aggregate keyword is NOT bookkeeping: "합계 999,999건" is a
+ * data claim wearing a 건 suffix, so the aggregate-keyword lookbehind keeps it vouchable
+ * while "중복 3건 삭제"-style receipt counts still strip. */
+const reportedDataNumbers = (sentence: string): readonly number[] =>
+  [
+    ...sentence
+      .replace(/\b[A-Za-z]{1,3}\d+(?::[A-Za-z]{1,3}\d+)?\b/g, " ")
+      .replace(/(?<!(?:합계|총계|총|평균|평균값)\s*)\d[\d,]*\s*(?:행|열|칸|개|번째|건|번)/g, " ")
+      .matchAll(/[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?/g),
+  ]
+    .map((match) => Number(match[0].replaceAll(",", "")))
+    .filter((value) => Number.isFinite(value))
+
 const AMBIGUOUS_CONTINUATION = /^(?:계속|이어서|마저|그대로)(?:해|하|진행|작업)?/
 
 const ABANDONED = Symbol("abandoned chat generation")
@@ -365,6 +439,13 @@ const withFailures = (answer: string, attempts: readonly ActionReceipt[]): strin
  */
 const INTAKE_PROFILE_CELLS = 500
 
+/**
+ * Rounds an answer-only turn may spend after a COMPLETE intake profile. Six rounds
+ * of eight calls is still forty-eight reads over data whose aggregates are already
+ * in context; past that the loop is re-discovering, not discovering.
+ */
+const INTAKE_PROFILED_ROUNDS = 6
+
 /** The exact observation a write tool returns on an answer-only turn. Receipt exclusion
  * keys on this identity — never on prose sniffing, or a sheet literally named 분석 전용
  * could make a genuine failure vanish. */
@@ -444,6 +525,28 @@ export const isCellTargetedQuestion = (question: string): boolean =>
 /** True when the user explicitly asks to BUILD something (pivot, table, sheet). */
 export const isExplicitBuildRequest = (question: string): boolean =>
   /(피벗|피봇|요약표|크로스탭)/.test(question) && /(만들|생성|추가)/.test(question)
+
+/**
+ * True when the question asks where a value came from — the class of question whose
+ * correct answer is a formula chain, not a value check. Detection steers the turn
+ * toward formula evidence; enforcement is `formulaAttributionNotes` at answer time.
+ */
+export const isProvenanceQuestion = (question: string): boolean =>
+  /(어떻게\s*(?:나온|계산|산출)|추적|출처|근거가\s*되는|어디서\s*(?:온|나온))/.test(question)
+
+/**
+ * True when the request tells the assistant to change the workbook — ACTIVE request
+ * forms only. Passive/adjectival stems (입력된 값, 적용된 서식, 정리된 표) describe
+ * existing state: a measured provenance question "B4에 입력된 값이 왜 이런가요?" was
+ * misread as write-shaped and skipped the explain intake, regressing to the 708 s
+ * discovery pattern the intake exists to kill. The connective -해서 (정리해서 알려줘)
+ * subordinates the verb to an answer-shaped main verb, so it does not count either;
+ * misreading a real write chain as non-write only costs one spare intake sync.
+ */
+export const isWriteShapedRequest = (question: string): boolean =>
+  /(?:입력|생성|추가|수정|삭제|정리|적용|병합|이동|복사)(?:해(?!서)|하[여라]|하세요|해\s*주)|만들어|채워|바꿔|넣어|써\s*줘/.test(
+    question,
+  )
 
 /** True when the question asks for numbers or judgement about the data, which is what the
  * intake aggregates prime. Write-shaped requests skip the profile — and skipping it can
@@ -856,6 +959,21 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       harness.record({ kind: "analysis", reply: answer })
       return answer
     }
+    /**
+     * A recoverable ask: the verification ladder and the closing summary must not lose
+     * a turn that already holds its evidence to one failed model call. A recorded L1
+     * run died at minute nine — complete intake aggregates sitting in the ledger —
+     * because one malformed reply threw through the whole turn. ABANDONED and
+     * non-AiError bugs still propagate.
+     */
+    const askOrNull = async (messages: readonly ChatMessage[]): Promise<string | null> => {
+      try {
+        return await askCurrent(messages)
+      } catch (error) {
+        if (error instanceof AiError) return null
+        throw error
+      }
+    }
     const selectedSkillId =
       resolvePromptSkill(question, state.selectedSkillId, state.skills)?.id ?? null
     // The skill reaches the model through the system prompt, so the slash command that
@@ -996,6 +1114,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       let verificationNudged = false
       let pendingVerification: VerificationTarget[] = []
       let toolRounds = 0
+      let intakeComplete = false
 
       // Intake profiling: a wide selection gets its aggregates before the first model
       // call, so analysis starts from real numbers instead of spending rounds discovering
@@ -1025,6 +1144,17 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         ]
         const profiled = await runGroundingBatch(intake)
         if (!current()) throw ABANDONED
+        // A COMPLETE profile changes the instruction from "prefer these" to "answer
+        // now": a recorded L1 rep spent ten-plus model rounds re-reading a selection
+        // whose aggregates were already in its context, at minutes per round on the
+        // deployed server. Completeness is checked, not assumed - a partial profile
+        // keeps the softer wording and the full round budget.
+        intakeComplete =
+          profiled !== null &&
+          aggregateEvidenceComplete(
+            aggregateEvidenceForSelection(harness.aggregateEvidence(), attachment),
+            attachment,
+          )
         if (profiled !== null) {
           // Same rule as the read-only note: a profile turn after the question replaces
           // the question on the wire, so it joins the question's own turn instead.
@@ -1032,14 +1162,72 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             `${OBSERVATION_PREFIX}\n선택 영역 사전 집계 (질문 접수 시 계산됨):\n${boundRound(
               profiled.map((observation) => observation.text),
               budget,
-            )}\n이 집계를 우선 근거로 사용하세요. 개별 셀 값이 필요하면 그 범위만 read_range로 읽습니다.`,
+            )}\n${
+              intakeComplete
+                ? "위 집계는 선택 범위의 모든 열을 포괄합니다. 추가 도구 호출 없이 이 집계만으로 지금 바로 답하세요. 개별 셀 인용이 반드시 필요한 경우에만 그 범위를 read_range로 읽습니다."
+                : "이 집계를 우선 근거로 사용하세요. 개별 셀 값이 필요하면 그 범위만 read_range로 읽습니다."
+            }`,
           )
         }
       }
 
+      // A cell-targeted why/how question gets its formula, reference values, and
+      // computed steps read deterministically at intake — one sync over machinery the
+      // pane already renders. On the deployed server every discovery round costs
+      // 30–300 s of model time (recorded P1: four rounds, 708 s), so handing the chain
+      // over up front is the largest latency lever a single turn has — and it leaves a
+      // verified floor to answer from when the model's final prose collapses.
+      let intakeExplainText: string | null = null
+      // Every DISTINCT cell the question names, not just the first match: "B4 말고 C7이
+      // 왜 이래?" primed B4 and made the wrong cell's explanation the turn's floor. One
+      // or two cells are read outright; more reads as a range discussion the model
+      // handles with its own tools, so the intake stands down rather than guess.
+      const targetedCells =
+        isCellTargetedQuestion(request) && !isWriteShapedRequest(request)
+          ? [
+              ...new Set(
+                [...request.matchAll(/\b[A-Za-z]{1,3}\d{1,7}\b/g)].map((match) =>
+                  match[0].toUpperCase(),
+                ),
+              ),
+            ]
+          : []
+      if (targetedCells.length > 0 && targetedCells.length <= 2) {
+        const explained = await runGroundingBatch(
+          targetedCells.flatMap((cell) => [
+            { tool: "explain_cell" as const, sheet: targetSheet, address: cell },
+            { tool: "read_range" as const, sheet: targetSheet, address: cell, formulas: true },
+          ]),
+        )
+        if (!current()) throw ABANDONED
+        const texts = targetedCells.flatMap((_cell, index) => {
+          const text = explained?.[index * 2]?.text ?? ""
+          return text.trim() !== "" && !INCOMPLETE_OBSERVATION.test(text) ? [text] : []
+        })
+        if (texts.length > 0) {
+          intakeExplainText = texts.join("\n")
+          appendToQuestion(
+            `${OBSERVATION_PREFIX}\n${targetedCells.join(", ")} 수식 확인 (질문 접수 시 계산됨):\n${intakeExplainText}\n이 확인된 수식·참조를 근거로 답하세요. 수식이 다른 시트를 참조하면 그 시트 이름을 그대로 인용하세요.`,
+          )
+        }
+      } else if (isProvenanceQuestion(request)) {
+        // No address to pre-read: the model must find the cell, but the tracing rule
+        // still rides with the question — value equality alone must not settle 출처.
+        appendToQuestion(
+          "(참고: 값의 출처를 답하기 전에 해당 셀의 수식을 explain_cell 또는 read_range(formulas:true)로 확인하고, 수식이 참조하는 시트·셀 주소를 그대로 인용하세요. 값이 일치한다는 것만으로 출처를 단정하지 마세요.)",
+        )
+      }
+
+      // An answer-only turn whose intake profile already covers the whole selection
+      // has its round budget cut: the aggregates answer the question, every model
+      // round costs minutes on the deployed server (recorded L1 rep: ten-plus
+      // re-reading rounds), and the verification floors guarantee a correct answer
+      // shape once the loop ends. Write-capable turns keep the full budget.
+      const roundBudget =
+        intakeComplete && readOnlyRequest ? INTAKE_PROFILED_ROUNDS : MAX_TOOL_ROUNDS
       let reply = await askCurrent(turns)
       let step = readSteps(reply)
-      for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+      for (let round = 0; round < roundBudget; round += 1) {
         if (step.kind === "answer") {
           const proposed = parsePlan(reply)
           if (planTouchesWorkbook(proposed)) {
@@ -1215,7 +1403,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         executedBatchWrites.clear()
         for (const key of pendingBatchWrites) executedBatchWrites.add(key)
         pendingBatchWrites.clear()
-        const left = MAX_TOOL_ROUNDS - (round + 1)
+        const left = roundBudget - (round + 1)
         if (left <= BUDGET_WARNING_ROUNDS) observations.push(`남은 도구 왕복 ${left}회`)
         turns.push({ role: "assistant", content: reply })
         turns.push({
@@ -1236,7 +1424,9 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           content:
             "도구 실행을 여기서 멈춥니다. 지금까지 수행한 작업과 남은 작업을 한국어로 요약하세요. JSON은 넣지 마세요.",
         })
-        reply = await askCurrent(trimObservations(turns, budget))
+        // A model failure here must not kill the turn: the receipts below still account
+        // for every write, which is what the summary was for.
+        reply = (await askOrNull(trimObservations(turns, budget))) ?? OUT_OF_ROUNDS
         // A model that answers the summary request with yet another tool call would put a
         // raw JSON blob on screen as if it were the answer. The account it wrote alongside
         // that call is the whole point of asking, though — so the words are kept and only
@@ -1250,21 +1440,109 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
       // A request may carry the addresses while the draft says only "둘 다 비었습니다".
       // Ground the union, otherwise removing the address from the prose bypasses the gate.
+      const performedWrites = harness
+        .actions()
+        .some(({ status }) => status === "changed" || status === "partial")
       const hasWorkbookClaim = workbookClaim(reply)
       const draftPlan = groundingPlan(
         hasWorkbookClaim ? `${request}\n${reply}` : reply,
         targetSheet,
       )
+      // A turn that changed the workbook answers with its receipt, not with the
+      // analysis-grade rewrite ladder: each rewrite costs a full round trip on the
+      // deployed server, and a recorded P2/F9 run burned two rewrites only to replace
+      // a truthful build report with a refusal. Work-report sentences stand — the
+      // harness verified those writes on its own sync — while analysis claims this
+      // turn's evidence cannot vouch for still drop, and when nothing survives the
+      // pane's receipt becomes the answer instead of a refusal denying work that
+      // happened.
+      if (performedWrites && hasWorkbookClaim) {
+        const heldRanges = harness
+          .events()
+          .flatMap((event) =>
+            event.kind === "tool" &&
+            event.status === "completed" &&
+            event.evidence?.kind === "range"
+              ? [event.evidence]
+              : [],
+          )
+        const heldAggregates = harness.aggregateEvidence()
+        // The keep rule for a write-verb sentence is threefold: value-vouching runs
+        // first, then the verb class must be receipted (one verified write must not
+        // license phantom "정렬했습니다" prose), and any DATA number it carries must
+        // exist in this turn's evidence — a sentence smuggling "B열 합계 999,999"
+        // beside a real write claim drops instead of riding the verb through.
+        const performedTools = [
+          ...new Set(
+            harness
+              .actions()
+              .filter(({ status }) => status === "changed" || status === "partial")
+              .map(({ call }) => call.tool),
+          ),
+        ]
+        const heldNumbers: number[] = []
+        for (const item of heldRanges)
+          for (const row of item.values)
+            for (const value of row) {
+              if (typeof value === "number") heldNumbers.push(value)
+              else if (typeof value === "string")
+                for (const match of value.matchAll(/[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?/g)) {
+                  const parsed = Number(match[0].replaceAll(",", ""))
+                  if (Number.isFinite(parsed)) heldNumbers.push(parsed)
+                }
+            }
+        for (const item of heldAggregates)
+          for (const column of item.columns)
+            for (const metric of [
+              column.count,
+              column.filled,
+              column.blank,
+              column.sum,
+              column.average,
+              column.min,
+              column.max,
+            ])
+              if (metric !== null) heldNumbers.push(metric)
+        const vouched = (claimed: number): boolean =>
+          heldNumbers.some(
+            (held) =>
+              Math.abs(held - claimed) <=
+              Number.EPSILON * Math.max(1, Math.abs(held), Math.abs(claimed)),
+          )
+        // The receipt gate runs first over its own split: stripUnverifiedSentences
+        // keeps CLAIM-free sentences unconditionally, and a phantom "정렬했습니다"
+        // names no value or count, so it never reaches the value predicate at all.
+        const receipted = dropUnreceiptedWork(reply, performedTools)
+        const filtered = stripUnverifiedSentences(receipted.kept, (sentence) => {
+          // A write-verb sentence never rides its verb past the number check: any
+          // DATA number it carries must exist in this turn's evidence, or a real
+          // write claim smuggles an unmeasured "B열 합계 999,999" beside it.
+          if (WRITE_REPORT.test(sentence)) return reportedDataNumbers(sentence).every(vouched)
+          return (
+            rangeAnswerMatches(sentence, heldRanges) ||
+            (heldAggregates.length > 0 && aggregateAnswerMatches(sentence, heldAggregates))
+          )
+        })
+        const droppedTotal = receipted.dropped + filtered.dropped
+        if (droppedTotal > 0) {
+          reply =
+            filtered.kept.trim() === ""
+              ? ""
+              : `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${droppedTotal}개는 제외했습니다.)`
+        }
+      }
       // Structural routing: a wide selection with any workbook claim verifies against
       // column aggregates whenever the draft speaks of the selection instead of citing
       // specific cells. The old regex gate waited for the word "합계" and let narrative
       // answers fall into raw-cell coverage that could never fit.
       const aggregateRoute =
+        !performedWrites &&
         attachment !== null &&
         attachment.cellCount > 72 &&
         hasWorkbookClaim &&
         (selectionWideClaim(reply) || draftPlan.calls.length === 0)
       let aggregateHandled = false
+      let aggregateDropped = false
       if (aggregateRoute) {
         aggregateHandled = true
         let aggregateEvidence = aggregateEvidenceForSelection(
@@ -1310,7 +1588,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           !aggregateEvidenceComplete(aggregateEvidence, attachment) ||
           estimateTokens(serializedEvidence) > budget.observationTokens
         ) {
-          reply = SELECTION_NOT_VERIFIED
+          // Incomplete evidence keeps the refusal; complete evidence that merely
+          // cannot travel (or that the model failed to narrate) becomes the harness's
+          // own table: every number verbatim from the aggregates, zero model calls.
+          reply = aggregateAnswerTable(aggregateEvidence, attachment) ?? SELECTION_NOT_VERIFIED
         } else if (!aggregateAnswerMatches(reply, aggregateEvidence)) {
           turns.push({ role: "assistant", content: reply })
           turns.push({
@@ -1321,7 +1602,11 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // filter keeps only the numbers the aggregates actually vouch for.
           let corrected = false
           for (let attempt = 0; attempt < 2 && !corrected; attempt += 1) {
-            reply = await askCurrent(trimObservations(turns, budget))
+            // A model failure mid-ladder falls through to the deterministic floor
+            // below instead of erasing the turn.
+            const next = await askOrNull(trimObservations(turns, budget))
+            if (next === null) break
+            reply = next
             if (aggregateAnswerMatches(reply, aggregateEvidence)) {
               corrected = true
               break
@@ -1337,9 +1622,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
               aggregateAnswerMatches(sentence, aggregateEvidence),
             )
             if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
+              aggregateDropped = true
               reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
             } else {
-              reply = SELECTION_NOT_VERIFIED
+              reply = aggregateAnswerTable(aggregateEvidence, attachment) ?? SELECTION_NOT_VERIFIED
             }
           }
         }
@@ -1351,15 +1637,23 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
         aggregateHandled &&
         attachment !== null &&
         reply !== SELECTION_NOT_VERIFIED &&
-        enumeratesColumns(reply) &&
+        (enumeratesColumns(reply) || aggregateDropped) &&
         !requestPinsColumns(request)
       ) {
-        const missing = uncoveredColumns(
-          reply,
-          aggregateEvidenceForSelection(harness.aggregateEvidence(), attachment),
-        )
-        if (missing.length > 0)
-          reply = `${reply}\n\n(선택 범위의 열 ${missing.join(", ")}은(는) 이 답변에서 다루지 않았습니다.)`
+        const held = aggregateEvidenceForSelection(harness.aggregateEvidence(), attachment)
+        const missing = uncoveredColumns(reply, held)
+        if (missing.length > 0) {
+          // The apology note was the fallback of a fallback: whenever the complete
+          // table is authorable, the user gets the columns themselves - verified
+          // verbatim - rather than a list of what the answer failed to cover
+          // (measured L1: the filter kept one meta sentence and the note named all
+          // fifteen columns as missing).
+          const table = aggregateAnswerTable(held, attachment)
+          reply =
+            table === null
+              ? `${reply}\n\n(선택 범위의 열 ${missing.join(", ")}은(는) 이 답변에서 다루지 않았습니다.)`
+              : `${reply}\n\n${table}`
+        }
       }
       const finalPlan = aggregateHandled
         ? { calls: [], hasClaim: false, complete: true }
@@ -1368,6 +1662,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // selection whose claims cite no address at all — tiling it is cheap and exact.
       const needsSelectionCoverage =
         !aggregateHandled &&
+        !performedWrites &&
         attachment !== null &&
         attachment.cellCount <= 72 &&
         (selectionWideClaim(reply) || (finalPlan.calls.length === 0 && hasWorkbookClaim))
@@ -1395,15 +1690,25 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             : finalPlan.calls
       const requiredBatches =
         requiredCalls === null ? Number.POSITIVE_INFINITY : Math.ceil(requiredCalls.length / 8)
+      // The floor under a failed verification: a write turn keeps its receipt (the
+      // harness verified those writes on its own sync, and the filter above already
+      // dropped unvouched analysis claims), and a cell-targeted question keeps the
+      // deterministic explain observation the intake verified. Only a turn holding
+      // neither falls back to the refusal.
+      const verificationFloor = (): string =>
+        performedWrites
+          ? ""
+          : (intakeExplainText ?? (needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED))
       if (
-        (needsSelectionCoverage &&
+        !performedWrites &&
+        ((needsSelectionCoverage &&
           (!finalPlan.complete ||
             selectionCalls === null ||
             requiredBatches > MAX_TOOL_ROUNDS - toolRounds)) ||
-        (!needsSelectionCoverage && !finalPlan.complete)
+          (!needsSelectionCoverage && !finalPlan.complete))
       ) {
-        reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
-      } else if (finalPlan.hasClaim || needsSelectionCoverage) {
+        reply = verificationFloor()
+      } else if (!performedWrites && (finalPlan.hasClaim || needsSelectionCoverage)) {
         // Gather first, measure second: rendering IS the cost model. The old pre-gate
         // estimated bytes per cell three different ways and passed tiles the renderer then
         // truncated — a refusal verified into existence. Now every tile runs (from this
@@ -1465,7 +1770,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           if (!verified) break
         }
         if (!verified || estimateTokens(observations.join("\n")) > budget.observationTokens) {
-          reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
+          reply = verificationFloor()
         } else {
           const groundedCalls = requiredCalls ?? []
           turns.push({ role: "assistant", content: reply })
@@ -1491,15 +1796,16 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // The ladder: one rewrite, one nudged retry, then the sentence filter keeps
           // every claim the real values vouch for and drops the rest. Fail-closed without
           // discarding a whole answer for its worst sentence.
-          const rewriteAsk = (instruction: string): Promise<void> => {
+          const rewriteAsk = async (instruction: string): Promise<void> => {
             turns.push({ role: "assistant", content: reply })
             turns.push({
               role: "user",
               content: `${OBSERVATION_PREFIX}\n${instruction}`,
             })
-            return askCurrent(trimObservations(turns, budget)).then((next) => {
-              reply = next
-            })
+            // A model failure mid-ladder keeps the last draft; the sentence filter and
+            // the floor below still bound what can reach the user.
+            const next = await askOrNull(trimObservations(turns, budget))
+            if (next !== null) reply = next
           }
           // A first draft that already matches the real cells goes straight out: asking a
           // correct answer to rewrite itself costs a round trip and risks introducing an
@@ -1520,10 +1826,44 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             if (filtered.dropped > 0 && filtered.kept.trim() !== "") {
               reply = `${filtered.kept.trim()}\n\n(근거를 확인할 수 없는 문장 ${filtered.dropped}개는 제외했습니다.)`
             } else {
-              reply = needsSelectionCoverage ? SELECTION_NOT_VERIFIED : NOT_VERIFIED
+              reply = verificationFloor()
             }
           }
         }
+      }
+
+      // Provenance the value checks cannot see: for a where-did-this-come-from
+      // question, the cited cells' stored formulas are read once (one sync, zero
+      // model calls) and any sheet a formula references that the answer never names
+      // is appended as a note quoting the formula verbatim. A recorded T1 run
+      // attributed the summary cell to its own sheet while the stored formula pulled
+      // from another one; every value matched, the provenance did not.
+      if (
+        isProvenanceQuestion(request) &&
+        reply.trim() !== "" &&
+        reply !== SELECTION_NOT_VERIFIED &&
+        reply !== NOT_VERIFIED
+      ) {
+        const citedCells = groundingPlan(reply, targetSheet)
+          .calls.filter((call) => {
+            const area = parseArea(call.address)
+            return area !== null && area.height === 1 && area.width === 1
+          })
+          .slice(0, 8)
+        if (citedCells.length > 0)
+          await runGroundingBatch(citedCells.map((call) => ({ ...call, formulas: true })))
+        const formulaEvidence = harness
+          .events()
+          .flatMap((event) =>
+            event.kind === "tool" &&
+            event.status === "completed" &&
+            event.evidence?.kind === "range" &&
+            event.evidence.formulas
+              ? [event.evidence]
+              : [],
+          )
+        const notes = formulaAttributionNotes(reply, formulaEvidence)
+        if (notes.length > 0) reply = `${reply}\n\n${notes.join("\n")}`
       }
 
       const actionReceipts = harness.actions()
@@ -1600,6 +1940,34 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           ? []
           : [{ role: "assistant" as const, text: accounted, sheet: targetSheet }]
       if (error instanceof AiError) {
+        // A model failure must not erase a turn the harness can still answer: with
+        // the intake aggregates complete and an analysis question asked, the
+        // deterministic table IS the answer, with the failure stated beside it
+        // instead of in place of it. A recorded L1 run spent nine minutes and died
+        // with exactly this evidence already in the ledger.
+        const aggregateFallback =
+          attachment !== null && isAnalysisQuestion(request)
+            ? aggregateAnswerTable(
+                aggregateEvidenceForSelection(harness.aggregateEvidence(), attachment),
+                attachment,
+              )
+            : null
+        if (aggregateFallback !== null) {
+          commit({
+            turns: [
+              ...state.turns,
+              ...done,
+              {
+                role: "assistant" as const,
+                text: `${aggregateFallback}\n\n(AI 응답 오류로 모델 답변 대신 확인된 집계를 표시합니다: ${error.message})`,
+                sheet: targetSheet,
+              },
+            ],
+            pending: false,
+            activity: [],
+          })
+          return
+        }
         commit({
           turns: [...state.turns, ...done],
           pending: false,

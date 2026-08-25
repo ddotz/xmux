@@ -1,6 +1,6 @@
 import type { ToolCall } from "../ai/tool-schemas"
 import { type GridArea, parseArea } from "../excel/address"
-import type { ColumnStatsEvidence } from "../excel/column-stats"
+import { type ColumnStatsEvidence, displayedNumber } from "../excel/column-stats"
 import { splitQualified } from "../excel/resolve"
 import type { SelectionAttachment } from "./chat"
 
@@ -60,4 +60,39 @@ export const aggregateEvidenceComplete = (
   return Array.from({ length: area.width }, (_, index) => index + 1).every((index) =>
     covered.has(index),
   )
+}
+
+/**
+ * The harness's own answer from complete column aggregates — the floor under the
+ * fallback ladder. Every number is evidence verbatim in the exact rendering
+ * `column_stats` already produced, so it needs no model call and no verification
+ * round; once the aggregates are in hand, a refusal is never the only honest option.
+ * Returns null when the evidence does not cover the whole selection — a partial
+ * table would claim a coverage it does not have.
+ */
+export const aggregateAnswerTable = (
+  evidence: readonly ColumnStatsEvidence[],
+  selection: SelectionAttachment,
+): string | null => {
+  // Only evidence measured over THIS selection may author its floor: unfiltered
+  // ledger evidence from another sheet or a different rectangle is not coverage.
+  const held = aggregateEvidenceForSelection(evidence, selection)
+  if (!aggregateEvidenceComplete(held, selection)) return null
+  const columns = [
+    ...new Map(
+      held.flatMap((item) => item.columns.map((column) => [column.index, column] as const)),
+    ).values(),
+  ].sort((left, right) => left.index - right.index)
+  if (columns.length === 0) return null
+  const rows = held[0]?.rowCount ?? 0
+  const lines = columns.map(
+    (stat) =>
+      `| ${stat.letter} | ${displayedNumber(stat.filled)} | ${displayedNumber(stat.blank)} | ${displayedNumber(stat.count)} | ${displayedNumber(stat.sum)} | ${displayedNumber(stat.average)} | ${displayedNumber(stat.min)} | ${displayedNumber(stat.max)} |`,
+  )
+  return [
+    `${selection.sheet}!${selection.address} (${rows.toLocaleString("ko-KR")}행) 열별 확인된 집계입니다.`,
+    "| 열 | 값 | 빈칸 | 숫자 | 합계 | 평균 | 최소 | 최대 |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ...lines,
+  ].join("\n")
 }
