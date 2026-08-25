@@ -2847,6 +2847,103 @@ describe("deterministic floors under the verification ladder", () => {
   })
 })
 
+describe("selection-scoped reads", () => {
+  const recordingContext = () => {
+    const requested: string[] = []
+    const sheet = {
+      isNullObject: false,
+      name: "Main",
+      load: () => {},
+      getRange: (address: string) => {
+        requested.push(address)
+        return {
+          address: `Main!${address}`,
+          cellCount: 4,
+          rowCount: 1,
+          columnCount: 4,
+          isNullObject: false,
+          load: () => {},
+        }
+      },
+    }
+    const context = {
+      workbook: {
+        worksheets: {
+          getItemOrNullObject: () => sheet,
+          getActiveWorksheet: () => sheet,
+          load: () => {},
+          items: [{ name: "Main" }],
+        },
+      },
+      sync: async () => {},
+    }
+    return { context, requested }
+  }
+
+  const chattingOver = (context: unknown) =>
+    createChatting({
+      redraw: () => {},
+      run: async (work) => {
+        await work(context as Excel.RequestContext)
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+
+  it("clamps a model read that walks the sheet from A1 to the drag-selected range", async () => {
+    // The user dragged C100:F200; the model still opens with a read starting at A1.
+    // The harness runs the overlap only — the rows above the selection are exactly
+    // the context waste the drag was meant to prevent.
+    const book = recordingContext()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"A1:F300"}')
+      .mockResolvedValue("확인했습니다.")
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "C100:F200", cellCount: 404 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위를 자세히 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.requested).toContain("C100:F200")
+    expect(book.requested).not.toContain("A1:F300")
+    const observation = vi.mocked(askModel).mock.calls[1]?.[1].at(-1)?.content ?? ""
+    expect(observation).toContain("Main!C100:F200만 읽었습니다")
+  })
+
+  it("redirects a large read outside the wide selection without touching Excel", async () => {
+    const book = recordingContext()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"A1:B99"}')
+      .mockResolvedValue("확인했습니다.")
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "C100:F200", cellCount: 404 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("선택 범위를 자세히 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.requested).not.toContain("A1:B99")
+    const observation = vi.mocked(askModel).mock.calls[1]?.[1].at(-1)?.content ?? ""
+    expect(observation).toContain("읽지 않았습니다")
+    expect(observation).toContain("Main!C100:F200")
+  })
+
+  it("leaves reads alone when the request itself names an address", async () => {
+    // 요청에 적힌 범위 outranks the drag: a request that spells A1:B99 keeps its
+    // own scope even with a selection attached.
+    const book = recordingContext()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"A1:B99"}')
+      .mockResolvedValue("확인했습니다.")
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "C100:F200", cellCount: 404 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("A1:B99 영역도 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    expect(book.requested).toContain("A1:B99")
+  })
+})
+
 describe("provenance handling", () => {
   const provenanceContext = () => {
     const read: string[] = []

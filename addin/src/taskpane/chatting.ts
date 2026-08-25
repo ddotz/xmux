@@ -46,6 +46,7 @@ import {
   groundingCallsCover,
   groundingPlan,
   INCOMPLETE_OBSERVATION,
+  scopeReadToSelection,
   selectionGroundingCalls,
   selectionWideClaim,
   splitGroundingRead,
@@ -1115,6 +1116,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       let pendingVerification: VerificationTarget[] = []
       let toolRounds = 0
       let intakeComplete = false
+      // Request-named range outranks the drag (chat-prompt target order): a request that
+      // spells an address keeps its own scope; only an address-free request makes the
+      // drag-selected attachment the read boundary the harness enforces.
+      const requestNamesArea = /\b[A-Za-z]{1,3}\$?\d{1,7}\b/.test(request)
 
       // Intake profiling: a wide selection gets its aggregates before the first model
       // call, so analysis starts from real numbers instead of spending rounds discovering
@@ -1302,7 +1307,18 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           }
           break
         }
-        const normalizedBatch = step.calls.map((call) => normalizeCallAddresses(call, targetSheet))
+        const normalizedBatch = step.calls.map((call) => {
+          const normalized = normalizeCallAddresses(call, targetSheet)
+          // A drag-selected range is the user's scope statement; the model's own reads
+          // are held to it deterministically (clamped or redirected) instead of walking
+          // the sheet from A1 past the very range it was handed.
+          return normalized.rejected === null &&
+            attachment !== null &&
+            attachment.cellCount > 1 &&
+            !requestNamesArea
+            ? scopeReadToSelection(normalized.call, attachment)
+            : { ...normalized, note: null }
+        })
         // A model that cannot see why its call did nothing sends it again, unchanged, until
         // the round budget runs out and the user gets nothing for the wait. The second
         // identical batch is answered without running it; the third ends the tool phase.
@@ -1375,10 +1391,12 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           }
           if (!isWrite(call) && changedWorkbook(observation))
             pendingVerification = pendingVerification.filter((target) => !verifiedBy(call, target))
+          const noted =
+            normalized.note === null ? observation : `${observation}\n${normalized.note}`
           observations.push(
             step.calls.length === 1 && step.rejected === null
-              ? observation
-              : `[${index + 1}] ${describeCall(call)}\n${observation}`,
+              ? noted
+              : `[${index + 1}] ${describeCall(call)}\n${noted}`,
           )
         }
         if (batchChanged) {

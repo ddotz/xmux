@@ -7,6 +7,7 @@ import {
   type GroundingRead,
   groundingCallsCover,
   groundingPlan,
+  scopeReadToSelection,
   selectionGroundingCalls,
   selectionWideClaim,
   splitGroundingRead,
@@ -107,6 +108,70 @@ describe("final answer grounding", () => {
         address: "A100",
       }),
     ).toBe(true)
+  })
+})
+
+describe("scopeReadToSelection", () => {
+  const selection = { sheet: "데이터", address: "C100:F200", cellCount: 404 }
+
+  it("clamps a read that walks the sheet from A1 down to the drag-selected range", () => {
+    const scoped = scopeReadToSelection(
+      { tool: "read_range", sheet: "데이터", address: "A1:F300" },
+      selection,
+    )
+
+    expect(scoped.rejected).toBeNull()
+    expect(scoped.call).toEqual({ tool: "read_range", sheet: "데이터", address: "C100:F200" })
+    expect(scoped.note).toContain("데이터!C100:F200")
+  })
+
+  it("clamps a whole-column read against the selection rows", () => {
+    const scoped = scopeReadToSelection({ tool: "read_range", address: "C:F" }, selection)
+
+    expect(scoped.call).toMatchObject({ address: "C100:F200" })
+    expect(scoped.note).not.toBeNull()
+  })
+
+  it("leaves a read inside the selection untouched", () => {
+    const call = { tool: "read_range" as const, address: "C100:D150" }
+
+    expect(scopeReadToSelection(call, selection)).toEqual({ call, note: null, rejected: null })
+  })
+
+  it("redirects a large read entirely outside a wide selection instead of running it", () => {
+    const scoped = scopeReadToSelection({ tool: "read_range", address: "A1:B99" }, selection)
+
+    expect(scoped.rejected).toContain("읽지 않았습니다")
+    expect(scoped.rejected).toContain("데이터!C100:F200")
+  })
+
+  it("lets a small header probe outside the selection through", () => {
+    const call = { tool: "read_range" as const, address: "C1:F1" }
+
+    expect(scopeReadToSelection(call, selection).rejected).toBeNull()
+    expect(scopeReadToSelection(call, selection).call).toBe(call)
+  })
+
+  it("never redirects beside a small selection — cross-referencing stays open", () => {
+    const scoped = scopeReadToSelection(
+      { tool: "read_range", address: "H1:P100" },
+      { sheet: "데이터", address: "C1:C10", cellCount: 10 },
+    )
+
+    expect(scoped.rejected).toBeNull()
+    expect(scoped.note).toBeNull()
+  })
+
+  it("ignores other sheets and non-read tools", () => {
+    const otherSheet = { tool: "read_range" as const, sheet: "요약", address: "A1:Z100" }
+    const write = {
+      tool: "write_range" as const,
+      address: "A1:F300",
+      rows: [["x"]],
+    }
+
+    expect(scopeReadToSelection(otherSheet, selection).call).toBe(otherSheet)
+    expect(scopeReadToSelection(write as never, selection).call).toBe(write)
   })
 })
 
