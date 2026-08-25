@@ -129,46 +129,69 @@ export type ScopedRead = {
 }
 
 /**
- * A drag-selected attachment is the user's own statement of scope, and models ignore
+ * Drag-selected attachments are the user's own statement of scope, and models ignore
  * it: a recorded turn walked the sheet from A1 with the selection address sitting in
- * its context. Deterministic enforcement on the model's own read_range calls:
+ * its context. Deterministic enforcement on the model's own read_range calls, against
+ * every attached range at once (pins + live — a cross-sheet VLOOKUP attaches two):
  *
- * - a read overlapping the selection is clamped to the overlap — the rows above the
- *   selection are exactly the context waste being paid for today;
- * - a big read entirely outside a WIDE (>72-cell) selection is refused with a
- *   redirect naming the selection — column_stats and ≤72-cell probes stay open;
- * - everything else passes untouched: reads inside the selection, other sheets,
- *   small outside probes (headers, cited cells, formula chains), single-cell
- *   attachments, and unparseable addresses (inspect.ts already refuses those).
+ * - a read contained in ANY attached range on its sheet runs untouched;
+ * - a read overlapping exactly one attached range is clamped to the overlap — the
+ *   rows above the selection are exactly the context waste being paid for today;
+ * - a read spanning several attached rectangles passes (one rectangle cannot express
+ *   their union, and refusing it would block a deliberate cross-range read);
+ * - a big read disjoint from every attached range on a widely-attached (>72-cell)
+ *   sheet is refused with a redirect naming those ranges — column_stats and ≤72-cell
+ *   probes stay open;
+ * - everything else passes: sheets with no attachment, small outside probes (headers,
+ *   cited cells, formula chains), and unparseable addresses (inspect.ts refuses those).
  *
  * The caller skips this entirely when the request itself names an address —
  * 요청에 적힌 범위 outranks the drag (chat-prompt target order).
  */
-export const scopeReadToSelection = (
+export const scopeReadToSelections = (
   call: ToolCall,
-  selection: { readonly sheet: string; readonly address: string; readonly cellCount: number },
+  selections: readonly {
+    readonly sheet: string
+    readonly address: string
+    readonly cellCount: number
+  }[],
+  boundSheet: string,
 ): ScopedRead => {
   const untouched = { call, note: null, rejected: null }
   if (call.tool !== "read_range") return untouched
-  if (call.sheet !== undefined && call.sheet !== selection.sheet) return untouched
+  const sheet = call.sheet === undefined || call.sheet.trim() === "" ? boundSheet : call.sheet
+  const relevant = selections.filter((selection) => selection.sheet === sheet)
+  if (relevant.length === 0) return untouched
   const requested = parseArea(call.address) ?? parseSpan(call.address)
-  const bounds = parseArea(selection.address)
-  if (requested === null || bounds === null) return untouched
-  const overlap = intersectArea(requested, bounds)
-  if (overlap !== null) {
-    if (overlap.height === requested.height && overlap.width === requested.width) return untouched
+  if (requested === null) return untouched
+  const overlaps = relevant
+    .map((selection) => parseArea(selection.address))
+    .filter((area): area is GridArea => area !== null)
+    .map((area) => intersectArea(requested, area))
+    .filter((area): area is GridArea => area !== null)
+  if (
+    overlaps.some(
+      (overlap) => overlap.height === requested.height && overlap.width === requested.width,
+    )
+  )
+    return untouched
+  if (overlaps.length > 1) return untouched
+  const overlap = overlaps[0]
+  if (overlap !== undefined)
     return {
       call: { ...call, address: formatArea(overlap) },
-      note: `(첨부된 선택 범위 밖은 제외하고 ${selection.sheet}!${formatArea(overlap)}만 읽었습니다.)`,
+      note: `(첨부된 선택 범위 밖은 제외하고 ${sheet}!${formatArea(overlap)}만 읽었습니다.)`,
       rejected: null,
     }
-  }
-  if (selection.cellCount > GROUNDING_CELLS && requested.height * requested.width > GROUNDING_CELLS)
+  const attachedCells = relevant.reduce((sum, selection) => sum + selection.cellCount, 0)
+  if (attachedCells > GROUNDING_CELLS && requested.height * requested.width > GROUNDING_CELLS) {
+    const named = relevant.map((selection) => `${selection.sheet}!${selection.address}`).join(", ")
     return {
       call,
       note: null,
-      rejected: `선택 범위 ${selection.sheet}!${selection.address}가 첨부된 질문이라 그 밖의 넓은 범위 ${call.address}은(는) 읽지 않았습니다. 선택 범위를 기준으로 진행하고, 밖에서 꼭 필요한 부분은 ${GROUNDING_CELLS}칸 이하로 좁혀 읽거나 column_stats로 집계를 확인하세요`,
+      rejected: `선택 범위 ${named}이(가) 첨부된 질문이라 그 밖의 넓은 범위 ${call.address}은(는) 읽지 않았습니다. 첨부된 범위를 기준으로 진행하고, 밖에서 꼭 필요한 부분은 ${GROUNDING_CELLS}칸 이하로 좁혀 읽거나 column_stats로 집계를 확인하세요`,
     }
+  }
   return untouched
 }
 

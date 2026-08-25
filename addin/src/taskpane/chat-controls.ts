@@ -15,24 +15,55 @@ const text = (tag: string, className: string, content: string): HTMLElement => {
   return node
 }
 
-const attachmentCard = (attachment: SelectionAttachment, detach: () => void): HTMLElement => {
+const attachmentCard = (
+  attachment: SelectionAttachment,
+  detach: () => void,
+  pin: (() => void) | null,
+): HTMLElement => {
   const card = element("div", "selection-attachment")
-  card.setAttribute("data-selection-attachment", "attached")
+  card.setAttribute("data-selection-attachment", pin === null ? "pinned" : "attached")
   card.append(
     text(
       "span",
       "attachment-label payload",
-      `${quoteSheetName(attachment.sheet)}!${attachment.address} 선택됨`,
+      `${quoteSheetName(attachment.sheet)}!${attachment.address} ${pin === null ? "고정됨" : "선택됨"}`,
     ),
-    iconButton("선택 범위 첨부 해제", "close", detach, "icon-button icon-button-flat"),
+  )
+  // Pinning keeps this range while the user drags the next one — a cross-sheet
+  // VLOOKUP needs the fill target and the lookup table attached together.
+  if (pin !== null)
+    card.append(
+      iconButton("범위 고정 — 다음 드래그로 범위 추가", "pin", pin, "icon-button icon-button-flat"),
+    )
+  card.append(
+    iconButton(
+      pin === null ? "고정 범위 해제" : "선택 범위 첨부 해제",
+      "close",
+      detach,
+      "icon-button icon-button-flat",
+    ),
   )
   return card
 }
 
 const attachments = (state: ChatState, handlers: ChatHandlers): HTMLElement | null => {
   const stack = element("div", "composer-attachments")
+  for (const pinned of state.pinnedSelections)
+    stack.append(
+      attachmentCard(
+        pinned,
+        () => handlers.onUnpinSelection(`${pinned.sheet}!${pinned.address}`),
+        null,
+      ),
+    )
   if (state.selectionAttachment !== null)
-    stack.append(attachmentCard(state.selectionAttachment, handlers.onDetachSelection))
+    stack.append(
+      attachmentCard(
+        state.selectionAttachment,
+        handlers.onDetachSelection,
+        handlers.onPinSelection,
+      ),
+    )
   if (state.selectedSkillId !== null) {
     const skill = state.skills.find((candidate) => candidate.id === state.selectedSkillId)
     if (skill !== undefined)

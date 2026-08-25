@@ -46,7 +46,7 @@ import {
   groundingCallsCover,
   groundingPlan,
   INCOMPLETE_OBSERVATION,
-  scopeReadToSelection,
+  scopeReadToSelections,
   selectionGroundingCalls,
   selectionWideClaim,
   splitGroundingRead,
@@ -681,6 +681,9 @@ const localAddress = (address: string): string => {
 const selectionKey = (selection: SelectionAttachment): string =>
   `${selection.sheet}!${localAddress(selection.address)}`
 
+/** Pinned ranges kept alongside the live drag; newest pins win the cap. */
+const MAX_PINNED_SELECTIONS = 3
+
 /** Omitted `sheet` means the sheet active when Send was pressed, never a later UI tab. */
 const GLOBAL_TOOLS = new Set<ToolCall["tool"]>([
   "list_sheets",
@@ -874,6 +877,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     skills: CHAT_SKILLS,
     selectedSkillId: null,
     selectionAttachment: null,
+    pinnedSelections: [],
     connectionPending: false,
     connectionStatus: null,
     activity: [],
@@ -912,15 +916,17 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     workbook: string,
     selectedSkillId: ChatState["selectedSkillId"],
     skills: ChatState["skills"],
-    attachment: SelectionAttachment | null,
+    attachments: readonly SelectionAttachment[],
     previous: readonly ChatTurn[],
     budget: Budget,
     readOnly: boolean,
   ): readonly ChatMessage[] => {
     const context =
-      attachment === null
+      attachments.length === 0
         ? workbook
-        : `{"workbookContext":${workbook},"selectionAttachment":${JSON.stringify(attachment)}}`
+        : attachments.length === 1
+          ? `{"workbookContext":${workbook},"selectionAttachment":${JSON.stringify(attachments[0])}}`
+          : `{"workbookContext":${workbook},"selectionAttachments":${JSON.stringify(attachments)}}`
     // One system message, first, and only there. Sending the instructions and the workbook
     // context as two consecutive system turns put the second one at index 1, which the
     // server rejects outright: `System message must be at the beginning`. The connection
@@ -949,7 +955,20 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
     const hadCompaction = compactedHistory || compactsNow
     if (compactsNow) compactedHistory = true
     const previous = compactTurns(state.turns, budget)
-    const attachment = state.selectionAttachment
+    const live = state.selectionAttachment
+    /**
+     * Everything the user attached: pinned ranges oldest first, the live drag last.
+     * The last entry is the primary attachment every single-range mechanism keys on
+     * (intake profiling, aggregate floors, coverage); the full list scopes reads and
+     * rides to the model — what a cross-sheet VLOOKUP needs is both ranges at once.
+     */
+    const attachments: readonly SelectionAttachment[] = [
+      ...state.pinnedSelections.filter(
+        (pinned) => live === null || selectionKey(pinned) !== selectionKey(live),
+      ),
+      ...(live === null ? [] : [live]),
+    ]
+    const attachment = attachments.at(-1) ?? null
     const targetSheet = attachment?.sheet ?? state.sheet
     const settings = state.settings
     const current = (): boolean => mine === generation
@@ -1029,7 +1048,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           workbook,
           selectedSkillId,
           state.skills,
-          attachment,
+          attachments,
           previous,
           budget,
           readOnlyRequest,
@@ -1120,6 +1139,8 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // spells an address keeps its own scope; only an address-free request makes the
       // drag-selected attachment the read boundary the harness enforces.
       const requestNamesArea = /\b[A-Za-z]{1,3}\$?\d{1,7}\b/.test(request)
+      /** Multi-cell attachments only: a clicked single cell is context, not a boundary. */
+      const scopedSelections = attachments.filter((selection) => selection.cellCount > 1)
 
       // Intake profiling: a wide selection gets its aggregates before the first model
       // call, so analysis starts from real numbers instead of spending rounds discovering
@@ -1312,11 +1333,8 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // A drag-selected range is the user's scope statement; the model's own reads
           // are held to it deterministically (clamped or redirected) instead of walking
           // the sheet from A1 past the very range it was handed.
-          return normalized.rejected === null &&
-            attachment !== null &&
-            attachment.cellCount > 1 &&
-            !requestNamesArea
-            ? scopeReadToSelection(normalized.call, attachment)
+          return normalized.rejected === null && scopedSelections.length > 0 && !requestNamesArea
+            ? scopeReadToSelections(normalized.call, scopedSelections, targetSheet)
             : { ...normalized, note: null }
         })
         // A model that cannot see why its call did nothing sends it again, unchanged, until
@@ -1407,7 +1425,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             refreshed,
             selectedSkillId,
             state.skills,
-            attachment,
+            attachments,
             previous,
             budget,
             readOnlyRequest,
@@ -2022,6 +2040,9 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           connectionStatus: null,
           pending: false,
           activity: [],
+          // Pins are per-task curation; a fresh thread starts without them. The live
+          // mirror stays — it reflects what is selected in Excel right now.
+          pinnedSelections: [],
         })
         return
       }
@@ -2060,6 +2081,25 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       })
     },
     onDetachSelection: () => set({ selectionAttachment: null }),
+    onPinSelection: () => {
+      const live = state.selectionAttachment
+      if (live === null) return
+      const key = selectionKey(live)
+      const kept = state.pinnedSelections.filter((pinned) => selectionKey(pinned) !== key)
+      // The live card moves into the pinned list; `latestSelectionKey` stays, so the
+      // mirror does not immediately re-attach the very range that was just pinned.
+      // Newest pins win the cap — a cross-sheet VLOOKUP needs two ranges, four is roomy.
+      set({
+        pinnedSelections: [...kept.slice(-(MAX_PINNED_SELECTIONS - 1)), live],
+        selectionAttachment: null,
+      })
+    },
+    onUnpinSelection: (key) =>
+      set({
+        pinnedSelections: state.pinnedSelections.filter(
+          (pinned) => `${pinned.sheet}!${pinned.address}` !== key,
+        ),
+      }),
     onSaveSettings: (settings) => {
       saveSettings(localStorage, settings)
       set({

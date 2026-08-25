@@ -7,7 +7,7 @@ import {
   type GroundingRead,
   groundingCallsCover,
   groundingPlan,
-  scopeReadToSelection,
+  scopeReadToSelections,
   selectionGroundingCalls,
   selectionWideClaim,
   splitGroundingRead,
@@ -111,13 +111,14 @@ describe("final answer grounding", () => {
   })
 })
 
-describe("scopeReadToSelection", () => {
+describe("scopeReadToSelections", () => {
   const selection = { sheet: "데이터", address: "C100:F200", cellCount: 404 }
 
   it("clamps a read that walks the sheet from A1 down to the drag-selected range", () => {
-    const scoped = scopeReadToSelection(
+    const scoped = scopeReadToSelections(
       { tool: "read_range", sheet: "데이터", address: "A1:F300" },
-      selection,
+      [selection],
+      "데이터",
     )
 
     expect(scoped.rejected).toBeNull()
@@ -126,7 +127,11 @@ describe("scopeReadToSelection", () => {
   })
 
   it("clamps a whole-column read against the selection rows", () => {
-    const scoped = scopeReadToSelection({ tool: "read_range", address: "C:F" }, selection)
+    const scoped = scopeReadToSelections(
+      { tool: "read_range", address: "C:F" },
+      [selection],
+      "데이터",
+    )
 
     expect(scoped.call).toMatchObject({ address: "C100:F200" })
     expect(scoped.note).not.toBeNull()
@@ -135,11 +140,19 @@ describe("scopeReadToSelection", () => {
   it("leaves a read inside the selection untouched", () => {
     const call = { tool: "read_range" as const, address: "C100:D150" }
 
-    expect(scopeReadToSelection(call, selection)).toEqual({ call, note: null, rejected: null })
+    expect(scopeReadToSelections(call, [selection], "데이터")).toEqual({
+      call,
+      note: null,
+      rejected: null,
+    })
   })
 
   it("redirects a large read entirely outside a wide selection instead of running it", () => {
-    const scoped = scopeReadToSelection({ tool: "read_range", address: "A1:B99" }, selection)
+    const scoped = scopeReadToSelections(
+      { tool: "read_range", address: "A1:B99" },
+      [selection],
+      "데이터",
+    )
 
     expect(scoped.rejected).toContain("읽지 않았습니다")
     expect(scoped.rejected).toContain("데이터!C100:F200")
@@ -148,14 +161,15 @@ describe("scopeReadToSelection", () => {
   it("lets a small header probe outside the selection through", () => {
     const call = { tool: "read_range" as const, address: "C1:F1" }
 
-    expect(scopeReadToSelection(call, selection).rejected).toBeNull()
-    expect(scopeReadToSelection(call, selection).call).toBe(call)
+    expect(scopeReadToSelections(call, [selection], "데이터").rejected).toBeNull()
+    expect(scopeReadToSelections(call, [selection], "데이터").call).toBe(call)
   })
 
   it("never redirects beside a small selection — cross-referencing stays open", () => {
-    const scoped = scopeReadToSelection(
+    const scoped = scopeReadToSelections(
       { tool: "read_range", address: "H1:P100" },
-      { sheet: "데이터", address: "C1:C10", cellCount: 10 },
+      [{ sheet: "데이터", address: "C1:C10", cellCount: 10 }],
+      "데이터",
     )
 
     expect(scoped.rejected).toBeNull()
@@ -170,8 +184,54 @@ describe("scopeReadToSelection", () => {
       rows: [["x"]],
     }
 
-    expect(scopeReadToSelection(otherSheet, selection).call).toBe(otherSheet)
-    expect(scopeReadToSelection(write as never, selection).call).toBe(write)
+    expect(scopeReadToSelections(otherSheet, [selection], "데이터").call).toBe(otherSheet)
+    expect(scopeReadToSelections(write as never, [selection], "데이터").call).toBe(write)
+  })
+
+  it("lets a read inside a PINNED second range through — the VLOOKUP lookup table", () => {
+    // Two ranges attached at once: the fill target on 결과, the lookup table pinned on
+    // 참조. A read inside either one runs untouched, sheet resolved per attachment.
+    const pinnedLookup = { sheet: "참조", address: "A1:B500", cellCount: 1000 }
+    const target = { sheet: "결과", address: "D2:D100", cellCount: 99 }
+    const call = { tool: "read_range" as const, sheet: "참조", address: "A1:B30" }
+
+    expect(scopeReadToSelections(call, [pinnedLookup, target], "결과").call).toBe(call)
+  })
+
+  it("clamps against the attachment on the read's own sheet, not the primary's", () => {
+    const pinnedLookup = { sheet: "참조", address: "A1:B500", cellCount: 1000 }
+    const target = { sheet: "결과", address: "D2:D100", cellCount: 99 }
+
+    const scoped = scopeReadToSelections(
+      { tool: "read_range", sheet: "참조", address: "A1:F900" },
+      [pinnedLookup, target],
+      "결과",
+    )
+
+    expect(scoped.call).toMatchObject({ address: "A1:B500" })
+    expect(scoped.note).toContain("참조!A1:B500")
+  })
+
+  it("redirects a disjoint survey naming every attached range on that sheet", () => {
+    const first = { sheet: "데이터", address: "C100:F200", cellCount: 404 }
+    const second = { sheet: "데이터", address: "H100:K200", cellCount: 404 }
+
+    const scoped = scopeReadToSelections(
+      { tool: "read_range", address: "A300:Z400" },
+      [first, second],
+      "데이터",
+    )
+
+    expect(scoped.rejected).toContain("데이터!C100:F200")
+    expect(scoped.rejected).toContain("데이터!H100:K200")
+  })
+
+  it("passes a read spanning two attached rectangles instead of mangling it", () => {
+    const first = { sheet: "데이터", address: "C100:F200", cellCount: 404 }
+    const second = { sheet: "데이터", address: "H100:K200", cellCount: 404 }
+    const call = { tool: "read_range" as const, address: "C150:K150" }
+
+    expect(scopeReadToSelections(call, [first, second], "데이터").call).toBe(call)
   })
 })
 

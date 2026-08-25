@@ -2947,6 +2947,45 @@ describe("selection-scoped reads", () => {
     expect(observation).not.toContain("만 읽었습니다")
   })
 
+  it("carries a pinned range and the live drag together — the cross-sheet VLOOKUP shape", async () => {
+    // Pin the fill target, drag the lookup table on another sheet, ask for the fill:
+    // both ranges ride to the model, and a read inside the PINNED one runs untouched.
+    const book = recordingContext()
+    vi.mocked(askModel)
+      .mockResolvedValueOnce('{"tool":"read_range","sheet":"Main","address":"C100:F130"}')
+      .mockResolvedValue("확인했습니다.")
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "C100:F200", cellCount: 404 })
+    chatting.handlers.onPinSelection()
+    expect(chatting.state().selectionAttachment).toBeNull()
+    expect(chatting.state().pinnedSelections).toHaveLength(1)
+    chatting.updateSelection({ sheet: "참조", address: "A1:B500", cellCount: 1000 })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("고정한 범위에 참조 시트 자료로 채워줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    const system = vi.mocked(askModel).mock.calls[0]?.[1][0]?.content ?? ""
+    expect(system).toContain('"selectionAttachments"')
+    expect(system).toContain("C100:F200")
+    expect(system).toContain("A1:B500")
+    // The read inside the pinned Main range ran exactly as asked — no clamp, no note.
+    expect(book.requested).toContain("C100:F130")
+    const observation = vi.mocked(askModel).mock.calls[1]?.[1].at(-1)?.content ?? ""
+    expect(observation).not.toContain("만 읽었습니다")
+  })
+
+  it("clears pinned ranges on /new but keeps the live mirror", () => {
+    const book = recordingContext()
+    const chatting = chattingOver(book.context)
+    chatting.updateSelection({ sheet: "Main", address: "C100:F200", cellCount: 404 })
+    chatting.handlers.onPinSelection()
+    chatting.updateSelection({ sheet: "참조", address: "A1:B500", cellCount: 1000 })
+    chatting.handlers.onSend("/new")
+
+    expect(chatting.state().pinnedSelections).toEqual([])
+    expect(chatting.state().selectionAttachment?.address).toBe("A1:B500")
+  })
+
   it("leaves reads alone when the request itself names an address", async () => {
     // 요청에 적힌 범위 outranks the drag: a request that spells A1:B99 keeps its
     // own scope even with a selection attached.

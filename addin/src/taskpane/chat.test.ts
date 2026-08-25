@@ -14,6 +14,8 @@ const handlers = (overrides: Partial<ChatHandlers> = {}): ChatHandlers => ({
   onSelectSkill: noop,
   onSaveSkill: noop,
   onDetachSelection: noop,
+  onPinSelection: noop,
+  onUnpinSelection: noop,
   onSaveSettings: noop,
   onTestSettings: noop,
   ...overrides,
@@ -30,6 +32,7 @@ const state = (overrides: Partial<ChatState> = {}): ChatState => ({
   skills: CHAT_SKILLS,
   selectedSkillId: null,
   selectionAttachment: null,
+  pinnedSelections: [],
   connectionPending: false,
   connectionStatus: null,
   activity: [],
@@ -228,10 +231,45 @@ describe("the compact chat screen", () => {
     const attachment = root.querySelector('[data-selection-attachment="attached"]')
     expect(attachment?.textContent).toContain("Main!G12:K19")
     expect(attachment?.textContent).not.toContain("40")
-    const close = attachment?.querySelector<HTMLButtonElement>("button[aria-label][title]")
+    const close = attachment?.querySelector<HTMLButtonElement>(
+      'button[aria-label="선택 범위 첨부 해제"]',
+    )
     expect(close?.querySelector("svg")).not.toBeNull()
     close?.click()
     expect(detached).toBe(1)
+  })
+
+  it("pins the live selection from its card so a second range can be added", () => {
+    let pinned = 0
+    const root = mount(
+      state({ selectionAttachment: { sheet: "결과", address: "D2:D100", cellCount: 99 } }),
+      handlers({ onPinSelection: () => (pinned += 1) }),
+    )
+    const pin = root.querySelector<HTMLButtonElement>(
+      '[data-selection-attachment="attached"] button[aria-label="범위 고정 — 다음 드래그로 범위 추가"]',
+    )
+    expect(pin?.querySelector("svg")).not.toBeNull()
+    pin?.click()
+    expect(pinned).toBe(1)
+  })
+
+  it("renders pinned ranges beside the live one, each removable by its own key", () => {
+    const unpinned: string[] = []
+    const root = mount(
+      state({
+        pinnedSelections: [{ sheet: "참조", address: "A1:B500", cellCount: 1000 }],
+        selectionAttachment: { sheet: "결과", address: "D2:D100", cellCount: 99 },
+      }),
+      handlers({ onUnpinSelection: (key) => unpinned.push(key) }),
+    )
+    const cards = root.querySelectorAll("[data-selection-attachment]")
+    expect(cards.length).toBe(2)
+    const pinnedCard = root.querySelector('[data-selection-attachment="pinned"]')
+    expect(pinnedCard?.textContent).toContain("'참조'!A1:B500")
+    // A pinned card offers removal only — pinning it again would mean nothing.
+    expect(pinnedCard?.querySelectorAll("button").length).toBe(1)
+    pinnedCard?.querySelector<HTMLButtonElement>('button[aria-label="고정 범위 해제"]')?.click()
+    expect(unpinned).toEqual(["참조!A1:B500"])
   })
 
   it("renders an authoritative Excel selection without double-qualifying its address", () => {

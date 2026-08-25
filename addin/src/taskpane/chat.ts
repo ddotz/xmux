@@ -39,6 +39,12 @@ export type ChatState = {
   readonly skills: readonly ChatSkill[]
   readonly selectedSkillId: ChatSkillId | null
   readonly selectionAttachment: SelectionAttachment | null
+  /**
+   * Ranges the user pinned to keep while selecting more — a cross-sheet VLOOKUP needs
+   * the fill target AND the lookup table attached at once. Oldest first; the live
+   * drag-selection rides separately in `selectionAttachment`.
+   */
+  readonly pinnedSelections: readonly SelectionAttachment[]
   readonly connectionPending: boolean
   readonly connectionStatus: string | null
   /** What the assistant is doing right now, one line per tool call, newest last. */
@@ -52,6 +58,10 @@ export type ChatHandlers = {
   readonly onSelectSkill: (id: ChatSkillId | null) => void
   readonly onSaveSkill: (skill: ProposedSkill) => void
   readonly onDetachSelection: () => void
+  /** Pin the live drag-selection so the next drag adds a range instead of replacing it. */
+  readonly onPinSelection: () => void
+  /** Remove one pinned range by its `sheet!address` key. */
+  readonly onUnpinSelection: (key: string) => void
   readonly onSaveSettings: (settings: AiSettings) => void
   readonly onTestSettings: (settings: AiSettings) => void
 }
