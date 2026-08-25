@@ -86,3 +86,57 @@ describe("fixture autoFill reference adjustment", () => {
     ).toBe(before)
   })
 })
+
+describe("fixture numberFormat writes", () => {
+  it("broadcasts a 1x1 format assignment over the whole range, like Office.js", async () => {
+    // Measured in eval P2 (2026-08-24): the getter-only stub made every
+    // format_range die with "Cannot set property numberFormat", a fixture
+    // failure the model then spent a real round reacting to.
+    const working = makeBook()
+    const context = buildEvalContext(working, { sheet: "Data", address: "A1" })
+    const result = await runWrite(context as never, createHistory(), {
+      tool: "format_range",
+      address: "I2:I4",
+      numberFormat: "#,##0",
+    })
+    expect(result).not.toContain("실행하지 못했습니다")
+
+    const formats = working.sheets[0]?.formats ?? []
+    expect(formats[1]?.[8]).toBe("#,##0")
+    expect(formats[2]?.[8]).toBe("#,##0")
+    expect(formats[3]?.[8]).toBe("#,##0")
+    // Neighbours keep their own format.
+    expect(formats[4]?.[8]).toBe("General")
+    expect(formats[1]?.[7]).toBe("General")
+  })
+})
+
+describe("fixture clear_range", () => {
+  it("blanks contents, restores formats, and supports All", () => {
+    const working = makeBook()
+    const context = buildEvalContext(working, { sheet: "Data", address: "A1" })
+    const sheet = working.sheets[0]
+    if (sheet === undefined) throw new Error("missing fixture sheet")
+    // The eval context resolves sheets through the fixture registry; reach the range
+    // through the same structural cast the write side uses.
+    const rangeOf = (address: string): { clear: (what?: string) => void } =>
+      (
+        context.workbook.worksheets.getItemOrNullObject("data") as never as {
+          getRange: (address: string) => { clear: (what?: string) => void }
+        }
+      ).getRange(address)
+
+    rangeOf("I2:I4").clear()
+    expect((sheet.values[1] as unknown[])[8]).toBeNull()
+    expect(sheet.formulas[2]?.[8]).toBeNull()
+
+    rangeOf("I5:I6").clear("Formats")
+    expect(sheet.formats[4]?.[8]).toBe("General")
+    // Contents survive a Formats-only clear.
+    expect((sheet.values[4] as unknown[])[8]).toBe(400)
+
+    rangeOf("I2:I6").clear("All")
+    expect((sheet.values[3] as unknown[])[8]).toBeNull()
+    expect(sheet.formats[3]?.[8]).toBe("General")
+  })
+})

@@ -140,6 +140,28 @@ export const buildEvalContext = (
       get numberFormat() {
         return slice(fixture.formats, "General")
       },
+      // format_range assigns `[[format]]` and Office.js broadcasts a 1x1 grid over
+      // the whole range; the getter-only stub made every eval format write die with
+      // "Cannot set property numberFormat" - a fixture failure the model then spent
+      // a real round reacting to, not a behaviour Excel has.
+      set numberFormat(grid: string[][]) {
+        for (let r = 0; r < area.height; r += 1) {
+          for (let c = 0; c < area.width; c += 1) {
+            const source =
+              grid.length === 1 && (grid[0]?.length ?? 0) === 1 ? grid[0]?.[0] : grid[r]?.[c]
+            if (source === undefined) continue
+            const absRow = area.top + r - fixture.anchor.top
+            const absCol = area.left + c - fixture.anchor.left
+            if (absRow < 0 || absCol < 0) continue
+            let formatRow = fixture.formats[absRow]
+            if (formatRow === undefined) {
+              ;(fixture.formats as string[][])[absRow] = formatRow = []
+            }
+            while (formatRow.length <= absCol) formatRow.push("General")
+            ;(formatRow as string[])[absCol] = source
+          }
+        }
+      },
       get formulas() {
         return slice(fixture.formulas, null)
       },
@@ -169,6 +191,44 @@ export const buildEvalContext = (
       worksheet: { name: fixture.sheet },
       load: () => {},
       select: () => {},
+      // clear_range reaches this through the write cast: "Contents" blanks the stored
+      // values and formulas, "Formats" restores General, "All" does both. A missing
+      // clear() made the model's own cleanup of a scratch formula die mid-turn.
+      clear: (applyTo?: string): void => {
+        const what = applyTo ?? "Contents"
+        const write = (
+          matrix: unknown[][],
+          fill: unknown,
+          assign: (target: unknown[], row: number, col: number) => void,
+        ): void => {
+          for (let r = 0; r < area.height; r += 1) {
+            for (let c = 0; c < area.width; c += 1) {
+              const absRow = area.top + r - fixture.anchor.top
+              const absCol = area.left + c - fixture.anchor.left
+              if (absRow < 0 || absCol < 0) continue
+              let row = matrix[absRow]
+              if (row === undefined) {
+                ;(matrix as unknown[][])[absRow] = row = []
+              }
+              while (row.length <= absCol) (row as unknown[]).push(fill)
+              assign(row as unknown[], absRow, absCol)
+            }
+          }
+        }
+        if (what !== "Formats") {
+          write(fixture.values, null, (row, _r, c) => {
+            row[c] = null
+          })
+          write(fixture.formulas, null, (row, _r, c) => {
+            row[c] = null
+          })
+        }
+        if (what !== "Contents") {
+          write(fixture.formats, "General", (row, _r, c) => {
+            row[c] = "General"
+          })
+        }
+      },
       // fill_formula's autofit probe and Excel-style fill reach this via the write cast.
       // FillDefault repeats the source rectangle across the destination; every copied cell
       // carries its references shifted by how far its tile sits from the source origin.

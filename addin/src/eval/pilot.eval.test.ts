@@ -173,6 +173,10 @@ const citedNumbers = (text: string): number[] =>
       // The grounding pass appends its own bookkeeping ("문장 6개는 제외했습니다") whose
       // count is not a claim about the sheet.
       .replace(/\(근거를 확인할 수 없는 문장 \d+개는 제외했습니다\.\)/g, " ")
+      // The AiError floor discloses the provider's own error text ("429") beside the
+      // table; a rate-limit code is bookkeeping, not a claim about the sheet.
+      .replace(/AI 서버가 오류를 반환했습니다: \d+/g, " ")
+      .replace(/\(\{"error":[^)]*\}\)/g, " ")
       .replace(/\b[A-Za-z]{1,3}\d+(?::[A-Za-z]{1,3}\d+)?\b/g, " ")
       // Row spans are addresses too: "9~300행", "1~7행" name rows, they do not claim values.
       .replace(/\d[\d,]*\s*[~\-–]\s*\d[\d,]*\s*(?:행|열|칸)/g, " ")
@@ -229,9 +233,22 @@ const uncoveredColumns = (answer: string, evidence: readonly ColumnStatsEvidence
   const letters = [
     ...new Set(evidence.flatMap((item) => item.columns.map((c) => c.letter.toUpperCase()))),
   ]
-  // A letter counts as covered when it appears as a column token: "H열", "H ", "·H·", "| H |".
+  // A letter counts as covered when it appears as a column token ("H열", "H ", "·H·",
+  // "| H |") OR inside a stated span — "A~G" names B, C, D, E and F just as plainly
+  // (measured L1 rep, 2026-08-24: a grouped answer "A~G, K~M" scored five phantom
+  // omissions because only the harness's own chat-coverage matcher understood spans).
+  const spanned = new Set<string>()
+  for (const match of answer.matchAll(
+    /(?<![A-Za-z])([A-Za-z])\s*열?\s*(?:부터|~|[–—-])\s*(?:까지\s*)?([A-Za-z])(?:열)?/gu,
+  )) {
+    const from = (match[1] ?? "").toUpperCase().charCodeAt(0)
+    const to = (match[2] ?? "").toUpperCase().charCodeAt(0)
+    if (Number.isNaN(from) || Number.isNaN(to) || from > to) continue
+    for (let code = from; code <= to; code += 1) spanned.add(String.fromCharCode(code))
+  }
   return letters.filter(
-    (letter) => !new RegExp(`(?<![A-Za-z])${letter}(?![A-Za-z0-9])`).test(answer),
+    (letter) =>
+      !spanned.has(letter) && !new RegExp(`(?<![A-Za-z])${letter}(?![A-Za-z0-9])`).test(answer),
   )
 }
 
