@@ -246,7 +246,7 @@ describe("the compact chat screen", () => {
       handlers({ onPinSelection: () => (pinned += 1) }),
     )
     const pin = root.querySelector<HTMLButtonElement>(
-      '[data-selection-attachment="attached"] button[aria-label="범위 고정 — 다음 드래그로 범위 추가"]',
+      '[data-selection-attachment="attached"] button[aria-label="범위 추가 — 현재 범위를 고정하고 다음 드래그를 추가"]',
     )
     expect(pin?.querySelector("svg")).not.toBeNull()
     pin?.click()

@@ -4,7 +4,7 @@ export type ChatIcon =
   | "settings"
   | "help"
   | "close"
-  | "pin"
+  | "addRange"
   | "apply"
   | "discard"
   | "model"
@@ -70,10 +70,11 @@ export const createIcon = (name: ChatIcon): SVGSVGElement => {
         shape("line", { x1: 14, y1: 4, x2: 4, y2: 14 }),
       )
       break
-    case "pin":
+    case "addRange":
       svg.append(
-        shape("path", { d: "M6.5 2h5l-.8 5 2.3 2.5H5L7.3 7 6.5 2Z" }),
-        shape("line", { x1: 9, y1: 9.5, x2: 9, y2: 15.5 }),
+        shape("path", { d: "M2.5 6.5h8v8h-8z" }),
+        shape("line", { x1: 13.5, y1: 3, x2: 13.5, y2: 8 }),
+        shape("line", { x1: 11, y1: 5.5, x2: 16, y2: 5.5 }),
       )
       break
     case "apply":

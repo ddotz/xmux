@@ -29,11 +29,17 @@ const attachmentCard = (
       `${quoteSheetName(attachment.sheet)}!${attachment.address} ${pin === null ? "고정됨" : "선택됨"}`,
     ),
   )
-  // Pinning keeps this range while the user drags the next one — a cross-sheet
-  // VLOOKUP needs the fill target and the lookup table attached together.
+  // "Add a range" is the user's mental model: pressing it keeps (pins) this range
+  // while the next drag adds another — a cross-sheet VLOOKUP needs the fill target
+  // and the lookup table attached together.
   if (pin !== null)
     card.append(
-      iconButton("범위 고정 — 다음 드래그로 범위 추가", "pin", pin, "icon-button icon-button-flat"),
+      iconButton(
+        "범위 추가 — 현재 범위를 고정하고 다음 드래그를 추가",
+        "addRange",
+        pin,
+        "icon-button icon-button-flat",
+      ),
     )
   card.append(
     iconButton(
