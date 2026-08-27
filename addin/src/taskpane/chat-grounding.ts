@@ -139,9 +139,10 @@ export type ScopedRead = {
  *   rows above the selection are exactly the context waste being paid for today;
  * - a read spanning several attached rectangles passes (one rectangle cannot express
  *   their union, and refusing it would block a deliberate cross-range read);
- * - a big read disjoint from every attached range on a widely-attached (>72-cell)
- *   sheet is refused with a redirect naming those ranges — column_stats and ≤72-cell
- *   probes stay open;
+ * - a big read disjoint from every attached range is refused only when at least one
+ *   attached range on that sheet is itself wide (>72 cells) — several small
+ *   attachments must not close the cross-referencing door their sizes never earned;
+ *   column_stats and ≤72-cell probes stay open regardless;
  * - everything else passes: sheets with no attachment, small outside probes (headers,
  *   cited cells, formula chains), and unparseable addresses (inspect.ts refuses those).
  *
@@ -183,8 +184,8 @@ export const scopeReadToSelections = (
       note: `(첨부된 선택 범위 밖은 제외하고 ${sheet}!${formatArea(overlap)}만 읽었습니다.)`,
       rejected: null,
     }
-  const attachedCells = relevant.reduce((sum, selection) => sum + selection.cellCount, 0)
-  if (attachedCells > GROUNDING_CELLS && requested.height * requested.width > GROUNDING_CELLS) {
+  const widelyAttached = relevant.some((selection) => selection.cellCount > GROUNDING_CELLS)
+  if (widelyAttached && requested.height * requested.width > GROUNDING_CELLS) {
     const named = relevant.map((selection) => `${selection.sheet}!${selection.address}`).join(", ")
     return {
       call,

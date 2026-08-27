@@ -226,6 +226,17 @@ describe("scopeReadToSelections", () => {
     expect(scoped.rejected).toContain("데이터!H100:K200")
   })
 
+  it("two small attachments never close the door a single small one leaves open", () => {
+    // 40+40 cells attached: neither range is wide, so a disjoint outside read still
+    // runs — the sum of small scopes must not manufacture a wide-selection refusal.
+    const first = { sheet: "데이터", address: "C1:C40", cellCount: 40 }
+    const second = { sheet: "데이터", address: "E1:E40", cellCount: 40 }
+    const call = { tool: "read_range" as const, address: "H1:P100" }
+
+    expect(scopeReadToSelections(call, [first, second], "데이터").rejected).toBeNull()
+    expect(scopeReadToSelections(call, [first, second], "데이터").call).toBe(call)
+  })
+
   it("passes a read spanning two attached rectangles instead of mangling it", () => {
     const first = { sheet: "데이터", address: "C100:F200", cellCount: 404 }
     const second = { sheet: "데이터", address: "H100:K200", cellCount: 404 }
