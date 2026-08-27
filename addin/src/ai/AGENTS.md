@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-Six pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-schemas.ts` says what may be asked of the workbook, `loose-json.ts` reads what the model wrote as JSON, `tools.ts` reads the reply as tool calls, `plan.ts` reads it as a proposal, `settings.ts` holds the connection. No Office.js here.
+Eight pure modules (103 exports, 7 test files) behind the 대화 tab: `client.ts` talks to the server, `tool-schemas.ts` says what may be asked of the workbook, `loose-json.ts` reads what the model wrote as JSON, `tools.ts` reads the reply as tool calls, `reply.ts` decides what a person may see, `budget.ts` decides what the harness may spend, `plan.ts` reads a reply as a proposal, `settings.ts` holds the connection. No Office.js here — the whole layer is node-testable.
 
 ## MODULES
 
@@ -11,7 +11,7 @@ Six pure modules behind the 대화 tab: `client.ts` talks to the server, `tool-s
 | `client.ts` | 5 | `askModel`, `testConnection`, `conversationFor`, `AiError`, `ChatMessage` |
 | `reply.ts` | 3 | `visibleReply` cuts a thinking model's deliberation off at the wire; `displayReply` preserves the complete canonical Markdown answer while normalising blank runs; `announcesWork` catches a reply that promises work instead of doing it |
 | `budget.ts` | 5 | `budgetFor` turns the configured window into every limit the harness spends; `SYSTEM_PROMPT_CHARS` + `reservedTokensFor` reserve what the instructions measurably cost (a flat 8,000 under-reserved by ~3,600 tokens while the prompt alone was 8,500), and `chat-prompt.test.ts` fails when the prompt outgrows the number: `readCells`, `readChars`, `roundChars`, `observationChars`, `keptObservations`, `carriedTurns` |
-| `tool-schemas.ts` | 40+ | one zod schema per operation, `toolCallSchema`, `WRITE_TOOLS`, `isWrite`, `ToolCall` |
+| `tool-schemas.ts` | 40+ | 731 LOC: one zod schema per operation, `toolCallSchema`, `WRITE_TOOLS`, `UNDO_BLIND_TOOLS`, `isWrite`, `outsideUndo`, `ToolCall`. The discriminated union is the repo's densest single contract; adding an operation starts here |
 | `loose-json.ts` | 2 | `parseLoose`, `repairJson`: strict JSON first, then the dialect models actually write |
 | `tools.ts` | 7 | `readSteps`, `describeCall`, `renderGrid`, and the budgets (`MAX_CALLS_PER_REPLY` 8, `MAX_TOOL_ROUNDS` 16, `MAX_TOOL_CELLS` 500) |
 | `plan.ts` | 4 | `parsePlan`, `planTouchesWorkbook`, `Plan`, `ProposedSkill` (the apply-path helpers were removed with the dead proposal UI) |

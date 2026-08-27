@@ -4,16 +4,14 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 
 ## LAYERS
 
-- `taskpane/main.ts` is the **only** module calling `Excel.run` (7 sites), `Office.onReady`,
+- `taskpane/main.ts` is the **only** module calling `Excel.run` (9 sites), `Office.onReady`,
   `Office.HostType`, `Office.context.requirements`. Everything else gets a context or a runner.
 - `excel/*.ts` never calls `Excel.run`. `resolve.ts` / `summarise.ts` / `summaries.ts` take
   structural param types (`AddressRange`, `SummaryRange`) and generics
   (`summariseReferences<Range extends SummaryRange>`), so tests pass plain objects. Only
   `sheets.ts` names `Excel.RequestContext` / `Excel.SheetVisibility` in a signature.
 - `taskpane/view.ts` and `taskpane/sheet.ts` are pure DOM renderers: state in, nodes out, zero
-  Excel I/O. `view.ts` imports only address/sheets *types*, describe helpers, and `model.ts`.
-- `viewport.ts` and `chatting.ts` take `run: (work: (context: Excel.RequestContext) => …)` as a
-  dependency; they never reach for the global themselves.
+  Excel I/O. `viewport.ts` and `chatting.ts` take `run: (work: (context) => …)` as a dependency.
 - `formula/*` is text-only; `excel/address.ts` and `excel/history.ts` name no Office type at all.
 - Direction is one-way: taskpane → excel → formula. Nothing under `excel/` imports taskpane.
 
@@ -54,15 +52,18 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 
 ## TESTS
 
-- 36 `*.test.ts` files, node environment by default; 14 opt in via
+- 63 `*.test.ts` files, node environment by default; 17 opt in via
   `// @vitest-environment happy-dom` (DOM-touching `taskpane/` files plus `ai/plan.test.ts`).
 - Excel is never mocked as a global. Tests hand fake context/range objects to the generic
-  `excel/` functions. `vi.mock` appears only in `chatting.test.ts` (`../ai/client`,
-  `./chat-workbook`); `vi.stubGlobal` only for `localStorage` and `fetch`.
+  `excel/` functions. `vi.mock` appears in three files only (`chatting.test.ts`,
+  `chat-workbook.test.ts`, `chat-evidence-integration.test.ts`); `vi.stubGlobal` only for
+  `localStorage` and `fetch`.
+- `src/eval/pilot.eval.test.ts` is gated on `XMUX_EVAL=1`, so `pnpm test` never hits the
+  network; it drives the real harness against `excel/eval-context.ts` fixtures and appends a
+  JSONL transcript to `probes/eval/runs/` for `probes/eval/scorecard.py`.
 - `windows-local-deployment.test.ts` actually spawns `local-server.mjs` on an ephemeral port
-  with real dev certs, parses the port off stdout, asserts `/`, `/health`, `/xmux/state`.
-  15 s beforeAll budget, SIGTERM plus tmpdir cleanup after. Its second describe block reads the
-  PowerShell sources as text.
+  with real dev certs, parses the port off stdout, asserts `/`, `/health`, `/xmux/state`;
+  SIGTERM plus tmpdir cleanup after. Its second describe block reads the PowerShell sources.
 - `local-service-port.test.ts` pins 3927 across six machine-consumed files and bans 3000.
   `manifest-branding.test.ts` pins ribbon label, `<Version>`, and the `?v=2` icon busters.
 

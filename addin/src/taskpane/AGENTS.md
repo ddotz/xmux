@@ -2,12 +2,12 @@
 
 ## OVERVIEW
 
-The pane UI: 28 modules, 106 exports, one Excel-touching file (`main.ts`), everything else pure logic or DOM.
+The pane UI: 37 modules, 156 exports, 30 test files, one Excel-touching file (`main.ts`), everything else pure logic or DOM. Largest and most central directory in the repo — hence its own file.
 
 ## CLUSTERS
 
 **shell**: bootstrap + chrome.
-- `main.ts` (305 LOC): the ONLY file calling `Excel.run` / `Office.*`. Owns `pane: PaneState`, `badge`, `lastKey`, `sheetTabScroll`; builds `chatting`/`tabs`/`viewport`/`commands`/`selectionEvents`/`undoControls` and hands each a `run: (work) => guarded(() => Excel.run(work))`. Every module below receives Excel access as an injected dep, never imports it.
+- `main.ts` (414 LOC, 9 `Excel.run` sites): the ONLY file calling `Excel.run` / `Office.*`. Owns `pane: PaneState`, `badge`, `lastKey`, `sheetTabScroll`; builds `chatting`/`tabs`/`viewport`/`commands`/`selectionEvents`/`undoControls` and hands each a `run: (work) => guarded(() => Excel.run(work))`. Every module below receives Excel access as an injected dep, never imports it.
 - `guarded()` swallows `invalidOperationInCellEditMode` into a badge and keeps the last render. `draw()` is the single redraw; `show()` (from `undo-controls.ts` `createStatusPresenter`) is the single state setter.
 - `markdown.ts` parses CommonMark/GFM to an AST and builds an allowlisted DOM tree with `createElement`/text nodes only. Raw HTML and images never execute or fetch. HTTP(S) links are privacy-hardened; reported `Sheet!A1:B9` and bare A1 ranges navigate through `main.ts`'s guarded command path even when the mirrored cell is a value or blank.
 - `pane-elements.ts` `findPaneNodes` throws if `#pane-root`/`#cell-address`/`#status-badge`/`#undo`/`#linked-workbooks-root` are missing from `index.html`.
@@ -20,6 +20,7 @@ The pane UI: 28 modules, 106 exports, one Excel-touching file (`main.ts`), every
 - `chatting.ts` is the direct-tool state machine: Send-time sheet binding, generation cancellation, atomic tool batches, exact outcome ledger, post-write context refresh and mandatory verification before the final answer. Workbook proposals are rejected; skill proposals remain reviewable. Every budget comes from `budgetFor(state.settings)`.
 - `chat-grounding.ts` is the pure final-answer trust boundary: it extracts factual A1 claims, plans exact value reads, tiles a large selected rectangle without sampling, checks citation coverage, and fails closed when all raw observations cannot fit. `chatting.ts` never shows the model's first factual draft; it reads the cited cells/complete selected range and asks for one grounded rewrite. Failure floors are deterministic and zero-LLM: a write turn skips the rewrite ladder entirely (its writes were harness-sync verified; unvouched analysis sentences drop, and an empty remainder becomes the pane's receipt), a mismatched aggregate claim skips rewrites entirely and answers with filtered prose plus `aggregateAnswerTable` from ledger evidence, a cell-targeted why/how question is primed with `explain_cell` at intake and keeps that text as its floor, and provenance questions get cross-sheet formula attribution notes (`formulaAttributionNotes`).
 - `chat-workbook.ts` loads an exact multi-cell selection only when all of it fits the 72-cell initial-context cap. Larger selections carry shape + deterministic tile metadata with `coverage: "not_loaded"` and no sampled values; missing context is unknown, never blank.
+- The grounding boundary is split across five pure siblings, all node-environment testable: `chat-evidence.ts` (448 LOC — factual A1 extraction, `aggregateAnswerMatches`, `formulaAttributionNotes`), `chat-coverage.ts` (which columns the evidence actually covers), `chat-large-range.ts` (`aggregateCallsForSelection`, `aggregateAnswerTable` — tiling a big rectangle into `column_stats` calls), `chat-action-verification.ts` (what a write turn must re-read before it may claim success), `chat-harness.ts` (`createHarnessLedger`, the exact receipt of what ran). `chatting.ts` composes them; none of them import it.
 
 Pure (no DOM, no Excel): `selection.ts`, `reference-keys.ts`, `chat-context.ts`, `chat-prompt.ts`, `chat-skills.ts`, `chat-skill-store.ts`.
 DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `chatting.ts` (which take Excel via deps).
@@ -44,7 +45,7 @@ DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `
 
 - Factory + deps object: `createX(deps)` returns `{ state(), handlers, ... }`. State is a module-local `let` mutated only through a `set()` that calls `deps.redraw()`. No framework, no observable.
 - Renderers are `(state, handlers) => HTMLElement`; they never mutate state and never await.
-- Tests default to `environment: node`; DOM-needing files start with `// @vitest-environment happy-dom` (13 of 20 do). No Excel global is stubbed anywhere; testability comes from the dep injection above.
+- Tests default to `environment: node`; DOM-needing files start with `// @vitest-environment happy-dom` (15 of 30 do). No Excel global is stubbed anywhere; testability comes from the dep injection above.
 - Korean is user-facing copy; identifiers and comments stay English.
 
 ## ANTI-PATTERNS

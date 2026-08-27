@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-Turns formula reference tokens into real sheet rectangles, reads them, carries out the assistant's tool calls, and remembers what was overwritten.
+Turns formula reference tokens into real sheet rectangles, reads them, carries out the assistant's tool calls, and remembers what was overwritten. 21 sources, 103 exports, 16 test files.
 
 ## MODULES
 
@@ -24,9 +24,13 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `audit.ts` | 1 | What a workbook gets checked for before anyone signs it: error cells, numbers typed into calculated columns, external links, defined names, and per-column totals computed inside Excel so a 200k-row table never crosses the boundary. |
 | `inspect.ts` | 4 | The assistant's read tools: `read_range` (raw values or formulas, with displayed text/number format differences), `find`, `used_range`, `list_sheets`. Refuses an over-wide range instead of truncating it. |
 | `write-outcome.ts` | 2 | `refused()` marks a reply that means the workbook is unchanged, `changedWorkbook()` reads that marker back. Every refusal read as one to a person and to nobody else, so the chat loop counted refused calls as work performed and its receipt named sheets it had not created. |
-| `operate.ts` | 2 | The assistant's write tools, every one snapshotting its rectangle into the history first. A failure comes back as Korean text, never a throw — the model has to be able to read it and try something else. |
+| `operate.ts` | 2 | The assistant's write tools (507 LOC), every one snapshotting its rectangle into the history first. A failure comes back as Korean text, never a throw — the model has to be able to read it and try something else. |
+| `column-stats.ts` | 5 | `runColumnStats` computes seven numbers per column inside Excel, `displayedNumber` renders one. The evidence a large-range answer is allowed to cite instead of sampled cells. |
+| `format-profile.ts` | 3 | `isDerivableFormat` / `displayAnnotation` / `columnFormatSummary`: when a raw value and its displayed text differ, this decides whether the difference is derivable or must be shown. |
+| `lookup.ts` | 3 | `findLookupRow` — the Excel-side half of `formula/lookup.ts`, resolving where a lookup actually lands. |
+| `eval-context.ts` | 4 | 626 LOC test-harness only: `buildEvalContext` answers Office.js-shaped reads from an openpyxl ground-truth fixture, so the unmodified harness runs without Excel (`HARNESS-DESIGN.md` §9 tier A). Ships in `src/`, never loaded by the pane. Fixture cells are mutable by design; the runner deep-copies per repetition. |
 
-Tests: 14 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
+Tests: 16 files. `sheets.ts` and `summarise.ts` have none of their own; summarise is covered through `summaries.test.ts`.
 
 ## EXCEL API BOUNDARY
 

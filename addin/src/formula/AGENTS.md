@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-Formula text in, reference spans and a numbered Korean explanation out. 6 sources, 22 exports, 3 test files.
+Formula text in, reference spans and a numbered Korean explanation out. 7 sources, 25 exports, 4 test files. Earned its own file as a distinct domain: pure text grammar, zero Office types.
 
 ## PIPELINE
 
@@ -29,6 +29,7 @@ formula text ──> scanner.ts  scanReferences() ──> readonly RefToken[]   
 | `reference.ts` | The other direction: build and edit reference text. `quoteSheetName`, `referenceTo`, `applyInsertion`, `removeReference`. Only file here importing `excel/address`. Never scans. |
 | `parse.ts` | Shallow tree: number / text / ref / call / binary / compare / unary / unknown. Comparisons sit above `+-&` above `*/^`. No evaluator. |
 | `describe.ts` | Tree + `ReferenceSummary` lookup -> `Step[]`, walked bottom-up, earlier steps cited by ①②③ markers. |
+| `lookup.ts` | `lookupFocus` reads a VLOOKUP/XLOOKUP/MATCH out of the tree: needle, table, result column. Pure, tested (`lookup.test.ts`). |
 
 ## UNRESOLVABLE SHAPES
 
@@ -50,7 +51,7 @@ and any name followed by `(`. An out-of-bounds A1 shape (`ZZZ9`, `A1048577`) deg
   table name, so it's read as a reference body outright and never as an identifier.
 - Every branch of `readReferenceLike` must advance the cursor or reset it explicitly, otherwise
   `scanReferences` spins forever. Reset points are `cur.pos = start` / `start + 1`.
-- `lookup.ts` reads a lookup out of the tree — what is being searched for, where, and which column comes back — so the pane can open a VLOOKUP table at the row it lands on instead of at row 1. Pure: no values, no sheet access. VLOOKUP, XLOOKUP and MATCH only; HLOOKUP falls through to ordinary behaviour.
+- `lookup.ts` lets the pane open a VLOOKUP table at the row it lands on instead of at row 1. No values, no sheet access. HLOOKUP falls through to ordinary behaviour.
 - **Names take any Unicode letter; column letters take A-Z.** `a1.ts` `isLetter` (identifiers) and `isAlpha` (addresses) are deliberately different predicates. Collapsing them either makes `매출` invisible or reads `가1` as a cell.
 - Precedence, tightest first: unary minus, `%`, `^`, `*` `/`, `+` `-` `&`, comparisons. `^` has its own level in `parse.ts` (`power()`), because `B2*(1+C2)^D2` is compound interest and grouping it as `(B2*(1+C2))^D2` explains a different number with full confidence.
 - `describe.ts` output is user-facing Korean rendered straight into the pane (`taskpane/view.ts`);
