@@ -36,8 +36,13 @@ const RETRY_PLAN: Record<FailureClass, { readonly attempts: number; readonly bac
   {
     // Fails fast and free: five attempts ride out a ~60s provider blip in ~70s.
     connect: { attempts: 5, backoff: [1_000, 5_000, 15_000, 45_000] },
-    // The server usually says when to come back; this schedule is the fallback.
-    rateLimit: { attempts: 4, backoff: [5_000, 20_000, 60_000] },
+    // The server usually says when to come back; this schedule is the fallback. A 429
+    // is rejected before inference, so a retry costs time and no quota — while giving up
+    // forfeits everything the turn already spent. A recorded P2 build died on its 22nd
+    // call after four consecutive 429s at the old 5/20/60s schedule, wasting ~200KB of
+    // input the turn had already paid for (eval 2026-08-25T02-12). Patience is cheap
+    // against that: the user watches activity and can cancel at any time.
+    rateLimit: { attempts: 6, backoff: [10_000, 30_000, 60_000, 90_000, 120_000] },
     // Each attempt already burned the full request timeout.
     timeout: { attempts: 2, backoff: [1_000] },
     // A reasoning burst clears on the second try; a deterministic overflow never does.

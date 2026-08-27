@@ -457,7 +457,7 @@ describe("provider flap tolerance", () => {
     expect(sent).toBe(5)
   })
 
-  it("honors Retry-After on a rate limit and stops after four attempts", async () => {
+  it("honors Retry-After on a rate limit and stops after six attempts", async () => {
     const waited: number[] = []
     retryBackoffMs.splice(0, retryBackoffMs.length)
     const realTimeout = globalThis.setTimeout
@@ -481,7 +481,9 @@ describe("provider flap tolerance", () => {
     await expect(askModel(SETTINGS, messages, fetcher)).rejects.toThrow(AiError)
     restoreTimeout()
     retryBackoffMs.splice(0, retryBackoffMs.length, 0, 0, 0, 0)
-    expect(sent).toBe(4)
+    // Six attempts: a 429 is rejected before inference, so patience costs no quota while
+    // giving up forfeits the whole turn's sunk input (measured P2, eval 2026-08-25).
+    expect(sent).toBe(6)
     // The server's own number, jittered, not the fallback schedule.
     expect(waited.every((delay) => delay >= 2_250 && delay <= 3_750)).toBe(true)
   })
