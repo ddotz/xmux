@@ -512,6 +512,13 @@ describe("workbook lookups before answering", () => {
     expect(looked).toEqual(["J5", "J6"])
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(vi.mocked(askModel).mock.calls[1]?.[1])).toContain("125")
+    // The rewrite rides its own slim conversation: a dedicated system prompt and the
+    // evidence, not the ~15KB full prefix plus history it used to resend per rung.
+    const rewriteMessages = vi.mocked(askModel).mock.calls[1]?.[1] ?? []
+    expect(rewriteMessages[0]?.role).toBe("system")
+    expect(rewriteMessages[0]?.content).toContain("실제 Excel 값만 근거로")
+    expect(rewriteMessages[0]?.content.length).toBeLessThan(1_000)
+    expect(rewriteMessages.length).toBe(2)
     expect(chatting.state().turns.at(-1)?.text).toBe("J5는 125이고 J6은 250입니다.")
   })
 
@@ -1574,8 +1581,10 @@ describe("working through a batch of tool calls", () => {
   it("tells the model how much budget is left before it runs out", async () => {
     // Given: a model that keeps surveying — a different sheet each time, so it is working
     // rather than stuck. It used to be cut off mid-build with no warning; told the
-    // remaining count it can land the work and answer.
+    // remaining count it can land the work and answer. The sheets must genuinely resolve:
+    // a not-found survey now counts as a fruitless round and ends the phase early.
     const book = workbook()
+    book.context.workbook.worksheets.add("정리")
     let survey = 0
     vi.mocked(askModel).mockImplementation(() => {
       survey += 1
@@ -1600,9 +1609,11 @@ describe("working through a batch of tool calls", () => {
   })
 
   it("says it stopped instead of printing raw JSON when the rounds run out", async () => {
-    // Given: a model that never stops asking for tools, and asks something new every time.
-    // The turn has to end in words.
+    // Given: a model that never stops asking for tools, and asks something new every time
+    // — against sheets that resolve, so every round is real progress and the budget itself
+    // is what runs out. The turn has to end in words.
     const book = workbook()
+    book.context.workbook.worksheets.add("정리")
     let survey = 0
     vi.mocked(askModel).mockImplementation(() => {
       survey += 1
@@ -1617,6 +1628,39 @@ describe("working through a batch of tool calls", () => {
     expect(vi.mocked(askModel)).toHaveBeenCalledTimes(MAX_TOOL_ROUNDS + 2)
     const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).toContain("도구 실행을 여기서 멈추고")
+    expect(said).not.toContain('"tool"')
+  })
+
+  it("stops after three fruitless rounds instead of burning the whole budget", async () => {
+    // Given: Excel is unreachable and the model tries a DIFFERENT call every round — the
+    // identical-batch guard never fires, and each round used to resend the full fixed
+    // prefix up to MAX_TOOL_ROUNDS times (measured P2: 26 calls, ~230k input tokens, on a
+    // build that never landed).
+    let survey = 0
+    vi.mocked(askModel).mockImplementation(() => {
+      survey += 1
+      return Promise.resolve(
+        survey <= 3
+          ? `{"tool":"used_range","sheet":"시트${survey}"}`
+          : "Excel이 응답하지 않아 확인을 진행하지 못했습니다.",
+      )
+    })
+    const chatting = createChatting({
+      redraw: () => {},
+      run: async () => {
+        throw new Error("Excel 응답 없음")
+      },
+      anchor: () => ({ address: "Main!A1", formula: "" }),
+      history: createHistory(),
+    })
+    chatting.handlers.onSaveSettings({ ...DEFAULT_SETTINGS, apiKey: "sk-test" })
+    chatting.handlers.onSend("계속 확인해줘")
+    await vi.waitFor(() => expect(chatting.state().pending).toBe(false))
+
+    // One opening ask, two asks after the first two failed rounds, and the summary
+    // request after the third failed round breaks the loop — not MAX_TOOL_ROUNDS + 2.
+    expect(vi.mocked(askModel)).toHaveBeenCalledTimes(4)
+    const said = chatting.state().turns.at(-1)?.text ?? ""
     expect(said).not.toContain('"tool"')
   })
 

@@ -60,7 +60,7 @@ import {
   aggregateEvidenceComplete,
   aggregateEvidenceForSelection,
 } from "./chat-large-range"
-import { systemPrompt } from "./chat-prompt"
+import { groundingRewritePrompt, systemPrompt } from "./chat-prompt"
 import {
   loadLocalSkills,
   saveLocalSkills,
@@ -228,6 +228,13 @@ const REPEATED_CALL =
 
 /** How many times a batch may come back unchanged before the loop stops asking. */
 const MAX_REPEATS = 2
+
+/**
+ * Rounds in a row where no call succeeded before the tool phase stops early. Every such
+ * round resends the full fixed prefix for nothing; three misses in a row with varied
+ * calls means the approach is broken, not the syntax.
+ */
+const MAX_FRUITLESS_ROUNDS = 3
 
 /**
  * When the model starts being told how much budget is left.
@@ -1122,6 +1129,16 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       let repeats = 0
       let lastBatch: string | null = null
       /**
+       * Rounds in a row where nothing succeeded: every call refused, failed, or was a
+       * duplicate. MAX_REPEATS only catches an IDENTICAL batch; a model alternating
+       * between broken variants evades it and can burn the whole round budget failing —
+       * a recorded P2 run spent 26 model calls (~230k input tokens, 14 minutes) on a
+       * build that never landed and died on a rate limit at the end. Three fruitless
+       * rounds end the tool phase early; the existing out-of-rounds path then reports
+       * honestly what ran and what did not.
+       */
+      let fruitlessRounds = 0
+      /**
        * Destructive calls the previous EXECUTED batch landed, plus ones landed inside the
        * batch in flight, by canonical signature. Refusing their exact repetition is what
        * stops a grown batch from re-running its prefix; scoping both sets to the immediate
@@ -1366,6 +1383,7 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
 
         const observations: string[] = []
         let batchChanged = false
+        let batchProgressed = false
         for (const [index, normalized] of normalizedBatch.entries()) {
           const call = normalized.call
           // An identical destructive call carried over from the batch that just ran, or
@@ -1391,6 +1409,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
             : normalized.rejected === null
               ? await runCall(call)
               : refused(`${normalized.rejected}. 호출을 실행하지 않았습니다.`)
+          // Progress = a call the loop actually ran whose reply is not the failure
+          // marker; `changedWorkbook` reads that marker for writes and reads alike.
+          if (!duplicated && normalized.rejected === null && changedWorkbook(observation))
+            batchProgressed = true
           if (callKey !== null && !duplicated && changedWorkbook(observation))
             pendingBatchWrites.add(callKey)
           if (normalized.rejected !== null && isWrite(call))
@@ -1446,6 +1468,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           role: "user",
           content: `${OBSERVATION_PREFIX}\n${boundRound(observations, budget)}`,
         })
+        fruitlessRounds = batchProgressed ? 0 : fruitlessRounds + 1
+        // The last failed round's observations are already in `turns`, so the summary
+        // request below reports from them instead of asking the model to try again.
+        if (fruitlessRounds >= MAX_FRUITLESS_ROUNDS) break
         reply = await askCurrent(trimObservations(turns, budget))
         step = readSteps(reply)
       }
@@ -1454,7 +1480,10 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
       // going in circles. Nothing more runs, but the user still deserves an account of what
       // happened instead of a dangling JSON blob.
       if (step.kind === "calls") {
-        turns.push({ role: "assistant", content: reply })
+        // The fruitless-round break already pushed this reply before its observations;
+        // pushing it again would make the wire read as the assistant repeating itself.
+        const lastAssistant = [...turns].reverse().find((turn) => turn.role === "assistant")
+        if (lastAssistant?.content !== reply) turns.push({ role: "assistant", content: reply })
         turns.push({
           role: "user",
           content:
@@ -1787,11 +1816,6 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           reply = verificationFloor()
         } else {
           const groundedCalls = requiredCalls ?? []
-          turns.push({ role: "assistant", content: reply })
-          turns.push({
-            role: "user",
-            content: `${OBSERVATION_PREFIX}\n최종 답변 근거 확인 (원래 주장):\n${reply}\n실제 Excel 값:\n${boundRound(observations, budget)}\n위 실제 값만 근거로 한국어 최종 답변을 다시 쓰세요. 확인되지 않은 값은 알 수 없다고 쓰세요. 질문에 답하는 데 필요한 문장만 간결히 쓰세요.`,
-          })
           const groundedReplyIsValid = (answer: string): boolean => {
             const rewritten = groundingPlan(
               workbookClaim(answer) ? `${request}\n${answer}` : answer,
@@ -1810,15 +1834,26 @@ export const createChatting = (deps: ChattingDeps): Chatting => {
           // The ladder: one rewrite, one nudged retry, then the sentence filter keeps
           // every claim the real values vouch for and drops the rest. Fail-closed without
           // discarding a whole answer for its worst sentence.
+          // The rewrite is mechanical — restate the draft from the verified values —
+          // so it runs on its own slim conversation instead of the full turn: the same
+          // ~15KB fixed prefix used to ride every rung of the ladder for a task that
+          // needs only the question, the draft, and the evidence (~3KB). The validity
+          // gate below checks the answer against the evidence pane-side either way.
+          const rewriteTurns: ChatMessage[] = []
           const rewriteAsk = async (instruction: string): Promise<void> => {
-            turns.push({ role: "assistant", content: reply })
-            turns.push({
-              role: "user",
-              content: `${OBSERVATION_PREFIX}\n${instruction}`,
-            })
+            if (rewriteTurns.length === 0) {
+              rewriteTurns.push({ role: "system", content: groundingRewritePrompt() })
+              rewriteTurns.push({
+                role: "user",
+                content: `질문:\n${request}\n\n최종 답변 근거 확인 (원래 주장):\n${reply}\n실제 Excel 값:\n${boundRound(observations, budget)}\n${instruction}`,
+              })
+            } else {
+              rewriteTurns.push({ role: "assistant", content: reply })
+              rewriteTurns.push({ role: "user", content: instruction })
+            }
             // A model failure mid-ladder keeps the last draft; the sentence filter and
             // the floor below still bound what can reach the user.
-            const next = await askOrNull(trimObservations(turns, budget))
+            const next = await askOrNull(rewriteTurns)
             if (next !== null) reply = next
           }
           // A first draft that already matches the real cells goes straight out: asking a

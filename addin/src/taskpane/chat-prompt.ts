@@ -117,6 +117,29 @@ const EXAMPLE = [
 ]
 
 /**
+ * The analysis-only example: same wire format, no write tools.
+ *
+ * The full EXAMPLE teaches fill_formula, create_sheet and add_pivot — on a read-only turn
+ * every one of those calls answers with a refusal, so the example was teaching the exact
+ * moves the turn forbids while costing ~2,000 characters on every request of the turn.
+ * One faithful read-and-answer episode teaches the observation format and the answer
+ * contract, which is all an analysis turn uses.
+ */
+const EXAMPLE_READ_ONLY = [
+  "형식 예시입니다. 값이 아니라 절차와 형식을 따릅니다.",
+  "사용자: A열 코드가 어느 지점들인지 알려줘",
+  '조수: {"tool":"read_range","address":"A1:A4"}',
+  "사용자: 실행 결과:",
+  "Sheet1!A1:A4",
+  "\tA",
+  "1\t서울지점-0113",
+  "2\t부산지점-0027",
+  "3\t대구지점-0348",
+  "4\t인천지점-0501",
+  "조수: A1:A4의 코드는 서울·부산·대구·인천 4개 지점, 각 1건입니다(근거: A1:A4). 지점명은 코드의 하이픈 앞부분입니다.",
+]
+
+/**
  * What the finished answer looks like.
  *
  * The pane safely renders CommonMark/GFM into DOM nodes, so a short structured answer
@@ -325,7 +348,7 @@ const basePrompt = (budget: Budget, readOnly = false): string =>
     "당신은 Excel 실무를 돕는 조수입니다. 한국어로 짧고 구체적으로 답합니다.",
     ...section("응답 프로토콜", PROTOCOL),
     ...section("최종 답변 형식", ANSWER_FORMAT),
-    ...section("예시", EXAMPLE),
+    ...section("예시", readOnly ? EXAMPLE_READ_ONLY : EXAMPLE),
     ...section("현재 통합 문서", CONTEXT_SPEC),
     ...section("요청이 모호할 때", AMBIGUOUS),
     ...(readOnly ? [] : section("여러 단계 작업 순서", PIPELINE)),
@@ -344,6 +367,25 @@ const SKILL_CREATOR_PROMPT = [
   "name은 소문자 영문·숫자·하이픈만 사용하고, description에는 구체적인 사용 상황과 트리거를 충분히 담습니다.",
   "instructions는 재사용 가능하도록 간결한 명령형으로 작성합니다. 요구사항이 불명확하면 제안 전에 질문합니다.",
 ].join("\n")
+
+/**
+ * The slim system prompt for the grounding rewrite.
+ *
+ * The rewrite is mechanical — restate the draft from the verified values — and it used to
+ * ride the full conversation: ~15KB of system prompt, history and observations resent for
+ * a task that needs none of them (measured eval runs: every request of a turn was within
+ * 1-4KB of the first, so the fixed prefix was ~90% of each rewrite call). The rewrite's
+ * validity gate (`groundedReplyIsValid`) checks the answer against the evidence on the
+ * pane side either way, so the small prompt changes what is spent, not what is trusted.
+ */
+export const groundingRewritePrompt = (): string =>
+  [
+    "당신은 Excel 실무를 돕는 조수입니다. 아래 확인된 실제 Excel 값만 근거로 최종 답변을 다시 씁니다.",
+    "실제 값에 없는 셀 주소나 숫자를 새로 만들지 않습니다. 확인되지 않은 값은 알 수 없다고 씁니다.",
+    "도구 JSON을 넣지 않습니다. 한국어로, 질문에 답하는 데 필요한 문장만 간결히 씁니다.",
+    "숫자를 말할 때는 근거가 된 셀 주소를 함께 적고, 실제 값에 보이는 기준일·기간·단위·통화 표기는 그대로 유지합니다.",
+    "고객 식별정보(주민등록번호, 계좌번호, 연락처, 개인 이름)는 실제 값에 보여도 옮겨 적지 않고 위치와 건수로만 말합니다.",
+  ].join("\n")
 
 export const systemPrompt = (
   selectedSkillId: ChatSkillId | null,

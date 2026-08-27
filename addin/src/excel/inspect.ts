@@ -9,6 +9,7 @@ import { formulaAddresses, renderGrid } from "./grid"
 import type { InspectContext, InspectSheet } from "./office-shapes"
 import { runReasoningTool } from "./reasoning"
 import { splitQualified } from "./resolve"
+import { refused } from "./write-outcome"
 
 export type RangeEvidence = {
   readonly kind: "range"
@@ -59,7 +60,7 @@ const readRange = async (
   if (call.tool !== "read_range") throw new Error("read_range expected")
   const sheet = await sheetFor(context, call.sheet)
   if (sheet === null)
-    return { text: `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`, evidence: null }
+    return { text: refused(`시트를 찾을 수 없습니다: ${call.sheet ?? ""}`), evidence: null }
 
   const range = sheet.getRange(call.address)
   range.load("address, cellCount")
@@ -143,7 +144,7 @@ const listTables = async (context: InspectContext, sheet: InspectSheet): Promise
 const usedRange = async (context: InspectContext, call: ToolCall): Promise<string> => {
   if (call.tool !== "used_range") throw new Error("used_range expected")
   const sheet = await sheetFor(context, call.sheet)
-  if (sheet === null) return `시트를 찾을 수 없습니다: ${call.sheet ?? ""}`
+  if (sheet === null) return refused(`시트를 찾을 수 없습니다: ${call.sheet ?? ""}`)
 
   const used = sheet.getUsedRangeOrNullObject()
   used.load("isNullObject, address, cellCount, rowCount, columnCount")
@@ -215,7 +216,8 @@ export const observeTool = async (
     // What is left all works against one sheet: the audit and profiling calls, and `find`.
     const named = "sheet" in call ? call.sheet : undefined
     const sheet = await sheetFor(context, named)
-    if (sheet === null) return { text: `시트를 찾을 수 없습니다: ${named ?? ""}`, evidence: null }
+    if (sheet === null)
+      return { text: refused(`시트를 찾을 수 없습니다: ${named ?? ""}`), evidence: null }
     if (call.tool === "list_tables")
       return { text: await listTables(context, sheet), evidence: null }
     if (call.tool === "column_stats") return await runColumnStats(context, sheet, call)

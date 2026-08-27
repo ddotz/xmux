@@ -125,6 +125,16 @@ describe("the analysis-only prompt variant", () => {
     expect(full.length - readOnly.length).toBeGreaterThan(3_000)
     expect(readOnly.length).toBeLessThanOrEqual(SYSTEM_PROMPT_CHARS)
   })
+
+  it("teaches an analysis example, not the write episode", () => {
+    // The full example's build episode (fill_formula, create_sheet, add_pivot) taught the
+    // exact calls a read-only turn refuses, at ~2,000 characters on every request.
+    expect(readOnly).toContain("## 예시")
+    expect(readOnly).toContain('"tool":"read_range"')
+    expect(readOnly).not.toContain("fill_formula")
+    expect(readOnly).not.toContain("add_pivot")
+    expect(full).toContain("fill_formula")
+  })
 })
 
 describe("what the instructions cost", () => {
