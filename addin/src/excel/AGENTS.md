@@ -2,12 +2,14 @@
 
 ## OVERVIEW
 
-Turns formula reference tokens into real sheet rectangles, reads them, carries out the assistant's tool calls, and remembers what was overwritten. 21 sources, 103 exports, 16 test files.
+Turns formula reference tokens into real sheet rectangles, reads them, carries out the assistant's tool calls, and remembers what was overwritten. Also holds the pane's single seam to its host. 23 sources, 17 test files.
 
 ## MODULES
 
 | File | Exports | Owns |
 |---|---|---|
+| `host.ts` | — | **The port.** `ExcelHost` (`run`/`isSetSupported`/`classify`/`workbookUrl`) plus `HostContext`/`HostRange`/`HostSheet` in this project's own types. Read this file before writing a second adapter: the member list, the enum vocabulary, and the five-clause load/sync protocol are the whole obligation — plus the `/xmux/*` local-service features that are *not* behind it. |
+| `host-office.ts` | 2 | The only runtime Office.js implementation of that port, and the only module that may touch `Excel`/`Office`/`OfficeExtension` at runtime. Thin forwards, one structural cast, no pane logic. |
 | `address.ts` | 11 | `GridArea` + all A1 arithmetic. Pure, no Office types. |
 | `resolve.ts` | 5 | `RefToken` → `Resolved` (`range` \| `unavailable`). Batches loads, one `sync`. |
 | `summarise.ts` | 4 | Per-range COUNTA/SUM/AVERAGE → `ReferenceSummary[]`. |
@@ -15,7 +17,7 @@ Turns formula reference tokens into real sheet rectangles, reads them, carries o
 | `sheets.ts` | 4 | `listSheets` (2 round trips) + `readWindow` for the second viewport. |
 | `history.ts` | 9 | Pane-local undo/redo + `snapshot`/`recordWrite`/`restore`. |
 | `linked-workbooks.ts` | 8 | Runtime-gated list/refresh of linked workbooks. |
-| `office-shapes.ts` | 5 | The slice of Office.js the write side touches, as structural types. Method names match the real API exactly, including `range.format.borders.getItem`; a typo must become a type error instead of a runtime failure in the user's workbook. |
+| `office-shapes.ts` | — | The slice of Office.js the write side touches, as structural types, plus the enum vocabulary that crosses the port. Method names match the real API exactly, including `range.format.borders.getItem`; a typo must become a type error instead of a runtime failure in the user's workbook. `KeysFit` asserts prove the members exist on the installed typings, `WordsFit` asserts prove every enum word we send is one Office knows. |
 | `data-tools.ts` | 1 | Excel's own operations: duplicates, filters, tables, pivots, validation, names, visibility, sheet copy, protection, selection. Answers `null` for anything else so `operate.ts` keeps one entry point. |
 | `reasoning.ts` | 1 | Why a number is what it is: `explain_cell` (formula, what each reference holds, numbered steps — the pane's own scanner and summaries, asked from the chat side), `check_sum` (stated total vs the sum of its parts), `find_dependents` (what moves when this cell moves, found by parsing formulas so `SUM(B1:B9)` counts as depending on `B5`). |
 | `grid.ts` | 3 | The rectangle the model reads back: real row/column labels, visible `·` blanks, escaped tabs/newlines, `formulaAddresses`, plus bounded sparse `renderDisplayDetails` entries carrying actual address + displayed text + number format when those differ from the raw value. |
@@ -34,8 +36,10 @@ Tests: 16 files. `sheets.ts` and `summarise.ts` have none of their own; summaris
 
 ## EXCEL API BOUNDARY
 
-- **No file here calls `Excel.run`.** Only `taskpane/main.ts` does, and it hands the context in.
-- Only `sheets.ts` names the global `Excel` namespace (`Excel.RequestContext`, `Excel.SheetVisibility`). Every other impure module declares its own minimal structural context type (`ResolveContext`, `SummariseContext<Range>`, `UndoContext`, `LinkedWorkbookRuntime`), which is why the tests need no Office mock.
+- **`Excel.run` is called in `host-office.ts` and nowhere else** — not here, not in `taskpane/main.ts`, which drives the workbook through the `ExcelHost` port and holds no Office global.
+- **Exactly two files may name `Excel`/`Office`/`OfficeExtension` at all**, type positions included: `host-office.ts` (the runtime adapter) and `office-shapes.ts` (the type parity checks). `host.test.ts` scans every other source file and fails on a single mention. One stray `Excel.run` in a feature module silently re-couples the pane to WEF and nothing else would catch it.
+- Every impure module still declares its own minimal structural context type (`ResolveContext`, `SummariseContext<Range>`, `UndoContext`, `LinkedWorkbookRuntime`) and takes it as an argument — which is why no test mocks an Office global, and why `HostContext` is the *sum* of those shapes rather than their intersection (intersecting them produced competing overloads that resolved to the wrong one).
+- A member the pane only writes carries the words the pane sends (`autoFill(type: FillType)`); a member it reads back carries Office's whole set (`calculationMode: CalculationMode`). Adding a word means adding it to the union in `office-shapes.ts`, where the parity assert checks it against Office.
 - Pure: `address.ts`, `history.ts`'s `createHistory` (arithmetic + in-memory array). Impure (needs a context + `sync`): `resolve.ts`, `summarise.ts`, `summaries.ts`, `sheets.ts`, `linked-workbooks.ts`, and history's `snapshot`/`recordWrite`/`restore`.
 - Values mostly stay in Excel: `workbook.functions` computes totals host-side, so 10k cells cost the same as 10.
 - Write/copy/fill operations derive one canonical local rectangle first; mutation, circular-reference checks, snapshots, undo and reports all use that exact rectangle. Multi-sync failures must return a changed/partial result whenever an earlier phase committed.

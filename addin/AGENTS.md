@@ -4,12 +4,18 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 
 ## LAYERS
 
-- `taskpane/main.ts` is the **only** module calling `Excel.run` (9 sites), `Office.onReady`,
-  `Office.HostType`, `Office.context.requirements`. Everything else gets a context or a runner.
+- `excel/host-office.ts` is the **only** module calling `Excel.run`, `Office.onReady`,
+  `Office.HostType`, `Office.context.requirements` — and, with `excel/office-shapes.ts`, one
+  of only two files allowed to name `Excel`/`Office`/`OfficeExtension` in any position.
+  `excel/host.test.ts` scans every other source file and fails on a single mention.
+- `taskpane/main.ts` drives the workbook through the `ExcelHost` port and holds no Office
+  global. Everything else gets a context or a runner, exactly as before.
 - `excel/*.ts` never calls `Excel.run`. `resolve.ts` / `summarise.ts` / `summaries.ts` take
   structural param types (`AddressRange`, `SummaryRange`) and generics
-  (`summariseReferences<Range extends SummaryRange>`), so tests pass plain objects. Only
-  `sheets.ts` names `Excel.RequestContext` / `Excel.SheetVisibility` in a signature.
+  (`summariseReferences<Range extends SummaryRange>`), so tests pass plain objects.
+- `excel/host.ts` states the sum of those shapes as this project's own types: members, the
+  enum vocabulary that crosses the boundary, and the load/sync protocol. It is what a second
+  host implements — read it before adding one.
 - `taskpane/view.ts` and `taskpane/sheet.ts` are pure DOM renderers: state in, nodes out, zero
   Excel I/O. `viewport.ts` and `chatting.ts` take `run: (work: (context) => …)` as a dependency.
 - `formula/*` is text-only; `excel/address.ts` and `excel/history.ts` name no Office type at all.

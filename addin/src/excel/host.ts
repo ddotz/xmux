@@ -1,5 +1,14 @@
 import type { LinkedWorkbookContext } from "./linked-workbooks"
-import type { InspectRange, InspectSheet, OperateRange, OperateSheet } from "./office-shapes"
+import type {
+  CalculationKind,
+  CalculationMode,
+  FillType,
+  InspectRange,
+  InspectSheet,
+  OperateRange,
+  OperateSheet,
+  SheetVisibility,
+} from "./office-shapes"
 
 /**
  * The pane's single seam to whatever is hosting it.
@@ -23,6 +32,48 @@ import type { InspectRange, InspectSheet, OperateRange, OperateSheet } from "./o
  */
 
 /**
+ * The protocol — the half of the contract the member list cannot show.
+ *
+ * These types describe a *deferred* object graph, not a synchronous API, and a host that
+ * implements the members with immediate reads will typecheck and then return empty strings
+ * at runtime. Anything implementing `HostContext` owes all five of these:
+ *
+ * 1. **Accessors return immediately and read nothing.** `getRange`, `getItem`,
+ *    `getSelectedRange`, `functions.sum` and friends hand back a handle in the same tick.
+ *    They may not await, and they may not have talked to the workbook yet.
+ * 2. **`load(properties)` declares intent.** The string is a comma-separated property list
+ *    with `/` for nesting (`"address, worksheet/name"`, `"items/name, items/visibility"`).
+ *    Reading a property that was never loaded is the caller's bug, not the host's; the pane
+ *    loads exactly what it reads.
+ * 3. **`sync()` is the only point where values become real.** Every handle created and
+ *    every `load` and every write since the previous `sync` resolves in one round trip, in
+ *    issue order. After it returns, the loaded properties hold values; before it, they hold
+ *    nothing. Writes (`formulas = ...`, `insert`, `clear`) are queued the same way and are
+ *    not visible to a later read until a `sync` between them — which is why the write path
+ *    syncs before it re-reads to verify.
+ * 4. **`run` owns the batch boundary.** One call, one batch: the handles a `run` created do
+ *    not survive it, and the host releases them when the callback settles. A rejection
+ *    propagates unchanged so `classify` can name it.
+ * 5. **Failures arrive as the host's own errors**, never as `undefined` values. The pane
+ *    decides what to show from `classify`, so a host that swallows a refusal into an empty
+ *    read turns "Excel is in cell-edit mode" into "the cell is blank".
+ *
+ * `excel/eval-context.ts` is a reference implementation of the *read* half of this protocol
+ * (`InspectContext`, plus enough of the write path for the fill tests) over in-memory
+ * fixtures, where `sync` is nearly a no-op because nothing is remote. A host with a real
+ * boundary — an in-process COM bridge behind WebView2 — has to supply the deferral itself:
+ * queue the accessors and loads, resolve them on `sync`, and only then populate the handles.
+ * That work is the actual cost of a second adapter, and it is not visible in the member
+ * list below.
+ *
+ * What is *not* behind this port, and is owed separately: the pane also talks to its local
+ * service over HTTP for two features — `/xmux/external` (`external-workbook.ts`, reading a
+ * saved workbook a formula points at) and `/xmux/state` (`companion.ts`, the macOS F2/Tab
+ * tracker). A channel that deletes the local service, as an XLL serving assets from a
+ * virtual host mapping would, deletes both unless it re-implements them.
+ */
+
+/**
  * Members both sides name with different element types. Intersecting them would produce
  * competing call signatures, and TypeScript resolves such a call to the *first* one — which
  * is how `getUsedRangeOrNullObject(true)` ends up rejected and a sheet's range comes back as
@@ -39,14 +90,14 @@ export type HostRange = Omit<InspectRange, RangeCollisions> &
     readonly getCell: (row: number, column: number) => HostRange
     readonly worksheet: HostSheet
     readonly getUsedRangeOrNullObject: (valuesOnly?: boolean) => HostRange
-    readonly autoFill: (destination: HostRange, type: string) => void
+    readonly autoFill: (destination: HostRange, type: FillType) => void
   }
 
 /** A worksheet, with the members the command layer and the sheet list both need. */
 export type HostSheet = Omit<InspectSheet, SheetCollisions> &
   Omit<OperateSheet, SheetCollisions> & {
     readonly id: string
-    readonly visibility: string
+    readonly visibility: SheetVisibility
     readonly getRange: (address: string) => HostRange
     readonly getUsedRangeOrNullObject: (valuesOnly?: boolean) => HostRange
     readonly getCell: (row: number, column: number) => HostRange
@@ -129,8 +180,8 @@ export type HostContext = LinkedWorkbookContext & {
       }
     }
     readonly application: {
-      calculationMode: string
-      calculate: (type: string) => void
+      calculationMode: CalculationMode
+      calculate: (type: CalculationKind) => void
       readonly load: (properties: string) => void
     }
     /**

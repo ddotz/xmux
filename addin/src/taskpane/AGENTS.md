@@ -7,8 +7,8 @@ The pane UI: 37 modules, 156 exports, 30 test files, one Excel-touching file (`m
 ## CLUSTERS
 
 **shell**: bootstrap + chrome.
-- `main.ts` (414 LOC, 9 `Excel.run` sites): the ONLY file calling `Excel.run` / `Office.*`. Owns `pane: PaneState`, `badge`, `lastKey`, `sheetTabScroll`; builds `chatting`/`tabs`/`viewport`/`commands`/`selectionEvents`/`undoControls` and hands each a `run: (work) => guarded(() => Excel.run(work))`. Every module below receives Excel access as an injected dep, never imports it.
-- `guarded()` swallows `invalidOperationInCellEditMode` into a badge and keeps the last render. `draw()` is the single redraw; `show()` (from `undo-controls.ts` `createStatusPresenter`) is the single state setter.
+- `main.ts` (419 LOC): the pane entry point, and it holds **no Office global at all** — `startOfficeHost` hands it an `ExcelHost` at handshake time and every workbook call goes through that port (`excel/host.ts`). Owns `pane: PaneState`, `badge`, `lastKey`, `sheetTabScroll`; builds `chatting`/`tabs`/`viewport`/`commands`/`selectionEvents`/`undoControls` and hands each a `run: (work) => guarded(() => host.run(work))`. The host is read at call time, not captured: the controls are constructed while the module evaluates, which is before the handshake.
+- `guarded()` asks `host.classify(error)` and swallows a `cellEditMode` failure into a badge, keeping the last render — the pane never names an Office error class itself, because a second host reports the same condition its own way. `draw()` is the single redraw; `show()` (from `undo-controls.ts` `createStatusPresenter`) is the single state setter.
 - `markdown.ts` parses CommonMark/GFM to an AST and builds an allowlisted DOM tree with `createElement`/text nodes only. Raw HTML and images never execute or fetch. HTTP(S) links are privacy-hardened; reported `Sheet!A1:B9` and bare A1 ranges navigate through `main.ts`'s guarded command path even when the mirrored cell is a value or blank.
 - `pane-elements.ts` `findPaneNodes` throws if `#pane-root`/`#cell-address`/`#status-badge`/`#undo`/`#linked-workbooks-root` are missing from `index.html`.
 - `tabs.ts` sheet|chat switch, also `mustFind`s markup ids; `undo-controls.ts` one button that flips to "다시 실행" for 5s after a write; `commands.ts` reference rewrite/jump/copy/undo/redo against an *abstract* `CommandContext`, not `Excel.RequestContext`; `horizontal-drag.ts` pointer-scroll rail; `linked-workbooks-control.ts` `<details>` rendered only when links exist.
@@ -50,7 +50,7 @@ DOM-only: everything else except `main.ts`, `viewport.ts`, `chat-workbook.ts`, `
 
 ## ANTI-PATTERNS
 
-- Never call `Excel.run` outside `main.ts`. Take `run` as a dep so the module stays testable under `environment: node`.
+- Never name `Excel`/`Office` here at all, type positions included — `excel/host.test.ts` scans this directory and fails on one mention. Take `run` as a dep so the module stays testable under `environment: node`.
 - Never keep drag state in a render closure. Selecting a cell rebuilds the grid; `grid-input.ts` keeps `pressed`/`edgeTimer` at module scope and resolves the hovered cell by `elementFromPoint` + `data-row`/`data-column`. Same reason `sheet.ts` puts coordinates on attributes.
 - Never open the editor on mousedown (`viewport.ts` `onDown`): a press that becomes a drag is a range selection. The decision happens in `onDragEnd`.
 - Never drop `event.preventDefault()` on cell mousedown, and never let `sheet.ts` `editorNode` commit on a blur that had no prior focus. Both stem from the pane not owning keyboard focus.

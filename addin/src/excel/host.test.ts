@@ -84,4 +84,48 @@ describe("Excel host port", () => {
     expect(shapes).toContain("KeysFit<OperateRange, Excel.Range>")
     expect(shapes).toContain("KeysFit<OperateSheet, Excel.Worksheet>")
   })
+
+  it("proves the enum words the port sends, not just the member names it calls", () => {
+    // Given: `KeysFit` only proves a member exists. Office's enums are strings, so a port
+    // that types them as `string` says nothing about what a host must accept — a second
+    // adapter would have to grep operate.ts to learn that a fill is "FillDefault". The
+    // vocabulary is named and each word checked against the installed Office enum.
+    const shapes = readFileSync(`${sourceRoot}/excel/office-shapes.ts`, "utf8")
+    const proven: readonly (readonly [string, string])[] = [
+      ["InsertShift", "Excel.InsertShiftDirection"],
+      ["DeleteShift", "Excel.DeleteShiftDirection"],
+      ["ClearApplyTo", "Excel.ClearApplyTo"],
+      ["FillType", "Excel.AutoFillType"],
+      ["CopyType", "Excel.RangeCopyType"],
+      ["BorderEdge", "Excel.BorderIndex"],
+      ["CalculationMode", "Excel.CalculationMode"],
+      ["SheetVisibility", "Excel.SheetVisibility"],
+    ]
+    // Then: every one is still asserted against the Office enum it claims to match. These
+    // are unreferenced type exports — deleting one costs nothing at build time and silently
+    // drops the proof, which is the kind of loss that resurfaces as a rejected write in
+    // someone's workbook.
+    const unproven = proven.filter(
+      ([ours, theirs]) => !new RegExp(`WordsFit<${ours},\\s*\`\\$\\{${theirs}\\}\``).test(shapes),
+    )
+    expect(unproven).toEqual([])
+    // And: the port carries those names rather than bare strings.
+    const port = readFileSync(`${sourceRoot}/excel/host.ts`, "utf8")
+    expect(port).toContain("autoFill: (destination: HostRange, type: FillType)")
+    expect(port).toContain("visibility: SheetVisibility")
+  })
+
+  it("states the load/sync protocol a second host has to implement", () => {
+    // Given: the member list is only half the contract. `HostContext` is a deferred object
+    // graph — accessors return handles, `load` declares intent, `sync` is where values
+    // arrive. A host that implements the members with immediate reads typechecks and then
+    // returns nothing at runtime, and no type can catch that.
+    const port = readFileSync(`${sourceRoot}/excel/host.ts`, "utf8")
+    expect(port).toContain("Accessors return immediately and read nothing")
+    expect(port).toContain("`sync()` is the only point where values become real")
+    // Then: so is the surface that is *not* behind the port. A channel that drops the local
+    // service drops these two features with it, and that cost belongs next to the contract.
+    expect(port).toContain("/xmux/external")
+    expect(port).toContain("/xmux/state")
+  })
 })
