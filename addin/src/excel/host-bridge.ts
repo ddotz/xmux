@@ -1,4 +1,25 @@
-import type { OperateContext } from "./office-shapes"
+import type {
+  BorderEdge,
+  BorderStyle,
+  CalculationKind,
+  CalculationMode,
+  ChartKind,
+  ClearApplyTo,
+  ConditionalFormatKind,
+  CopyType,
+  DeleteShift,
+  FillType,
+  HorizontalAlignment,
+  InsertShift,
+  OperateContext,
+  OperateRange,
+  OperateSheet,
+  PageOrientation,
+  PaperSize,
+  SeriesBy,
+  SheetPosition,
+  SummarizeBy,
+} from "./office-shapes"
 
 /**
  * The wire between the pane and a host that is not Office.js.
@@ -170,18 +191,18 @@ export const buildBridgeContext = (send: BridgeSend) => {
     },
     get text(): readonly (readonly string[])[] {
       const value = read(id, label, "text")
-      return Array.isArray(value) ? (value as readonly (readonly string[])[]) : []
+      return Array.isArray(value) ? value : []
     },
     get formulas(): unknown[][] {
       const value = read(id, label, "formulas")
-      return Array.isArray(value) ? (value as unknown[][]) : []
+      return Array.isArray(value) ? value : []
     },
     set formulas(value: unknown[][]) {
       set(id, "formulas", value)
     },
     get numberFormat(): unknown[][] {
       const value = read(id, label, "numberFormat")
-      return Array.isArray(value) ? (value as unknown[][]) : []
+      return Array.isArray(value) ? value : []
     },
     set numberFormat(value: unknown[][]) {
       set(id, "numberFormat", value)
@@ -194,11 +215,155 @@ export const buildBridgeContext = (send: BridgeSend) => {
       const value = read(id, label, "columnCount")
       return typeof value === "number" ? value : 0
     },
-    insert: (shift: string) => call(id, "insert", [shift]),
-    delete: (shift: string) => call(id, "delete", [shift]),
-    clear: (applyTo?: string) => call(id, "clear", [applyTo ?? "All"]),
-    autoFill: (destination: { readonly handle: number }, type: string) =>
-      call(id, "autoFill", [{ handle: destination.handle }, type]),
+    get cellCount(): number {
+      const value = read(id, label, "cellCount")
+      return typeof value === "number" ? value : 0
+    },
+    get rowHidden(): boolean {
+      return read(id, label, "rowHidden") === true
+    },
+    set rowHidden(value: boolean) {
+      set(id, "rowHidden", value)
+    },
+    get columnHidden(): boolean {
+      return read(id, label, "columnHidden") === true
+    },
+    set columnHidden(value: boolean) {
+      set(id, "columnHidden", value)
+    },
+    format: {
+      fill: {
+        set color(value: string) {
+          set(id, "format.fill.color", value)
+        },
+      },
+      font: {
+        set bold(value: boolean) {
+          set(id, "format.font.bold", value)
+        },
+        set italic(value: boolean) {
+          set(id, "format.font.italic", value)
+        },
+        set color(value: string) {
+          set(id, "format.font.color", value)
+        },
+      },
+      set horizontalAlignment(value: HorizontalAlignment) {
+        set(id, "format.horizontalAlignment", value)
+      },
+      set columnWidth(value: number) {
+        set(id, "format.columnWidth", value)
+      },
+      set rowHeight(value: number) {
+        set(id, "format.rowHeight", value)
+      },
+      set wrapText(value: boolean) {
+        set(id, "format.wrapText", value)
+      },
+      autofitColumns: () => call(id, "format.autofitColumns", []),
+      autofitRows: () => call(id, "format.autofitRows", []),
+      borders: {
+        getItem: (index: BorderEdge) => ({
+          set style(value: BorderStyle) {
+            set(id, `format.borders.${index}.style`, value)
+          },
+          set color(value: string) {
+            set(id, `format.borders.${index}.color`, value)
+          },
+        }),
+      },
+    },
+    getColumn: (index: number) => range(call(id, "getColumn", [index]), `${label} column ${index}`),
+    getRow: (index: number) => range(call(id, "getRow", [index]), `${label} row ${index}`),
+    getResizedRange: (rows: number, columns: number) =>
+      range(call(id, "getResizedRange", [rows, columns]), `${label} resized range`),
+    getUsedRangeOrNullObject: (valuesOnly?: boolean) =>
+      range(call(id, "getUsedRange", [valuesOnly ?? false]), `${label} used range`),
+    insert: (shift: InsertShift) => call(id, "insert", [shift]),
+    delete: (shift: DeleteShift) => call(id, "delete", [shift]),
+    clear: (applyTo?: ClearApplyTo) => call(id, "clear", [applyTo]),
+    select: () => call(id, "select", []),
+    sort: {
+      apply: (fields: readonly unknown[], matchCase: boolean, hasHeaders: boolean) =>
+        call(id, "sort", [fields, matchCase, hasHeaders]),
+    },
+    merge: (across?: boolean) => call(id, "merge", [across]),
+    unmerge: () => call(id, "unmerge", []),
+    autoFill: (destination: OperateRange, type: FillType) =>
+      call(id, "autoFill", [{ handle: Reflect.get(destination, "handle") }, type]),
+    copyFrom: (
+      source: OperateRange,
+      copyType?: CopyType,
+      skipBlanks?: boolean,
+      transpose?: boolean,
+    ) =>
+      call(id, "copyFrom", [
+        { handle: Reflect.get(source, "handle") },
+        copyType,
+        skipBlanks,
+        transpose,
+      ]),
+    moveTo: (destination: OperateRange) =>
+      call(id, "moveTo", [{ handle: Reflect.get(destination, "handle") }]),
+    removeDuplicates: (columns: number[], includesHeader: boolean) => {
+      const duplicates = call(id, "removeDuplicates", [columns, includesHeader])
+      return {
+        load: (properties: string) => request(duplicates, properties),
+        get removed(): number {
+          const value = read(duplicates, "removeDuplicates", "removed")
+          return typeof value === "number" ? value : 0
+        },
+        get uniqueRemaining(): number {
+          const value = read(duplicates, "removeDuplicates", "uniqueRemaining")
+          return typeof value === "number" ? value : 0
+        },
+      }
+    },
+    dataValidation: {
+      set rule(value: unknown) {
+        set(id, "dataValidation.rule", value)
+      },
+      clear: () => call(id, "dataValidation.clear", []),
+    },
+    conditionalFormats: {
+      add: (type: ConditionalFormatKind) => {
+        const conditionalFormat = call(id, "conditionalFormats.add", [type])
+        return {
+          cellValue: {
+            format: {
+              fill: {
+                set color(value: string) {
+                  set(conditionalFormat, "cellValue.format.fill.color", value)
+                },
+              },
+              font: {
+                set color(value: string) {
+                  set(conditionalFormat, "cellValue.format.font.color", value)
+                },
+              },
+            },
+            set rule(value: unknown) {
+              set(conditionalFormat, "cellValue.rule", value)
+            },
+          },
+          colorScale: {
+            set criteria(value: unknown) {
+              set(conditionalFormat, "colorScale.criteria", value)
+            },
+          },
+          dataBar: {},
+        }
+      },
+    },
+    replaceAll: (find: string, replacement: string, criteria: unknown) => {
+      const replacementCount = call(id, "replaceAll", [find, replacement, criteria])
+      return {
+        get value(): number {
+          const value = read(replacementCount, "replaceAll", "value")
+          return typeof value === "number" ? value : 0
+        },
+      }
+    },
     /** Not part of any consumer contract: how a range is named as an argument on the wire. */
     handle: id,
   })
@@ -219,6 +384,130 @@ export const buildBridgeContext = (send: BridgeSend) => {
     getRange: (address: string) => range(call(id, "getRange", [address]), `${label}!${address}`),
     getUsedRangeOrNullObject: (valuesOnly?: boolean) =>
       range(call(id, "getUsedRange", [valuesOnly ?? false]), `${label} used range`),
+    activate: () => call(id, "activate", []),
+    copy: (positionType: SheetPosition, relativeTo?: OperateSheet) =>
+      sheet(
+        call(id, "copy", [
+          positionType,
+          relativeTo === undefined ? undefined : { handle: Reflect.get(relativeTo, "handle") },
+        ]),
+        `${label} copy`,
+      ),
+    freezePanes: {
+      freezeRows: (count: number) => call(id, "freezePanes.freezeRows", [count]),
+      freezeColumns: (count: number) => call(id, "freezePanes.freezeColumns", [count]),
+    },
+    charts: {
+      add: (type: ChartKind, source: OperateRange, seriesBy?: SeriesBy) => {
+        const chart = call(id, "charts.add", [
+          type,
+          { handle: Reflect.get(source, "handle") },
+          seriesBy,
+        ])
+        return {
+          title: {
+            set text(value: string) {
+              set(chart, "title.text", value)
+            },
+          },
+        }
+      },
+    },
+    tables: {
+      add: (address: string, hasHeaders: boolean) => {
+        const table = call(id, "tables.add", [address, hasHeaders])
+        return {
+          set name(value: string) {
+            set(table, "name", value)
+          },
+          set style(value: string) {
+            set(table, "style", value)
+          },
+        }
+      },
+    },
+    pivotTables: {
+      add: (name: string, source: OperateRange, destination: OperateRange) => {
+        const pivot = call(id, "pivotTables.add", [
+          name,
+          { handle: Reflect.get(source, "handle") },
+          { handle: Reflect.get(destination, "handle") },
+        ])
+        const hierarchy = (collection: string) => ({
+          add: (item: unknown) => call(pivot, collection, [item]),
+        })
+        return {
+          hierarchies: {
+            getItem: (name: string) => ({ handle: call(pivot, "hierarchies.getItem", [name]) }),
+          },
+          rowHierarchies: hierarchy("rowHierarchies.add"),
+          columnHierarchies: hierarchy("columnHierarchies.add"),
+          dataHierarchies: {
+            add: (item: unknown) => {
+              const dataHierarchy = call(pivot, "dataHierarchies.add", [item])
+              return {
+                set summarizeBy(value: SummarizeBy) {
+                  set(dataHierarchy, "summarizeBy", value)
+                },
+                get showAs(): { calculation: string; baseField: unknown; baseItem: unknown } {
+                  const value = read(dataHierarchy, "dataHierarchy", "showAs")
+                  if (typeof value !== "object" || value === null || Array.isArray(value))
+                    throw new BridgeError("dataHierarchy: showAs response is invalid")
+                  const calculation = Reflect.get(value, "calculation")
+                  const baseField = Reflect.get(value, "baseField")
+                  const baseItem = Reflect.get(value, "baseItem")
+                  if (typeof calculation !== "string")
+                    throw new BridgeError("dataHierarchy: showAs response is invalid")
+                  return { calculation, baseField, baseItem }
+                },
+                set showAs(value: { calculation: string; baseField: unknown; baseItem: unknown }) {
+                  set(dataHierarchy, "showAs", value)
+                },
+              }
+            },
+          },
+        }
+      },
+    },
+    autoFilter: {
+      apply: (range: OperateRange, columnIndex?: number, criteria?: unknown) =>
+        call(id, "autoFilter.apply", [
+          { handle: Reflect.get(range, "handle") },
+          columnIndex,
+          criteria,
+        ]),
+      clearCriteria: () => call(id, "autoFilter.clearCriteria", []),
+      remove: () => call(id, "autoFilter.remove", []),
+    },
+    protection: {
+      protect: () => call(id, "protection.protect", []),
+      unprotect: () => call(id, "protection.unprotect", []),
+    },
+    pageLayout: {
+      set orientation(value: PageOrientation) {
+        set(id, "pageLayout.orientation", value)
+      },
+      set paperSize(value: PaperSize) {
+        set(id, "pageLayout.paperSize", value)
+      },
+      set printGridlines(value: boolean) {
+        set(id, "pageLayout.printGridlines", value)
+      },
+      set centerHorizontally(value: boolean) {
+        set(id, "pageLayout.centerHorizontally", value)
+      },
+      zoom: {
+        set horizontalFitToPages(value: number) {
+          set(id, "pageLayout.zoom.horizontalFitToPages", value)
+        },
+        set verticalFitToPages(value: number) {
+          set(id, "pageLayout.zoom.verticalFitToPages", value)
+        },
+      },
+      setPrintTitleRows: (rows: string) => call(id, "pageLayout.setPrintTitleRows", [rows]),
+    },
+    delete: () => call(id, "delete", []),
+    handle: id,
   })
 
   const result = (id: number, label: string) => ({
@@ -263,16 +552,47 @@ export const buildBridgeContext = (send: BridgeSend) => {
         getItemOrNullObject: (name: string) => ({
           getRangeOrNullObject: () => range(call(WORKBOOK, "getNameRange", [name]), `name ${name}`),
         }),
+        add: (name: string, reference: OperateRange) =>
+          call(WORKBOOK, "names.add", [name, { handle: Reflect.get(reference, "handle") }]),
       },
       tables: {
-        getItemOrNullObject: (table: string) => ({
-          getRange: () => range(call(WORKBOOK, "getTableRange", [table]), `table ${table}`),
-        }),
+        getItemOrNullObject: (name: string) => {
+          const table = call(WORKBOOK, "getTableRange", [name])
+          return {
+            get isNullObject(): boolean {
+              return read(table, `table ${name}`, "isNullObject") === true
+            },
+            get name(): string {
+              const value = read(table, `table ${name}`, "name")
+              return typeof value === "string" ? value : ""
+            },
+            load: (properties: string) => request(table, properties),
+            getRange: () => range(table, `table ${name}`),
+            getDataBodyRange: () =>
+              range(call(table, "getDataBodyRange", []), `table ${name} data body`),
+            columns: {
+              add: (index?: number, values?: unknown, columnName?: string) => {
+                const column = call(table, "columns.add", [index, values, columnName])
+                return {
+                  getDataBodyRange: () =>
+                    range(call(column, "getDataBodyRange", []), `table ${name} column`),
+                }
+              },
+            },
+          }
+        },
       },
       functions: {
         countA: functionOn("COUNTA"),
         sum: functionOn("SUM"),
         average: functionOn("AVERAGE"),
+      },
+      application: {
+        set calculationMode(value: CalculationMode) {
+          set(WORKBOOK, "application.calculationMode", value)
+        },
+        calculate: (type: CalculationKind) => call(WORKBOOK, "application.calculate", [type]),
+        load: (properties: string) => request(WORKBOOK, `application/${properties}`),
       },
       getSelectedRange: () => range(call(WORKBOOK, "getSelectedRange", []), "selection"),
     },
@@ -288,7 +608,7 @@ export const buildBridgeContext = (send: BridgeSend) => {
   }
 
   return {
-    context: context as typeof context & OperateContext,
+    context: context satisfies OperateContext,
     transcript,
     close: (): void => {
       closed = true

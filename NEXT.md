@@ -32,7 +32,9 @@ today.
 
 - **The wire.** `host-bridge.ts` + `bridge-memory.ts`: accessors, property assignments and
   loads become a generic op list, one batch per `sync`, and the response is the only source
-  a read has. Fourteen dispatch members plus `load`, fixed by transcript assertions.
+  a read has. Two op kinds; nested writes are dotted `set` paths. The façade satisfies the
+  whole of `OperateContext` **by assignability, not by cast** — a cast there once made an
+  absent surface look present, and a tool that hit it died on `undefined` naming nothing.
 - **Both paths run over it.** `resolveReferences`, `summariseReferences`, `listSheets` and
   `readWindow` for reads; the real `runWrite` with a real history for `write_range`,
   `clear_range`, `insert_rows`, `delete_range`, `fill_formula` and `create_sheet`.
@@ -45,9 +47,14 @@ today.
 
 ## Next on this branch
 
-1. **The rest of the write surface.** `operate.ts`'s formatting, sort, filter, table and
-   pivot tools are not on the dispatch table yet; the six covered tools fixed every wire
-   shape, so the rest is enumeration.
+1. **The rest of the dispatch table.** Seventeen members are implemented in
+   `bridge-memory.ts`; the remainder — `sort`, `merge`, `copyFrom`, `moveTo`, `select`,
+   `removeDuplicates`, `replaceAll`, `conditionalFormats`, `charts`, `tables`,
+   `pivotTables`, `autoFilter`, `protection`, `pageLayout`, `names.add`,
+   `application.calculate`, sheet `activate`/`copy`/`delete` — fail at `sync` with
+   `bridge: no dispatch for "…" — the host object still owes this member`. **That message
+   is the backlog**, and it is the same backlog the C# side has. Every wire *shape* is
+   already fixed, so each remaining member is one dispatch entry and one transcript.
 2. **A host-object implementation of `HostServices`.** The port exists; nothing implements
    it except the HTTP adapter.
 

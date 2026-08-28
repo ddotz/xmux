@@ -115,6 +115,35 @@ describe("Excel host port", () => {
     expect(port).toContain("visibility: SheetVisibility")
   })
 
+  it("makes the bridge earn the write surface instead of asserting it", () => {
+    // Given: the façade once read `context as typeof context & OperateContext`. That cast
+    // typechecked while most of the write surface was simply absent, so an uncovered tool
+    // did not fail with a named missing member — it dereferenced undefined and died with a
+    // TypeError that named nothing. The existing cast guard did not catch it either, because
+    // it counts `as unknown as` and this was a plain `as`.
+    const bridgeFiles = [
+      `${sourceRoot}/excel/host-bridge.ts`,
+      `${sourceRoot}/excel/bridge-memory.ts`,
+    ]
+    const offenders: string[] = []
+    for (const path of bridgeFiles) {
+      const source = withoutComments(readFileSync(path, "utf8"))
+        .split("\n")
+        // `import { X as Y }` renames; it asserts nothing.
+        .filter((line) => !line.trimStart().startsWith("import ") && !line.includes("} from "))
+        .join("\n")
+      for (const assertion of [/\bas\s+unknown\s+as\b/, /\bas\s+[A-Z]/, /@ts-expect-error/]) {
+        const found = assertion.exec(source)
+        if (found !== null) offenders.push(`${path.slice(sourceRoot.length + 1)}: ${found[0]}`)
+      }
+    }
+    // Then: the wire holds the contract by assignability. A member it cannot honestly carry
+    // has to be missing loudly rather than present falsely.
+    expect(offenders).toEqual([])
+    const bridge = readFileSync(`${sourceRoot}/excel/host-bridge.ts`, "utf8")
+    expect(bridge).toContain("satisfies OperateContext")
+  })
+
   it("states the load/sync protocol a second host has to implement", () => {
     // Given: the member list is only half the contract. `HostContext` is a deferred object
     // graph — accessors return handles, `load` declares intent, `sync` is where values

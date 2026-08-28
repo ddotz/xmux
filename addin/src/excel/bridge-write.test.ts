@@ -117,6 +117,34 @@ describe("write tools over the bridge", () => {
     expect(range.numberFormat).toEqual([["0.00"]])
   })
 
+  it("writes nested formatting properties as dotted set paths", async () => {
+    const book = workbook()
+    const { bridge, message } = await run(book, {
+      tool: "format_range",
+      sheet: "Data",
+      address: "A1",
+      fill: "#FFFF00",
+    })
+
+    expect(message).toBe("Data!A1 서식을 바꿨습니다. (서식은 되돌리기에 포함되지 않습니다)")
+    expect(bridge.transcript.at(-1)).toEqual([
+      { op: "call", id: 6, on: 3, member: "set", args: ["format.fill.color", "#FFFF00"] },
+    ])
+  })
+
+  it("names an unimplemented dispatch member instead of dereferencing undefined", async () => {
+    const { message } = await run(workbook(), {
+      tool: "sort_range",
+      sheet: "Data",
+      address: "A1:B3",
+      column: 1,
+    })
+
+    expect(message).toContain(
+      'bridge: no dispatch for "sort" — the host object still owes this member',
+    )
+  })
+
   it("clears, inserts, deletes, fills, and creates through their dispatch members", async () => {
     const book = workbook()
     const cleared = await run(book, { tool: "clear_range", sheet: "Data", address: "A1" })
@@ -169,6 +197,7 @@ describe("write tools over the bridge", () => {
       "getItem",
       "getItemOrNullObject",
       "getRange",
+      "getUsedRange",
       "set",
       "worksheets",
     ])

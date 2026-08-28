@@ -280,8 +280,12 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
           writeArea(target, args[1])
         } else if (property === "numberFormat") {
           rangeProperties.set(rangeKey(target), args[1])
+        } else if (property.startsWith("format.")) {
+          rangeProperties.set(`${rangeKey(target)}:${property}`, args[1])
         } else {
-          throw new Error(`bridge: unknown set ${property}`)
+          throw new Error(
+            `bridge: no dispatch for "${property}" — the host object still owes this member`,
+          )
         }
         return target
       }
@@ -315,7 +319,9 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
         return target
       }
       default:
-        throw new Error(`bridge: unknown member ${member}`)
+        throw new Error(
+          `bridge: no dispatch for "${member}" — the host object still owes this member`,
+        )
     }
   }
 
