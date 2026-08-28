@@ -35,6 +35,10 @@ const initializeScript = readFileSync(
   new URL("../scripts/initialize-windows-local.ps1", import.meta.url),
   "utf8",
 )
+const catalogScript = readFileSync(
+  new URL("../scripts/catalog-windows-local.ps1", import.meta.url),
+  "utf8",
+)
 const serverScript = readFileSync(new URL("../scripts/local-server.mjs", import.meta.url), "utf8")
 const manifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 
@@ -713,12 +717,12 @@ describe("Windows package layout", () => {
     expect(packageScript).toContain("diagnose-wef-firstrun.ps1")
   })
 
-  it("ships the one-time initializer without a production SMB catalog", () => {
+  it("ships the one-time initializer and the opt-in catalog switcher", () => {
     expect(packageScript).toContain("initialize-windows-local.ps1")
     expect(packageScript).toContain('(Join-Path $scriptsRoot "initialize.ps1")')
     expect(installScript).toContain('(Join-Path $PSScriptRoot "initialize.ps1")')
-    expect(packageScript).not.toContain("catalog-windows-local.ps1")
-    expect(packageScript).not.toContain('(Join-Path $scriptsRoot "catalog.ps1")')
+    expect(packageScript).toContain("catalog-windows-local.ps1")
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "catalog.ps1")')
   })
 
   it("declares every parameter its launcher passes", () => {
@@ -816,16 +820,19 @@ describe("Office LTSC first-acquisition diagnostics", () => {
 })
 
 describe("Office LTSC first-acquisition mitigation", () => {
-  it("keeps the production installer on the proven current-user Developer path", () => {
-    // Given: the Trusted Catalog channel is unverified until the pilot has a verdict
-    // (WEF-ACQUISITION.md case 7). Until then it lives on windows/trusted-catalog-pilot
-    // and must not reach a user's machine through this package.
-    for (const script of [installScript, initializeScript, packageScript, uninstallScript]) {
-      expect(script).not.toContain("catalog.ps1")
-      expect(script).not.toContain("catalog-windows-local.ps1")
-      expect(script).not.toContain("New-SmbShare")
-      expect(script).not.toContain("-Verb RunAs")
-    }
+  it("keeps the default install on the proven current-user Developer path", () => {
+    // Given: the Trusted Catalog channel is unverified until the pilot verdict
+    // (WEF-ACQUISITION.md case 7), so a fresh install must still land on Developer +
+    // warmup. The catalog becomes active only after the explicit menu switch records
+    // Channel=trusted-catalog in the ownership registry.
+    expect(installScript).toContain('else { "developer" }')
+    const channelCheck = installScript.indexOf('if ($channel -eq "trusted-catalog") {')
+    const developerRegistration = installScript.indexOf("-Name $ManifestId", channelCheck)
+    expect(channelCheck).toBeGreaterThanOrEqual(0)
+    expect(developerRegistration).toBeGreaterThan(channelCheck)
+    // The warmup wizard itself stays a pure Developer-channel tool.
+    expect(initializeScript).not.toContain("TrustedCatalogs")
+    expect(initializeScript).not.toContain("-Verb RunAs")
   })
 
   it("always restores the developer registration after Office closes", () => {
@@ -895,5 +902,80 @@ describe("Office LTSC first-acquisition mitigation", () => {
     expect(menuScript.toString("utf8")).toContain("function Test-InvocationAccount")
     expect(menuScript.toString("utf8")).toContain("다른 계정의 HKCU에는 작업하지 않습니다")
     expect(menuScript.toString("utf8").match(/Test-InvocationAccount/g)?.length).toBeGreaterThan(5)
+  })
+})
+
+describe("Trusted Catalog channel (opt-in)", () => {
+  it("registers the catalog exactly as Office reads it", () => {
+    // Given: Office resolves a shared-folder catalog from TrustedCatalogs\{guid} with
+    // Id, Url, and Flags=1; a wrong shape fails silently as "no catalog".
+    expect(catalogScript).toContain(
+      "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\WEF\\TrustedCatalogs" +
+        "\\{AA4D5C22-4D88-45E0-B315-91581AC73B6E}",
+    )
+    expect(catalogScript).toContain('-Name "Id"')
+    expect(catalogScript).toContain('-Name "Url"')
+    const flags = catalogScript.indexOf('-Name "Flags"')
+    expect(flags).toBeGreaterThanOrEqual(0)
+    expect(catalogScript.slice(flags, flags + 200)).toContain("DWord")
+  })
+
+  it("confines elevation to SMB share management", () => {
+    // Given: TrustedCatalogs is plain HKCU. The only admin surface is `net share`, so
+    // every elevation in the switcher must wrap a net share call and nothing else.
+    const elevations = catalogScript.split("-Verb RunAs").length - 1
+    const netShareCalls = catalogScript.match(/net share \$CatalogShareName/g)?.length ?? 0
+    expect(elevations).toBeGreaterThan(0)
+    expect(netShareCalls).toBe(elevations)
+  })
+
+  it("switches channels without stranding both registrations", () => {
+    // Given: two active acquisition channels would double-list the add-in in Excel.
+    // When: switching to the catalog, the Developer value is dropped only when its data
+    // matches this install's recorded manifest path.
+    expect(catalogScript).toContain("Remove-OwnedDeveloperRegistration")
+    expect(catalogScript).toContain("$registeredManifestPath -eq $Ownership.ManifestPath")
+    // Then: use-developer restores the registration from the recorded install state and
+    // removes the catalog key it owns by GUID.
+    const useDeveloper = catalogScript.indexOf("function Use-DeveloperChannel")
+    expect(useDeveloper).toBeGreaterThanOrEqual(0)
+    expect(catalogScript.indexOf("-Value $ownership.ManifestPath", useDeveloper)).toBeGreaterThan(
+      useDeveloper,
+    )
+    expect(catalogScript.indexOf("$CatalogRegistryPath", useDeveloper)).toBeGreaterThan(
+      useDeveloper,
+    )
+  })
+
+  it("skips Developer registration and warmup when the catalog channel is recorded", () => {
+    // Given: F9 — the Developer warmup exists only because of the Developer channel's
+    // cold-profile failure; under the catalog channel it must not run at all.
+    expect(installScript).toContain("Office 첫 실행 초기화가 필요하지 않습니다")
+    // On update the installer refreshes the manifest copy inside the catalog instead.
+    expect(installScript).toContain("$ownership.CatalogManifestPath")
+  })
+
+  it("uninstalls its own catalog artifacts and guards the share deletion", () => {
+    expect(uninstallScript).toContain("{AA4D5C22-4D88-45E0-B315-91581AC73B6E}")
+    const guard = uninstallScript.indexOf("$ownership.CatalogShareCreated -eq 1")
+    const shareDelete = uninstallScript.indexOf("net share $CatalogShareName /delete")
+    expect(guard).toBeGreaterThanOrEqual(0)
+    expect(shareDelete).toBeGreaterThan(guard)
+  })
+
+  it("exposes the switch as an explicit experimental menu action", () => {
+    const menu = menuScript.toString("utf8")
+    expect(menu).toContain('$catalogScript = Join-Path $installRoot "catalog.ps1"')
+    expect(menu).toContain("추가 기능 채널 전환 (Trusted Catalog 실험)")
+    expect(menu).toContain("실험 채널이며 파일럿 검증 전입니다")
+    for (const command of ["use-unc", "use-local-share", "use-developer", "status"]) {
+      expect(menu).toContain(`& $catalogScript ${command}`)
+    }
+  })
+
+  it("ships the switcher with the Korean-safe encoding the menu relies on", () => {
+    const writer = packageScript.indexOf("catalog-windows-local.ps1")
+    expect(writer).toBeGreaterThanOrEqual(0)
+    expect(packageScript.slice(writer)).toContain("[Text.UTF8Encoding]::new($true)")
   })
 })

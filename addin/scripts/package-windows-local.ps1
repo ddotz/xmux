@@ -110,6 +110,12 @@ try {
         (Join-Path $scriptsRoot "initialize.ps1"),
         (($initialize -replace "`r`n", "`n") -replace "`n", "`r`n"),
         [Text.UTF8Encoding]::new($true))
+    $catalog = [IO.File]::ReadAllText(
+        (Join-Path $PSScriptRoot "catalog-windows-local.ps1"))
+    [IO.File]::WriteAllText(
+        (Join-Path $scriptsRoot "catalog.ps1"),
+        (($catalog -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($true))
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "install-windows-local.ps1") `
         -Destination (Join-Path $scriptsRoot "install.ps1")

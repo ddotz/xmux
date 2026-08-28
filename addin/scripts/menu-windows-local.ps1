@@ -29,6 +29,7 @@ $manageScript = Join-Path $PSScriptRoot "manage.ps1"
 $uninstallScript = Join-Path $PSScriptRoot "uninstall.ps1"
 $installRoot = Join-Path $env:LOCALAPPDATA "DdotExcel"
 $initializeScript = Join-Path $installRoot "initialize.ps1"
+$catalogScript = Join-Path $installRoot "catalog.ps1"
 
 # Files extracted from a downloaded ZIP carry the mark of the web, and PowerShell refuses
 # to dot-source or run them under some policies. Clearing it here beats a cryptic error.
@@ -92,6 +93,11 @@ function Show-Header {
         Write-Host "  이 패키지: $packageVersion"
     }
     Write-Host "  설치 위치: $installRoot"
+    $ownership = Get-ItemProperty -Path "HKCU:\Software\DdotExcel" `
+        -ErrorAction SilentlyContinue
+    if ($ownership.Channel -eq "trusted-catalog") {
+        Write-Host "  채널: Trusted Catalog (실험)" -ForegroundColor Yellow
+    }
     # Nothing renews the certificate in the background; running 1 again is the whole fix,
     # so the deadline belongs on the screen that offers it.
     if (Test-Path -LiteralPath $expiryPath -PathType Leaf) {
@@ -150,6 +156,7 @@ while ($true) {
     Write-Host "  3. 서비스 다시 시작"
     Write-Host "  4. 제거"
     Write-Host "  5. Office 첫 실행 초기화 다시 실행"
+    Write-Host "  6. 추가 기능 채널 전환 (Trusted Catalog 실험)"
     Write-Host "  0. 끝내기"
     Write-Host ""
     $choice = Read-Host "  번호를 입력하세요"
@@ -216,12 +223,66 @@ while ($true) {
                 & $initializeScript -InstallRoot $installRoot
             }
         }
+        "6" {
+            Invoke-Step "추가 기능 채널 전환 (Trusted Catalog 실험)" {
+                if (-not (Test-Path -LiteralPath $catalogScript -PathType Leaf)) {
+                    Write-Host "  먼저 1번 설치 / 업데이트를 실행하세요." -ForegroundColor Red
+                    return
+                }
+                while ($true) {
+                    Write-Host ""
+                    Write-Host "  실험 채널이며 파일럿 검증 전입니다." -ForegroundColor Yellow
+                    Write-Host "  1. 사내 공유(UNC)로 전환"
+                    Write-Host "  2. 이 PC에 로컬 공유 만들기 (관리자 승인 필요)"
+                    Write-Host "  3. Developer 채널로 복귀"
+                    Write-Host "  4. 채널 상태"
+                    Write-Host "  0. 뒤로"
+                    Write-Host ""
+                    $catalogChoice = Read-Host "  번호를 입력하세요"
+
+                    switch ($catalogChoice.Trim()) {
+                        "1" {
+                            $unc = Read-Host "  UNC 경로를 입력하세요"
+                            Invoke-Step "사내 공유(UNC)로 전환" {
+                                if (-not (Test-InvocationAccount)) { return }
+                                & $catalogScript use-unc -CatalogUrl $unc -InstallRoot $installRoot
+                            }
+                        }
+                        "2" {
+                            Invoke-Step "이 PC에 로컬 공유 만들기" {
+                                if (-not (Test-InvocationAccount)) { return }
+                                & $catalogScript use-local-share -InstallRoot $installRoot
+                            }
+                        }
+                        "3" {
+                            Invoke-Step "Developer 채널로 복귀" {
+                                if (-not (Test-InvocationAccount)) { return }
+                                & $catalogScript use-developer -InstallRoot $installRoot
+                            }
+                        }
+                        "4" {
+                            Invoke-Step "채널 상태" {
+                                if (-not (Test-InvocationAccount)) { return }
+                                & $catalogScript status -InstallRoot $installRoot
+                            }
+                        }
+                        "0" {
+                            return
+                        }
+                        default {
+                            Write-Host "  0부터 4 사이의 번호를 입력하세요." -ForegroundColor Yellow
+                            Start-Sleep -Seconds 1
+                        }
+                    }
+                }
+            }
+        }
         "0" {
             Write-Host ""
             exit 0
         }
         default {
-            Write-Host "  0부터 5 사이의 번호를 입력하세요." -ForegroundColor Yellow
+            Write-Host "  0부터 6 사이의 번호를 입력하세요." -ForegroundColor Yellow
             Start-Sleep -Seconds 1
         }
     }

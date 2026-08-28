@@ -14,6 +14,9 @@ $StartupApprovedRegistryPath =
     "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $LegacyCatalogRegistryPath =
     "HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{E16E7B92-0D8C-4E8A-94D4-D8267AF4A7D6}"
+$CatalogRegistryPath =
+    "HKCU:\SOFTWARE\Microsoft\Office\16.0\WEF\TrustedCatalogs\{AA4D5C22-4D88-45E0-B315-91581AC73B6E}"
+$CatalogShareName = "DdotExcelCatalog"
 
 if ($env:OS -ne "Windows_NT") {
     throw "This uninstaller must be run on Windows."
@@ -70,6 +73,34 @@ Remove-Item `
     -Recurse `
     -Force `
     -ErrorAction SilentlyContinue
+Remove-Item `
+    -LiteralPath $CatalogRegistryPath `
+    -Recurse `
+    -Force `
+    -ErrorAction SilentlyContinue
+
+if ($ownership.CatalogManifestPath) {
+    Remove-Item `
+        -LiteralPath $ownership.CatalogManifestPath `
+        -Force `
+        -ErrorAction SilentlyContinue
+}
+if ($ownership.CatalogShareCreated -eq 1) {
+    # Share removal is best-effort because an elevated session can be denied after uninstall.
+    try {
+        $shareProcess = Start-Process `
+            -FilePath "powershell.exe" `
+            -ArgumentList @("-NoProfile", "-Command", "net share $CatalogShareName /delete /y") `
+            -Verb RunAs `
+            -Wait `
+            -PassThru
+        if ($shareProcess.ExitCode -ne 0) {
+            throw "net share returned exit code $($shareProcess.ExitCode)."
+        }
+    } catch {
+        Write-Warning "공유 폴더를 제거하려면 관리자 권한이 필요합니다."
+    }
+}
 
 $thumbprint = $ownership.CertificateThumbprint
 if ($null -eq $thumbprint) {

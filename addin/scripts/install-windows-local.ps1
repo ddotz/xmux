@@ -18,6 +18,8 @@ $StartupApprovedRegistryPath =
     "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $LegacyCatalogRegistryPath =
     "HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{E16E7B92-0D8C-4E8A-94D4-D8267AF4A7D6}"
+$CatalogRegistryPath =
+    "HKCU:\SOFTWARE\Microsoft\Office\16.0\WEF\TrustedCatalogs\{AA4D5C22-4D88-45E0-B315-91581AC73B6E}"
 
 if ($env:OS -ne "Windows_NT") {
     throw "This installer must be run on Windows."
@@ -35,6 +37,7 @@ $requiredFiles = @(
     (Join-Path $packageRuntime "node.exe"),
     (Join-Path $PSScriptRoot "manage.ps1"),
     (Join-Path $PSScriptRoot "initialize.ps1"),
+    (Join-Path $PSScriptRoot "catalog.ps1"),
     (Join-Path $PSScriptRoot "start-hidden.vbs"),
     (Join-Path $PSScriptRoot "uninstall.ps1")
 )
@@ -116,6 +119,7 @@ Copy-Item -LiteralPath (Join-Path $packageApp "external-range.mjs") -Destination
 Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runtimeRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "initialize.ps1") -Destination $InstallRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "catalog.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
 
@@ -261,15 +265,30 @@ Export-PfxCertificate `
 )
 
 $manifestPath = Join-Path $appRoot "manifest.xml"
-# The Node service owns the GUID value. Creating it here, before either loopback listener is
-# ready, lets a running or auto-restored Excel instance hit a dead endpoint and discard it.
-# Only remove the legacy path-named value; manage.ps1/server add the GUID after health readiness.
-New-Item -Path $DeveloperRegistryPath -Force | Out-Null
-Remove-ItemProperty `
-    -LiteralPath $DeveloperRegistryPath `
-    -Name $manifestPath `
-    -Force `
-    -ErrorAction SilentlyContinue
+$channel = if ($ownership.Channel) { $ownership.Channel } else { "developer" }
+if ($channel -eq "trusted-catalog") {
+    if ($ownership.CatalogManifestPath) {
+        try {
+            Copy-Item `
+                -LiteralPath $manifestPath `
+                -Destination $ownership.CatalogManifestPath `
+                -Force
+        } catch {
+            Write-Warning ("Trusted Catalog manifest could not be refreshed: " +
+                "$($_.Exception.Message)")
+        }
+    }
+} else {
+    # The Node service owns the GUID value. Creating it here, before either loopback listener is
+    # ready, lets a running or auto-restored Excel instance hit a dead endpoint and discard it.
+    # Only remove the legacy path-named value; manage.ps1/server add the GUID after health readiness.
+    New-Item -Path $DeveloperRegistryPath -Force | Out-Null
+    Remove-ItemProperty `
+        -LiteralPath $DeveloperRegistryPath `
+        -Name $manifestPath `
+        -Force `
+        -ErrorAction SilentlyContinue
+}
 Remove-Item `
     -LiteralPath $LegacyCatalogRegistryPath `
     -Recurse `
@@ -337,7 +356,11 @@ New-ItemProperty `
 Write-Host ""
 Write-Host "DdotExcel local service installed."
 Write-Host "Service: https://localhost:3927"
-Write-Host "Office registration: current-user developer add-in"
+if ($channel -eq "trusted-catalog") {
+    Write-Host "Office registration: Trusted Catalog (experimental)"
+} else {
+    Write-Host "Office registration: current-user developer add-in"
+}
 Write-Host ""
 $initialization = Get-ItemProperty `
     -Path $OwnershipRegistryPath `
@@ -351,7 +374,9 @@ $initializationCurrent = (
     $initialization.WefCacheId -and
     $initialization.WefCacheId -eq $currentWefCacheId)
 
-if ($SkipFirstRunInitialization) {
+if ($channel -eq "trusted-catalog") {
+    Write-Host "채널: Trusted Catalog (실험) — Office 첫 실행 초기화가 필요하지 않습니다."
+} elseif ($SkipFirstRunInitialization) {
     Write-Host "First-run initialization was skipped."
 } elseif ($initializationCurrent) {
     Write-Host "Office first-run initialization: already completed for this WEF cache."
