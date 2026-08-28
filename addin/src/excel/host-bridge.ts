@@ -411,6 +411,11 @@ export const buildBridgeContext = (send: BridgeSend) => {
     },
     replaceAll: (find: string, replacement: string, criteria: unknown) => {
       const replacementCount = call(id, "replaceAll", [find, replacement, criteria])
+      // Office fills this one in on the next sync without being asked — it is the count of
+      // what it just did, not a property of a range — and `operate.ts` reads it that way for
+      // both hosts. The load belongs here rather than at the callsite, or the shared write
+      // path would have to know which host it is talking to.
+      request(replacementCount, "value")
       return {
         get value(): number {
           const value = read(replacementCount, "replaceAll", "value")
@@ -427,6 +432,10 @@ export const buildBridgeContext = (send: BridgeSend) => {
     get name(): string {
       const value = read(id, label, "name")
       return typeof value === "string" ? value : ""
+    },
+    // Renaming is how a copied sheet gets its name; a getter alone throws on assignment.
+    set name(value: string) {
+      set(id, "name", value)
     },
     get id(): string {
       const value = read(id, label, "id")
@@ -700,6 +709,13 @@ export const buildBridgeContext = (send: BridgeSend) => {
         countBlank: functionOn("COUNTBLANK"),
       },
       application: {
+        // Write-only would compile and then read `undefined`, which `recalculate` puts in
+        // front of the user as "계산 모드가 undefined이라". A property the pane reads back
+        // needs a getter that goes through the gate like every other read.
+        get calculationMode(): CalculationMode {
+          const value = read(WORKBOOK, "application", "application/calculationMode")
+          return value === "Manual" || value === "AutomaticExceptTables" ? value : "Automatic"
+        },
         set calculationMode(value: CalculationMode) {
           set(WORKBOOK, "application.calculationMode", value)
         },

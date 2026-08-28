@@ -132,16 +132,196 @@ describe("write tools over the bridge", () => {
     ])
   })
 
-  it("names an unimplemented dispatch member instead of dereferencing undefined", async () => {
-    const { message } = await run(workbook(), {
+  it("sorts through its dispatch member", async () => {
+    const book = workbook()
+    const { bridge, message } = await run(book, {
       tool: "sort_range",
       sheet: "Data",
       address: "A1:B3",
       column: 1,
     })
 
-    expect(message).toContain(
-      'bridge: no dispatch for "sort" — the host object still owes this member',
+    expect(message).toBe("Data!A1:B3을 1열 기준으로 정렬했습니다.")
+    expect(book.sheets[0]?.cells).toEqual([
+      ["one", "2"],
+      ["five", "6"],
+      ["three", "4"],
+    ])
+    expect(bridge.transcript.at(-1)).toContainEqual({
+      op: "call",
+      id: 6,
+      on: 3,
+      member: "sort",
+      args: [[{ key: 0, ascending: true }], false, true],
+    })
+  })
+
+  it("runs the remaining range and data tools against the memory host", async () => {
+    const book = workbook()
+
+    expect(
+      (await run(book, { tool: "merge_cells", sheet: "Data", address: "A1:B1" })).message,
+    ).toBe("Data!A1:B1을 병합했습니다.")
+    expect(
+      (await run(book, { tool: "unmerge_cells", sheet: "Data", address: "A1:B1" })).message,
+    ).toBe("Data!A1:B1 병합을 해제했습니다.")
+    expect(
+      (
+        await run(book, {
+          tool: "format_range",
+          sheet: "Data",
+          address: "A1:B2",
+          bold: true,
+          italic: true,
+          fontColor: "#112233",
+          horizontalAlignment: "Center",
+          wrapText: true,
+          columnWidth: "auto",
+          rowHeight: "auto",
+        })
+      ).message,
+    ).toContain("Data!A1:B2 서식을 바꿨습니다.")
+    expect(
+      (
+        await run(book, {
+          tool: "set_borders",
+          sheet: "Data",
+          address: "A1",
+          edges: ["EdgeTop"],
+          color: "#000000",
+        })
+      ).message,
+    ).toBe("Data!A1에 테두리를 넣었습니다. (되돌리기에 포함되지 않습니다)")
+    expect(
+      (
+        await run(book, {
+          tool: "copy_range",
+          sheet: "Data",
+          address: "A1:B1",
+          target: "A4",
+          what: "values",
+        })
+      ).message,
+    ).toBe("Data!A1:B1을 Data!A4:B4에 복사했습니다.")
+    expect(book.sheets[0]?.cells[3]).toEqual(["one", "2"])
+    expect(
+      (
+        await run(book, {
+          tool: "move_range",
+          sheet: "Data",
+          address: "A4:B4",
+          target: "A5",
+        })
+      ).message,
+    ).toBe("Data!A4:B4을 Data!A5:B5로 이동했습니다.")
+    expect(book.sheets[0]?.cells[4]).toEqual(["one", "2"])
+    expect(
+      (
+        await run(book, {
+          tool: "find_replace",
+          sheet: "Data",
+          address: "A1:B5",
+          find: "one",
+          replace: "uno",
+        })
+      ).message,
+      // The count comes back on a handle Office fills in without being asked, so the load
+      // is queued by the wire rather than by the shared write path.
+    ).toBe('Data!A1:B5에서 "one"을 "uno"로 2건 바꿨습니다.')
+    expect(
+      (
+        await run(book, {
+          tool: "remove_duplicates",
+          sheet: "Data",
+          address: "A1:B5",
+          columns: [1],
+          hasHeaders: true,
+        })
+      ).message,
+    ).toBe("Data!A1:B5에서 중복 0행을 지웠습니다. 4행이 남았습니다.")
+    expect(
+      (
+        await run(book, {
+          tool: "data_validation",
+          sheet: "Data",
+          address: "A2",
+          values: ["예", "아니오"],
+        })
+      ).message,
+    ).toBe("Data!A2에 2개짜리 목록을 걸었습니다. (되돌리기에 포함되지 않습니다)")
+    expect(
+      (await run(book, { tool: "data_validation", sheet: "Data", address: "A2", values: [] }))
+        .message,
+    ).toBe("Data!A2의 목록 제한을 없앴습니다.")
+    expect(
+      (
+        await run(book, {
+          tool: "filter_range",
+          sheet: "Data",
+          address: "A1:B4",
+          column: 1,
+          values: ["uno"],
+        })
+      ).message,
+    ).toBe("Data!A1:B4의 1번째 열을 uno 기준으로 걸렀습니다. (되돌리기에 포함되지 않습니다)")
+    expect((await run(book, { tool: "clear_filter", sheet: "Data" })).message).toBe(
+      "Data의 필터를 해제했습니다.",
+    )
+    expect(
+      (await run(book, { tool: "create_table", sheet: "Data", address: "A1:B4", name: "Sales" }))
+        .message,
+    ).toBe("Data!A1:B4을 표로 만들었습니다. (되돌리기에 포함되지 않습니다)")
+    expect(
+      (
+        await run(book, {
+          tool: "add_table_column",
+          table: "Sales",
+          name: "추가",
+          formula: "=1",
+        })
+      ).message,
+    ).toContain("Sales 표에 추가 열을 넣었습니다.")
+    expect(
+      (await run(book, { tool: "define_name", sheet: "Data", address: "A1", name: "첫칸" }))
+        .message,
+    ).toBe("첫칸을(를) Data!A1으로 정의했습니다. (되돌리기에 포함되지 않습니다)")
+    expect((await run(book, { tool: "select_range", sheet: "Data", address: "A1" })).message).toBe(
+      "Data!A1을 선택했습니다.",
+    )
+    expect(
+      (
+        await run(book, {
+          tool: "set_visibility",
+          sheet: "Data",
+          address: "A1",
+          axis: "columns",
+          hidden: true,
+        })
+      ).message,
+    ).toBe("Data!A1 열을 숨겼습니다. (되돌리기에 포함되지 않습니다)")
+    expect((await run(book, { tool: "protect_sheet", sheet: "Data", protect: true })).message).toBe(
+      "Data 시트를 보호했습니다. 이후 편집은 보호를 풀어야 합니다.",
+    )
+    expect(
+      (
+        await run(book, {
+          tool: "set_print_layout",
+          sheet: "Data",
+          orientation: "Landscape",
+          fitToPagesWide: 1,
+          titleRows: "$1:$1",
+        })
+      ).message,
+    ).toBe("Data의 인쇄 설정을 바꿨습니다. (되돌리기에 포함되지 않습니다)")
+    expect((await run(book, { tool: "recalculate", setAutomatic: true })).message).toBe(
+      "전체 재계산했습니다. 계산 모드는 자동이었습니다.",
+    )
+    expect((await run(book, { tool: "copy_sheet", sheet: "Data", name: "Copy" })).message).toBe(
+      "Data 시트를 Copy(으)로 복제했습니다. (되돌리기에 포함되지 않습니다)",
+    )
+    expect(book.sheets.map((sheet) => sheet.name)).toContain("Copy")
+    expect((await run(book, { tool: "delete_sheet", name: "Copy" })).message).toBe(
+      "Copy 시트를 삭제했습니다. (되돌리기로 복구되지 않습니다)",
     )
   })
 

@@ -47,6 +47,13 @@ today.
   has to cross as **data**, since recovering a code from an error message turns the pane's
   own bugs into fake Excel errors; and selection has to be **pushed**, because the pane
   never polls.
+- **One host object, four methods.** `handshake()`, `execute(ops)`, and — because an XLL
+  deletes the local service by serving assets from a virtual host mapping —
+  `readExternalWorkbook()` and `readNativeEditorState()` on the same object. Those two stay
+  *off* the op list deliberately: an op list exists because the workbook is a deferred graph
+  of handles, and neither of these has a handle or anything to batch with. Their payloads
+  are validated exactly as the HTTP ones are, because another process across a JS boundary
+  is not a trusted caller.
 - **The two local-service features are behind a port.** `host-services.ts` states what the
   pane needs besides the workbook — read a rectangle out of a saved file, read the native
   editor state — with the current HTTP calls as one adapter. Neither `external-workbook.ts`
@@ -64,13 +71,12 @@ today.
    `bridge: no dispatch for "…" — the host object still owes this member`. **That message
    is the backlog**, and it is the same backlog the C# side has. Every wire *shape* is
    already fixed, so each remaining member is one dispatch entry and one transcript.
-2. **`HostServices` on the same wire.** The port exists with only an HTTP adapter, so an
-   XLL host would have to answer `execute(ops)` *and* serve two endpoints. Both should be
-   dispatch members, so the C# side implements one table.
-3. **`data-tools.ts` needs no wire changes** — it takes the same `OperateContext`, so what
-   it lacks is backend members: `dataValidation`, `autoFilter`, `tables`, `protection`,
-   `removeDuplicates`, `pivotTables`, `pageLayout`, `names.add`, `application.calculate`,
-   sheet `copy`/`activate`. Each is one dispatch entry and one transcript.
+2. **Charts and pivot tables.** The last members that still answer
+   `bridge: no dispatch for "…"`. Neither has meaningful in-memory behaviour, so covering
+   them means deciding what a reference host records rather than simulates — the same
+   decision already taken for protection and page layout.
+3. **The C# side, when there is a machine.** `bridge-memory.ts` is the thing to match; the
+   named failures are the only gaps left in it.
 
 ## Blocked on a Windows PC
 

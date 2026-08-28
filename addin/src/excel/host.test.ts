@@ -57,7 +57,9 @@ describe("Excel host port", () => {
 
   it("routes the pane entry point through the host selection seam", () => {
     const main = readFileSync(`${sourceRoot}/taskpane/main.ts`, "utf8")
-    expect(main).toContain('import { startHost } from "../excel/host-entry"')
+    // The seam, not its spelling: the pane asks the entry point which host it has, and
+    // names no adapter itself. Pinning the exact import line only pins today's imports.
+    expect(main).toContain('from "../excel/host-entry"')
     expect(main).toContain("startHost((ready) =>")
     expect(main).not.toContain("host-office")
     expect(main).not.toContain("host-xll")

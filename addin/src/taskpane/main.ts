@@ -1,13 +1,12 @@
 import { formatArea, type GridArea, parseArea } from "../excel/address"
 import { createHistory } from "../excel/history"
 import type { ExcelHost, HostContext, HostRange } from "../excel/host"
-import { startHost } from "../excel/host-entry"
+import { hostServices, startHost } from "../excel/host-entry"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
 import { summariseReferences } from "../excel/summarise"
 import { fetchExternalWindow } from "../external-workbook"
 import type { RefToken } from "../formula/types"
-import { localHostServices } from "../host-services"
 import type { ExternalPreview, PaneState } from "../model"
 import { renderChat } from "./chat"
 import { createChatting } from "./chatting"
@@ -255,7 +254,7 @@ async function openExternalReference(
   const target = token.target
   if (target.kind !== "external") return
   show({ ...opened, activeIndex: index }, "외부 파일 읽는 중…")
-  const read = await fetchExternalWindow(target, host?.workbookUrl() ?? "", localHostServices)
+  const read = await fetchExternalWindow(target, host?.workbookUrl() ?? "", hostServices())
   if (pane.kind !== "formula" || pane.address !== opened.address) return
   if (read.kind === "window") {
     externalPreview = { label: token.text, source: read.source, window: read.window }
@@ -387,7 +386,7 @@ followEditor({
   pane: () => pane,
   note: (next) => (next === badge ? undefined : show(pane, next)),
   openReference: (index) => interactWithReference(index, "open"),
-  services: localHostServices,
+  services: hostServices(),
 })
 
 /**

@@ -98,6 +98,44 @@ export const createLocalHostServices = (fetcher: typeof fetch = fetch): HostServ
 })
 
 /**
+ * The same two answers from an in-process host object instead of a local service.
+ *
+ * These are deliberately *not* on the bridge's op list. An op list exists because the
+ * workbook object model is a deferred graph — handles, `load`, one `sync` — and neither of
+ * these is: each is a single question with a single answer, no handle to hold and nothing
+ * to batch it with. Putting them through the wire would buy ceremony and cost the C# side
+ * an op kind it does not need. It stays two plain methods on the same object.
+ *
+ * The payload is validated exactly as the HTTP one is. A host object is a different process
+ * across a JS boundary, not a trusted caller, and the pane already knows how to say what it
+ * could not read.
+ */
+export type HostServicesBridge = {
+  readonly readExternalWorkbook: (request: ExternalWorkbookRequest) => Promise<unknown>
+  readonly readNativeEditorState: () => Promise<unknown>
+}
+
+export const createBridgeHostServices = (bridge: HostServicesBridge): HostServices => ({
+  readExternalWorkbook: async (request): Promise<ExternalWorkbookResult> => {
+    try {
+      const result = externalResponseSchema.safeParse(await bridge.readExternalWorkbook(request))
+      if (!result.success) return { kind: "unavailable", reason: "호스트의 응답을 읽을 수 없음" }
+      if ("error" in result.data) return { kind: "unavailable", reason: result.data.error }
+      return { kind: "values", values: result.data.values }
+    } catch {
+      return { kind: "unavailable", reason: "호스트가 파일을 읽지 못함" }
+    }
+  },
+  readNativeEditorState: async (): Promise<NativeEditorState> => {
+    const parsed = editorStateSchema.safeParse(await bridge.readNativeEditorState())
+    // Same contract as the HTTP adapter: unreadable editor state is not an error, it is the
+    // absence of a companion, and the watcher backs off on exactly this.
+    if (!parsed.success) throw new CompanionUnavailable("unexpected payload")
+    return parsed.data
+  },
+})
+
+/**
  * The local-service implementation the WEF pane runs on. `fetch` is reached through a
  * closure rather than captured here, because this module is evaluated before anything has
  * decided what `fetch` is — and because a test that swaps the global would otherwise be

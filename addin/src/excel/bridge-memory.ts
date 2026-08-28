@@ -18,7 +18,7 @@ import { WORKBOOK } from "./host-bridge"
 
 /** One sheet's displayed text, row-major, anchored at A1. Empty string means empty cell. */
 export type MemorySheet = {
-  readonly name: string
+  name: string
   readonly hidden?: boolean
   cells: string[][]
 }
@@ -30,6 +30,12 @@ export type MemoryWorkbook = {
   readonly tables?: Readonly<Record<string, string>>
   /** What `getSelectedRange()` answers, for the external-reference fallback path. */
   readonly selected?: { readonly address: string; readonly text: string }
+  /** Bridge-only state persists when a test opens a second batch over the same fixture. */
+  bridgeState?: {
+    readonly tables: Map<string, string>
+    readonly names: Map<string, string>
+    readonly properties: Map<string, unknown>
+  }
 }
 
 export type MemoryBridge = BridgeSend & {
@@ -53,6 +59,14 @@ type Target =
   | { readonly kind: "func"; readonly fn: string; readonly source: RangeTarget }
   /** A table is not its range: it has a name of its own and owns columns. */
   | { readonly kind: "table"; readonly name: string; readonly range: RangeTarget }
+  | {
+      readonly kind: "removeDuplicates"
+      readonly removed: number
+      readonly uniqueRemaining: number
+    }
+  | { readonly kind: "tableColumn"; readonly range: RangeTarget }
+  /** What a replacement pass did. Excel answers with the count and nothing else. */
+  | { readonly kind: "replaced"; readonly count: number }
 
 const cellAt = (sheet: MemorySheet, row: number, column: number): string =>
   sheet.cells[row - 1]?.[column - 1] ?? ""
@@ -183,7 +197,16 @@ const deleteArea = (target: RangeTarget, shift: string): void => {
 export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
   const handles = new Map<number, Target>([[WORKBOOK, { kind: "workbook" }]])
   const childIds = new Map<string, number>()
-  const rangeProperties = new Map<string, unknown>()
+  const state = workbook.bridgeState ?? {
+    tables: new Map(Object.entries(workbook.tables ?? {})),
+    names: new Map(Object.entries(workbook.names ?? {})),
+    properties: new Map<string, unknown>(),
+  }
+  workbook.bridgeState = state
+  const rangeProperties = state.properties
+  const tables = state.tables
+  const names = state.names
+  const calls: string[] = []
   let nextChild = -1
   let nextFailure: { readonly code: string; readonly message: string } | undefined
   const selectionHandlers = new Set<(event: HostSelectionEvent) => Promise<void>>()
@@ -234,6 +257,19 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
     return target
   }
 
+  const copyArea = (source: RangeTarget, destination: RangeTarget, move: boolean): void => {
+    if (
+      source.sheet === null ||
+      source.area === null ||
+      destination.sheet === null ||
+      destination.area === null
+    )
+      throw new Error("bridge: copy destination is null")
+    const values = textIn(source)
+    writeArea(destination, values)
+    if (move) clearArea(source)
+  }
+
   const dispatch = (on: number, member: string, args: readonly BridgeArg[]): Target => {
     const target = resolve(on)
     switch (member) {
@@ -280,16 +316,44 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
         if (target.kind !== "sheet") throw new Error("bridge: getRange needs a worksheet")
         return { kind: "range", sheet: target.sheet, area: parseArea(literal(args[0])) }
       }
+      case "getCell": {
+        if (target.kind !== "sheet" && target.kind !== "range")
+          throw new Error("bridge: getCell needs a range or worksheet")
+        const sheet = target.kind === "sheet" ? target.sheet : target.sheet
+        const area = target.kind === "sheet" ? { top: 1, left: 1 } : target.area
+        if (sheet === null || area === null) return { kind: "range", sheet: null, area: null }
+        return {
+          kind: "range",
+          sheet,
+          area: {
+            top: area.top + Number(args[0]),
+            left: area.left + Number(args[1]),
+            height: 1,
+            width: 1,
+          },
+        }
+      }
+      case "getColumn":
+      case "getRow": {
+        if (target.kind !== "range" || target.area === null)
+          throw new Error(`bridge: ${member} needs a range`)
+        const area =
+          member === "getColumn"
+            ? { ...target.area, left: target.area.left + Number(args[0]), width: 1 }
+            : { ...target.area, top: target.area.top + Number(args[0]), height: 1 }
+        return { kind: "range", sheet: target.sheet, area }
+      }
+
       case "getUsedRange": {
         if (target.kind !== "sheet") throw new Error("bridge: getUsedRange needs a worksheet")
         const area = usedArea(target.sheet)
         return { kind: "range", sheet: area === null ? null : target.sheet, area }
       }
       case "getNameRange":
-        return locate(workbook, workbook.names?.[literal(args[0])])
+        return locate(workbook, names.get(literal(args[0])))
       case "getTable": {
         const name = literal(args[0])
-        return { kind: "table", name, range: locate(workbook, workbook.tables?.[name]) }
+        return { kind: "table", name, range: locate(workbook, tables.get(name)) }
       }
       case "getSelectedRange": {
         const selected = workbook.selected
@@ -299,14 +363,56 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       case "func":
         return { kind: "func", fn: literal(args[0]), source: asRange(args[1]) }
       case "set": {
-        if (target.kind !== "range") throw new Error("bridge: set needs a range")
         const property = literal(args[0])
+        if (target.kind === "workbook") {
+          if (property === "application.calculationMode") {
+            rangeProperties.set(property, args[1])
+            return target
+          }
+          throw new Error(
+            `bridge: no dispatch for "${property}" — the host object still owes this member`,
+          )
+        }
+        if (target.kind === "sheet") {
+          if (property === "name") {
+            const name = literal(args[1])
+            target.sheet.name = name
+            return target
+          }
+          if (property.startsWith("pageLayout.")) {
+            calls.push(`${target.sheet.name}:${property}`)
+            return target
+          }
+          throw new Error(
+            `bridge: no dispatch for "${property}" — the host object still owes this member`,
+          )
+        }
+        if (target.kind === "table") {
+          if (property === "name") {
+            tables.delete(target.name)
+            tables.set(literal(args[1]), rangeKey(target.range))
+            return target
+          }
+          if (property === "style") {
+            rangeProperties.set(`table:${target.name}:style`, args[1])
+            return target
+          }
+          throw new Error(
+            `bridge: no dispatch for "${property}" — the host object still owes this member`,
+          )
+        }
+        if (target.kind !== "range") throw new Error("bridge: set needs a range")
         if (property === "formulas") {
           if (!Array.isArray(args[1])) throw new Error("bridge: formulas need rows")
           writeArea(target, args[1])
         } else if (property === "numberFormat") {
           rangeProperties.set(rangeKey(target), args[1])
-        } else if (property.startsWith("format.")) {
+        } else if (
+          property.startsWith("format.") ||
+          property === "rowHidden" ||
+          property === "columnHidden" ||
+          property === "dataValidation.rule"
+        ) {
           rangeProperties.set(`${rangeKey(target)}:${property}`, args[1])
         } else {
           throw new Error(
@@ -314,6 +420,147 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
           )
         }
         return target
+      }
+      case "sort": {
+        if (target.kind !== "range" || target.sheet === null || target.area === null)
+          throw new Error("bridge: sort needs a range")
+        const fields = args[0]
+        if (!Array.isArray(fields)) throw new Error("bridge: sort needs fields")
+        const first = fields[0]
+        const key = typeof first === "object" && first !== null ? Reflect.get(first, "key") : 0
+        const ascending =
+          typeof first === "object" && first !== null
+            ? Reflect.get(first, "ascending") !== false
+            : true
+        if (typeof key !== "number") throw new Error("bridge: sort key is invalid")
+        const rows = textIn(target).map((row) => [...row])
+        const header = args[2] === true ? rows.shift() : undefined
+        rows.sort((left, right) => {
+          const compared = (left[key] ?? "").localeCompare(right[key] ?? "", undefined, {
+            numeric: true,
+          })
+          return ascending ? compared : -compared
+        })
+        writeArea(target, header === undefined ? rows : [header, ...rows])
+        return target
+      }
+      case "merge":
+      case "unmerge":
+      case "select":
+      case "format.autofitColumns":
+      case "format.autofitRows":
+      case "dataValidation.clear":
+        if (target.kind !== "range") throw new Error(`bridge: ${member} needs a range`)
+        calls.push(`${rangeKey(target)}:${member}`)
+        return target
+      case "copyFrom":
+        if (target.kind !== "range") throw new Error("bridge: copyFrom needs a range")
+        copyArea(asRange(args[0]), target, false)
+        return target
+      case "moveTo":
+        if (target.kind !== "range") throw new Error("bridge: moveTo needs a range")
+        copyArea(target, asRange(args[0]), true)
+        return target
+      case "replaceAll": {
+        // Excel replaces the whole cell only when the cell equals the needle; a substring
+        // match rewrites the part. The fixture holds display text, so this is the same rule
+        // applied to strings, and the count is what the tool reports back to the user.
+        const find = literal(args[0])
+        const replacement = literal(args[1])
+        if (target.kind !== "range") throw new Error("bridge: replaceAll needs a range")
+        const rows = textIn(target)
+        let count = 0
+        const replaced = rows.map((row) =>
+          row.map((cell) => {
+            if (find === "" || !cell.includes(find)) return cell
+            count += 1
+            return cell.replaceAll(find, replacement)
+          }),
+        )
+        if (count > 0) writeArea(target, replaced)
+        return { kind: "replaced", count }
+      }
+      case "removeDuplicates": {
+        if (target.kind !== "range" || target.sheet === null || target.area === null)
+          throw new Error("bridge: removeDuplicates needs a range")
+        const rows = textIn(target).map((row) => [...row])
+        const header = args[1] === true ? rows.shift() : undefined
+        const columns = Array.isArray(args[0]) ? args[0] : []
+        const seen = new Set<string>()
+        const kept = rows.filter((row) => {
+          const key = columns.map((column) => row[Number(column)] ?? "").join("\u0000")
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        writeArea(target, header === undefined ? kept : [header, ...kept])
+        const removed = rows.length - kept.length
+        return { kind: "removeDuplicates", removed, uniqueRemaining: kept.length }
+      }
+      case "autoFilter.apply":
+      case "autoFilter.clearCriteria":
+      case "autoFilter.remove":
+      case "protection.protect":
+      case "protection.unprotect":
+      case "activate":
+      case "application.calculate":
+      case "pageLayout.setPrintTitleRows":
+        calls.push(member)
+        return target
+      case "names.add":
+        if (target.kind !== "workbook") throw new Error("bridge: names.add needs workbook")
+        names.set(literal(args[0]), rangeKey(asRange(args[1])))
+        return target
+      case "tables.add": {
+        if (target.kind !== "sheet") throw new Error("bridge: tables.add needs a worksheet")
+        const address = literal(args[0])
+        const name = `Table${tables.size + 1}`
+        tables.set(name, `${target.sheet.name}!${address}`)
+        return { kind: "table", name, range: locate(workbook, tables.get(name)) }
+      }
+      case "getDataBodyRange":
+        if (target.kind === "table") {
+          if (target.range.area === null) return target.range
+          const { area } = target.range
+          return {
+            ...target.range,
+            area: { ...area, top: area.top + 1, height: Math.max(0, area.height - 1) },
+          }
+        }
+        if (target.kind === "tableColumn") return target.range
+        throw new Error("bridge: getDataBodyRange needs a table")
+      case "columns.add": {
+        if (target.kind !== "table" || target.range.sheet === null || target.range.area === null)
+          throw new Error("bridge: columns.add needs a table")
+        const { area, sheet } = target.range
+        const column = area.left + area.width
+        for (let row = area.top - 1; row < area.top - 1 + area.height; row++) {
+          const cells = sheet.cells[row] ?? []
+          cells[column - 1] = row === area.top - 1 ? literal(args[2]) : ""
+          sheet.cells[row] = cells
+        }
+        return {
+          kind: "tableColumn",
+          range: {
+            kind: "range",
+            sheet,
+            area: {
+              top: area.top + 1,
+              left: column,
+              height: Math.max(0, area.height - 1),
+              width: 1,
+            },
+          },
+        }
+      }
+      case "copy": {
+        if (target.kind !== "sheet") throw new Error("bridge: copy needs a worksheet")
+        const copy = {
+          name: `${target.sheet.name} (2)`,
+          cells: target.sheet.cells.map((row) => [...row]),
+        }
+        workbook.sheets.push(copy)
+        return { kind: "sheet", sheet: copy }
       }
       case "insert": {
         if (target.kind !== "range" || target.sheet === null || target.area === null)
@@ -323,6 +570,11 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
         return target
       }
       case "delete": {
+        if (target.kind === "sheet") {
+          const index = workbook.sheets.indexOf(target.sheet)
+          if (index >= 0) workbook.sheets.splice(index, 1)
+          return target
+        }
         if (target.kind !== "range") throw new Error("bridge: delete needs a range")
         deleteArea(target, literal(args[0]))
         return target
@@ -371,6 +623,12 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
             return target.area?.width ?? 0
           case "numberFormat":
             return rangeProperties.get(rangeKey(target)) ?? []
+          case "format/columnWidth":
+            return rangeProperties.get(`${rangeKey(target)}:format.columnWidth`) ?? 8
+          case "format/rowHeight":
+            return rangeProperties.get(`${rangeKey(target)}:format.rowHeight`) ?? 15
+          case "cellCount":
+            return (target.area?.height ?? 0) * (target.area?.width ?? 0)
           default:
             throw new Error(`bridge: a range has no "${path}"`)
         }
@@ -394,12 +652,23 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
           default:
             throw new Error(`bridge: a table has no "${path}"`)
         }
+      case "tableColumn":
+        return property(target.range, path)
       case "func":
         if (path !== "value") throw new Error(`bridge: a function result has no "${path}"`)
         return compute(target.fn, target.source)
+      case "removeDuplicates":
+        if (path === "removed") return target.removed
+        if (path === "uniqueRemaining") return target.uniqueRemaining
+        throw new Error(`bridge: a duplicate result has no "${path}"`)
+      case "replaced":
+        if (path === "value") return target.count
+        throw new Error(`bridge: a replacement result has no "${path}"`)
       case "worksheets":
         throw new Error(`bridge: the collection is loaded through items/${path}`)
       case "workbook":
+        if (path === "application/calculationMode")
+          return rangeProperties.get("application.calculationMode") ?? "Automatic"
         throw new Error(`bridge: the workbook has no "${path}"`)
     }
   }

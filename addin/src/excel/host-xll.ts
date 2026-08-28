@@ -1,3 +1,8 @@
+import {
+  createBridgeHostServices,
+  type HostServices,
+  type HostServicesBridge,
+} from "../host-services"
 import type { ExcelHost, HostFailure } from "./host"
 import { BridgeHostError, type BridgeOp, type BridgeResponse, runBridgeBatch } from "./host-bridge"
 
@@ -18,7 +23,13 @@ type BridgeHandshake = {
   readonly capabilities: readonly BridgeCapability[]
 }
 
-type XllBridgeObject = {
+/**
+ * Four methods, and that is the whole surface. Two of them are not about the workbook at
+ * all: the pane also needs a saved file read and the native editor's state, which the WEF
+ * build gets from its local HTTPS service — the service an XLL deletes by serving assets
+ * from a virtual host mapping. Same object, no second channel.
+ */
+type XllBridgeObject = HostServicesBridge & {
   readonly handshake: () => Promise<BridgeHandshake>
   readonly execute: (ops: readonly BridgeOp[]) => Promise<BridgeResponse>
 }
@@ -75,6 +86,12 @@ const hostFrom = (bridge: XllBridgeObject, handshake: BridgeHandshake): ExcelHos
  */
 export const bridgeHostObject = (): XllBridgeObject | null =>
   window.chrome?.webview?.hostObjects?.xmux ?? null
+
+/** The file and editor answers from the same object, or null when this is not that host. */
+export const bridgeHostServices = (): HostServices | null => {
+  const bridge = bridgeHostObject()
+  return bridge === null ? null : createBridgeHostServices(bridge)
+}
 
 /** Reports null outside the XLL WebView2, leaving the pane to explain that refusal. */
 export const startBridgeHost = (onReady: (host: ExcelHost | null) => void): void => {

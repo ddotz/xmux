@@ -1,6 +1,7 @@
+import { type HostServices, localHostServices } from "../host-services"
 import type { ExcelHost } from "./host"
 import { startOfficeHost } from "./host-office"
-import { bridgeHostObject, startBridgeHost } from "./host-xll"
+import { bridgeHostObject, bridgeHostServices, startBridgeHost } from "./host-xll"
 
 /**
  * Starts the adapter the pane was embedded with, and the only module that knows both exist.
@@ -18,3 +19,11 @@ export const startHost = (onReady: (host: ExcelHost | null) => void): void => {
   }
   startOfficeHost(onReady)
 }
+
+/**
+ * The non-workbook answers, chosen by the same rule. Kept beside `startHost` rather than
+ * folded into `ExcelHost`: reading a saved file and watching the cell editor are things the
+ * *machine* does, not things the workbook object model does, and the WEF build gets them
+ * from a local service that has nothing to do with Excel's API.
+ */
+export const hostServices = (): HostServices => bridgeHostServices() ?? localHostServices
