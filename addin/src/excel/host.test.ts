@@ -22,13 +22,18 @@ const sourceFiles = (directory: string): string[] => {
 // Runtime reaches for the host, not type positions or prose: `Excel.Range` as a type and a
 // comment naming Office.context are both fine, and banning them would push the parity
 // assertions in office-shapes.ts out of the language they document.
+//
+// The member-access pattern is what catches an enum read like `Excel.SheetVisibility.visible`
+// — a value, not a type, and one no second host can answer. A namespace followed by a
+// lowercase member is always a runtime read; `Excel.Range` and `Excel.SheetVisibility` alone
+// are type positions and stay legal.
 const runtimeGlobals = [
-  "Excel.run(",
-  "Excel.ErrorCodes",
-  "Office.context.",
-  "Office.onReady",
-  "Office.HostType",
-  "OfficeExtension.",
+  /\bExcel\.run\(/,
+  /\bExcel\.[A-Z]\w*\.[a-z]/,
+  /\bOffice\.context\./,
+  /\bOffice\.onReady/,
+  /\bOffice\.HostType\./,
+  /\bOfficeExtension\./,
 ]
 
 const withoutComments = (source: string): string =>
@@ -43,15 +48,18 @@ describe("Excel host port", () => {
     // Given: a second host (an in-process COM bridge behind WebView2) can only exist if the
     // pane asks a port instead of reaching for Office. One stray `Excel.run` in a feature
     // module silently re-couples the whole pane to WEF, and nothing else would catch it.
-    const adapter = `${sourceRoot}/excel/host-office.ts`
+    // Two files may name Office, and only two: this one implements the port over it, and
+    // office-shapes.ts exists to tie our structural types back to the installed Office.js
+    // typings — its mentions are type positions that erase at build time.
+    const allowed = [`${sourceRoot}/excel/host-office.ts`, `${sourceRoot}/excel/office-shapes.ts`]
     const offenders: string[] = []
-    // When: every non-test source file is scanned outside the adapter.
+    // When: every other non-test source file is scanned.
     for (const path of sourceFiles(sourceRoot)) {
-      if (path === adapter) continue
+      if (allowed.includes(path)) continue
       const source = withoutComments(readFileSync(path, "utf8"))
       for (const global of runtimeGlobals) {
-        if (source.includes(global))
-          offenders.push(`${path.slice(sourceRoot.length + 1)}: ${global}`)
+        const found = global.exec(source)
+        if (found !== null) offenders.push(`${path.slice(sourceRoot.length + 1)}: ${found[0]}`)
       }
     }
     // Then: the adapter is alone with them.

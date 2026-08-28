@@ -175,6 +175,14 @@ export type OperateTableColumn = {
   readonly getDataBodyRange: () => OperateRange
 }
 
+/**
+ * Office spells worksheet visibility as a string enum whose `visible` member is `"Visible"`.
+ * Naming the literal here keeps the comparison out of feature code, which would otherwise
+ * reach for the `Excel` global at runtime just to ask whether a sheet is hidden — a global
+ * that no second host provides.
+ */
+export const SHEET_VISIBLE = "Visible"
+
 /** Compile-time ownership checks tying the testable slice back to installed Office.js. */
 type Assert<T extends true> = T
 type KeysFit<Custom, Office> = Exclude<keyof Custom, keyof Office> extends never ? true : false
@@ -187,6 +195,8 @@ export type OfficeSheetSurfaceParity = Assert<KeysFit<OperateSheet, Excel.Worksh
 export type OfficeFreezeSurfaceParity = Assert<
   KeysFit<OperateSheet["freezePanes"], Excel.WorksheetFreezePanes>
 >
+type VisibleFits = typeof SHEET_VISIBLE extends `${Excel.SheetVisibility.visible}` ? true : false
+export type OfficeSheetVisibilityParity = Assert<VisibleFits>
 
 /**
  * The reading side. `values` is the raw stored value, `text` is the formatted value Excel
