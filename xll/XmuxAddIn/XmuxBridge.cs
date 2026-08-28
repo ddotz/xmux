@@ -16,6 +16,28 @@ namespace XmuxAddIn
         private readonly Dictionary<int, object> handles = new Dictionary<int, object> { { 0, WorkbookHandle.Instance } };
         private readonly object gate = new object();
 
+        /*
+         * The pane calls `handshake` and `execute` in lower camel case, because that is what
+         * every other object it touches looks like. Whether WebView2's host-object proxy
+         * resolves a COM member case-insensitively is not something this machine can find
+         * out, and being wrong about it costs a whole session on the target PC: every call
+         * rejects, `startBridgeHost` reports no host, and the pane says it only works in
+         * Excel while sitting inside Excel.
+         *
+         * So both spellings exist. `AutoDual` publishes each public method under its own
+         * name, the forwarders cost nothing, and the coin flip is gone. Delete them once a
+         * real machine has shown which casing arrives.
+         */
+        public string handshake()
+        {
+            return Handshake();
+        }
+
+        public string execute(string opsJson)
+        {
+            return Execute(opsJson);
+        }
+
         public string Handshake()
         {
             try

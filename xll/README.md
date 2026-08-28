@@ -39,7 +39,13 @@ The control deliberately waits until it both has a WinForms handle and is visibl
 ## Gate 2: one pane-to-COM round trip
 
 1. In a workbook, enter a distinctive value in `Sheet1!A1`.
-2. After Gate 1 passes, open WebView2 DevTools and run this expression in the pane console (the host object methods are exposed to JavaScript as `handshake` and `execute`):
+2. After Gate 1 passes, open WebView2 DevTools and run this expression in the pane console.
+
+   The bridge publishes each method under **both** `Handshake`/`Execute` and
+   `handshake`/`execute`, because nothing on a Mac can establish whether WebView2's
+   host-object proxy resolves a COM member case-insensitively — and being wrong about it
+   makes every call reject, which the pane reports as "Excel에서만 동작합니다" while sitting
+   inside Excel. **Please note which spelling works**; the other one gets deleted:
 
 ```js
 await chrome.webview.hostObjects.xmux.execute(JSON.stringify([
