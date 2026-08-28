@@ -1,5 +1,7 @@
 import { formatArea, type GridArea, parseArea } from "../excel/address"
 import { createHistory } from "../excel/history"
+import type { ExcelHost, HostContext } from "../excel/host"
+import { startOfficeHost } from "../excel/host-office"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
 import { summariseReferences } from "../excel/summarise"
@@ -36,6 +38,17 @@ const elements = nodes.pane
  * what it wrote and offers to put it back.
  */
 const history = createHistory()
+
+/**
+ * The host arrives at handshake time, but the controls below are constructed while this
+ * module is evaluated — before it. They capture `run` rather than a context, so the lookup
+ * is deferred to the call, exactly as the Office.context read used to be.
+ */
+let host: ExcelHost | null = null
+const run = <T>(work: (context: HostContext) => Promise<T>): Promise<T> => {
+  if (host === null) throw new Error("Excel 호스트가 아직 준비되지 않았습니다.")
+  return host.run(work)
+}
 
 let pane: PaneState = { kind: "idle" }
 let badge: string | null = null
@@ -107,22 +120,20 @@ const guarded = async (work: () => Promise<void>): Promise<void> => {
   try {
     await work()
   } catch (error) {
-    if (error instanceof OfficeExtension.Error) {
-      if (error.code === Excel.ErrorCodes.invalidOperationInCellEditMode) {
-        lastKey = ""
-        show(pane, "편집 중 · Enter나 Esc를 누르면 갱신")
-        return
-      }
-      show({ kind: "error", message: `${error.code}: ${error.message}` }, null)
+    const failure = host?.classify(error) ?? null
+    if (failure === null) throw error
+    if (failure.kind === "cellEditMode") {
+      lastKey = ""
+      show(pane, "편집 중 · Enter나 Esc를 누르면 갱신")
       return
     }
-    throw error
+    show({ kind: "error", message: `${failure.code}: ${failure.message}` }, null)
   }
 }
 
 const chatting = createChatting({
   redraw: draw,
-  run: (work) => guarded(() => Excel.run(work)),
+  run: (work) => guarded(() => run(work)),
   anchor: () => {
     if (pane.kind === "formula") return { address: pane.address, formula: pane.formula }
     if (pane.kind === "noFormula") return { address: pane.address, formula: "" }
@@ -139,7 +150,7 @@ const tabs = createTabs({
 
 const viewport = createViewport({
   redraw: draw,
-  run: (work) => guarded(() => Excel.run(work)),
+  run: (work) => guarded(() => run(work)),
   history,
 })
 
@@ -159,8 +170,8 @@ const selectionEvents = createSelectionEvents({
 const commands = createCommands({
   pane: () => pane,
   viewport: () => viewport.state(),
-  run: (work) => guarded(() => Excel.run(work)),
-  navigateRun: (work) => Excel.run(work),
+  run: (work) => guarded(() => run(work)),
+  navigateRun: (work) => run(work),
   onPane: show,
   onRefresh: async () => {
     lastKey = ""
@@ -178,19 +189,15 @@ const undoControls = createUndoControls({
   redo: commands.redo,
 })
 
-// Office.context is only populated once the host handshake completes, and this module runs
-// before that: it is loaded as a deferred module, so top level executes while office.js is
-// still polling for readiness. Reading Office.context here threw before Office.onReady at
-// the bottom of this file was ever reached, which left office.js waiting out its poll and
-// reporting that the app never called Office.onReady. The lookup happens on use instead,
-// by which point onReady has run.
+// The capability probe is asked at use, not here: this module is evaluated before the host
+// handshake completes, and a host read at construction time answered nothing. Refusing
+// when no host has arrived yet is the honest answer to "is this API set available".
 const linkedWorkbookControl = createLinkedWorkbookControl({
   container: nodes.linkedWorkbooks,
   requirements: {
-    isSetSupported: (name, minimumVersion) =>
-      Office.context.requirements.isSetSupported(name, minimumVersion),
+    isSetSupported: (name, minimumVersion) => host?.isSetSupported(name, minimumVersion) ?? false,
   },
-  run: (work) => Excel.run(async (context) => work(context)),
+  run: (work) => run(async (context) => work(context)),
 })
 
 /** Resolve one formula variable, then open, jump to, or attach that exact range. */
@@ -210,7 +217,7 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
   void guarded(async () => {
     // The lookup row is found in the same round trip that resolves the reference: it is
     // one more read of one column, and two trips would show the table jumping.
-    const { resolved, target } = await Excel.run(async (context) => {
+    const { resolved, target } = await run(async (context) => {
       const range = await resolveReference(context, token, sheet)
       if (range.kind !== "range" || intent === "chat") return { resolved: range, target: null }
       return {
@@ -247,7 +254,7 @@ async function openExternalReference(
   const target = token.target
   if (target.kind !== "external") return
   show({ ...opened, activeIndex: index }, "외부 파일 읽는 중…")
-  const read = await fetchExternalWindow(target, Office.context.document.url ?? "")
+  const read = await fetchExternalWindow(target, host?.workbookUrl() ?? "")
   if (pane.kind !== "formula" || pane.address !== opened.address) return
   if (read.kind === "window") {
     externalPreview = { label: token.text, source: read.source, window: read.window }
@@ -256,7 +263,7 @@ async function openExternalReference(
   }
   await guarded(async () => {
     const { sheet } = splitAddress(opened.address)
-    const resolved = await Excel.run(async (context) => resolveReference(context, token, sheet))
+    const resolved = await run(async (context) => resolveReference(context, token, sheet))
     if (pane.kind !== "formula" || pane.address !== opened.address) return
     show(
       pane,
@@ -268,7 +275,7 @@ async function openExternalReference(
 async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
   if (pane.kind === "formula" && pane.pinned) return
 
-  const nextTarget: { readonly sheet: string; readonly area: GridArea } | null = await Excel.run(
+  const nextTarget: { readonly sheet: string; readonly area: GridArea } | null = await run(
     async (context) => {
       // Excel refuses value loads on a ctrl+click selection (a multi-area Range), so the
       // address is probed alone first. Single rectangles load fully; multi-area ones go
@@ -350,7 +357,7 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
 
 /** Summarise and return the already-resolved first reference for the live grid. */
 async function explain(
-  context: Excel.RequestContext,
+  context: HostContext,
   mirrored: Extract<PaneState, { kind: "formula" }>,
   isCurrent: () => boolean,
 ): Promise<Resolved | null> {
@@ -385,29 +392,27 @@ followEditor({
  * The pane's only top-level boundary. Anything thrown while starting up used to leave a
  * pane that renders but never mirrors anything — the failure has to reach the screen.
  */
-const start = async (info: { host: Office.HostType | null }): Promise<void> => {
-  if (info.host !== Office.HostType.Excel) {
+const start = async (ready: ExcelHost | null): Promise<void> => {
+  if (ready === null) {
     show({ kind: "error", message: "Excel에서만 동작합니다." }, null)
     return
   }
+  host = ready
   show({ kind: "idle" }, null)
   tabs.paint()
   chatting.start()
   await linkedWorkbookControl.start()
 
-  await Excel.run(async (context) => {
-    selectionEvents.attach(
-      context.workbook.worksheets,
-      Office.context.requirements.isSetSupported("ExcelApi", "1.10"),
-    )
+  await run(async (context) => {
+    selectionEvents.attach(context.workbook.worksheets, ready.isSetSupported("ExcelApi", "1.10"))
     await context.sync()
   })
 
   selectionEvents.select("")
 }
 
-Office.onReady((info) => {
-  start(info).catch((error: unknown) => {
+startOfficeHost((ready) => {
+  start(ready).catch((error: unknown) => {
     // no-excuse-ok: catch — the entry point is the last place an error can be shown.
     show({ kind: "error", message: error instanceof Error ? error.message : String(error) }, null)
   })
