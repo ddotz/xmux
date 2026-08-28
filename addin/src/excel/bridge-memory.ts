@@ -45,6 +45,8 @@ type Target =
   | { readonly kind: "sheet"; readonly sheet: MemorySheet }
   | RangeTarget
   | { readonly kind: "func"; readonly fn: string; readonly source: RangeTarget }
+  /** A table is not its range: it has a name of its own and owns columns. */
+  | { readonly kind: "table"; readonly name: string; readonly range: RangeTarget }
 
 const cellAt = (sheet: MemorySheet, row: number, column: number): string =>
   sheet.cells[row - 1]?.[column - 1] ?? ""
@@ -253,6 +255,8 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
         return { kind: "sheet", sheet }
       }
       case "getRange": {
+        // A table answers `getRange` with the rectangle it covers, and takes no address.
+        if (target.kind === "table") return target.range
         if (target.kind !== "sheet") throw new Error("bridge: getRange needs a worksheet")
         return { kind: "range", sheet: target.sheet, area: parseArea(literal(args[0])) }
       }
@@ -263,8 +267,10 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
       }
       case "getNameRange":
         return locate(workbook, workbook.names?.[literal(args[0])])
-      case "getTableRange":
-        return locate(workbook, workbook.tables?.[literal(args[0])])
+      case "getTable": {
+        const name = literal(args[0])
+        return { kind: "table", name, range: locate(workbook, workbook.tables?.[name]) }
+      }
       case "getSelectedRange": {
         const selected = workbook.selected
         if (selected === undefined) return { kind: "range", sheet: null, area: null }
@@ -358,6 +364,15 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
             return false
           default:
             throw new Error(`bridge: a worksheet has no "${path}"`)
+        }
+      case "table":
+        switch (path) {
+          case "name":
+            return target.name
+          case "isNullObject":
+            return target.range.sheet === null || target.range.area === null
+          default:
+            throw new Error(`bridge: a table has no "${path}"`)
         }
       case "func":
         if (path !== "value") throw new Error(`bridge: a function result has no "${path}"`)

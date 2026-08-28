@@ -40,9 +40,13 @@ import type {
  * What the other side owes, in full:
  *
  * - `execute(ops)` → a map from handle id to the properties that were loaded for it.
- * - Eight members to dispatch: `worksheets`, `getNameRange`, `getTableRange`,
- *   `getSelectedRange`, `func` on the workbook; `getItem` on the worksheet collection;
- *   `getRange` and `getUsedRange` on a worksheet. Plus `load`.
+ * - A dispatch table, keyed by member name. `bridge-memory.ts` is its reference
+ *   implementation and the authoritative list; the transcripts in the tests are how each
+ *   member's arguments are fixed. A member with no implementation must say so by name
+ *   rather than go quiet, because that message is the remaining work.
+ * - Two op kinds and no more. A method is a `call`; a property write is `set`, nested ones
+ *   as dotted paths (`set("format.fill.color", …)`). Wanting a third kind means the dotted
+ *   path is being worked around.
  * - Ops arrive in issue order and are executed in it. A call op names the handle id its
  *   result takes; the host never invents ids except for collection children, which are
  *   negative so the two id spaces cannot collide.
@@ -556,8 +560,12 @@ export const buildBridgeContext = (send: BridgeSend) => {
           call(WORKBOOK, "names.add", [name, { handle: Reflect.get(reference, "handle") }]),
       },
       tables: {
+        // A table and the rectangle it covers are two different things, so they are two
+        // handles. Folding them into one taught the host that `getTableRange` must also
+        // answer `name` and own `columns` — a specification a C# implementer would have
+        // honoured, and been wrong. The chain here reads exactly as the pane writes it.
         getItemOrNullObject: (name: string) => {
-          const table = call(WORKBOOK, "getTableRange", [name])
+          const table = call(WORKBOOK, "getTable", [name])
           return {
             get isNullObject(): boolean {
               return read(table, `table ${name}`, "isNullObject") === true
@@ -567,7 +575,7 @@ export const buildBridgeContext = (send: BridgeSend) => {
               return typeof value === "string" ? value : ""
             },
             load: (properties: string) => request(table, properties),
-            getRange: () => range(table, `table ${name}`),
+            getRange: () => range(call(table, "getRange", []), `table ${name}`),
             getDataBodyRange: () =>
               range(call(table, "getDataBodyRange", []), `table ${name} data body`),
             columns: {

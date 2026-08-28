@@ -105,15 +105,18 @@ describe("the wire", () => {
     const members = new Set(
       bridge.transcript.flat().flatMap((op) => (op.op === "call" ? [op.member] : [])),
     )
-    // Eight members and `load`. Adding a pane feature adds a row to that table; it never
-    // changes the wire, which is the point of a generic op list.
+    // Eight members and `load` for the whole read path. Adding a pane feature adds a row to
+    // that table; it never changes the wire, which is the point of a generic op list.
+    // `getTable` then `getRange` rather than one combined member: a table has a name and
+    // owns columns, its range has neither, and a host told to answer both from one handle
+    // would implement the confusion faithfully.
     expect([...members].sort()).toEqual([
       "func",
       "getItem",
       "getNameRange",
       "getRange",
       "getSelectedRange",
-      "getTableRange",
+      "getTable",
       "getUsedRange",
       "worksheets",
     ])
