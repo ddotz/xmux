@@ -1,7 +1,7 @@
 import { formatArea, type GridArea, parseArea } from "../excel/address"
 import { createHistory } from "../excel/history"
 import type { ExcelHost, HostContext, HostRange } from "../excel/host"
-import { startOfficeHost } from "../excel/host-office"
+import { startHost } from "../excel/host-entry"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
 import { summariseReferences } from "../excel/summarise"
@@ -413,7 +413,7 @@ const start = async (ready: ExcelHost | null): Promise<void> => {
   selectionEvents.select("")
 }
 
-startOfficeHost((ready) => {
+startHost((ready) => {
   start(ready).catch((error: unknown) => {
     // no-excuse-ok: catch — the entry point is the last place an error can be shown.
     show({ kind: "error", message: error instanceof Error ? error.message : String(error) }, null)

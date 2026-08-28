@@ -1,6 +1,6 @@
 import { readdirSync, readFileSync, statSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 const sourceRoot = fileURLToPath(new URL("..", import.meta.url)).replace(/\/$/, "")
 
@@ -55,12 +55,62 @@ describe("Excel host port", () => {
     expect(offenders).toEqual([])
   })
 
-  it("routes the pane entry point through the port", () => {
+  it("routes the pane entry point through the host selection seam", () => {
     const main = readFileSync(`${sourceRoot}/taskpane/main.ts`, "utf8")
-    expect(main).toContain('import { startOfficeHost } from "../excel/host-office"')
+    expect(main).toContain('import { startHost } from "../excel/host-entry"')
+    expect(main).toContain("startHost((ready) =>")
+    expect(main).not.toContain("host-office")
+    expect(main).not.toContain("host-xll")
     // The controls are built before the handshake, so the host is read at call time.
     expect(main).toContain("let host: ExcelHost | null = null")
     expect(main).toContain("host?.classify(error)")
+  })
+
+  it("selects the bridge only from its injected host object", async () => {
+    // The bridge object is injected before the WebView2 page starts. Office.js instead
+    // loads before its asynchronous handshake, so its global cannot safely select a host:
+    // "Office is not defined yet" and "this is not an Office host" look identical.
+    const startOfficeHost = vi.fn()
+    const startBridgeHost = vi.fn()
+    vi.doMock("./host-office", () => ({ startOfficeHost }))
+    // Only the start function is replaced. The real discovery stays, so this exercises the
+    // actual object path rather than a copy of it written here.
+    vi.doMock("./host-xll", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./host-xll")>()),
+      startBridgeHost,
+    }))
+
+    vi.stubGlobal("window", { chrome: { webview: { hostObjects: { xmux: {} } } } })
+    const entryWithBridge = await import("./host-entry")
+    entryWithBridge.startHost(vi.fn())
+    expect(startBridgeHost).toHaveBeenCalledOnce()
+    expect(startOfficeHost).not.toHaveBeenCalled()
+
+    vi.resetModules()
+    vi.stubGlobal("window", {})
+    const entryWithoutBridge = await import("./host-entry")
+    entryWithoutBridge.startHost(vi.fn())
+    expect(startOfficeHost).toHaveBeenCalledOnce()
+    expect(startBridgeHost).toHaveBeenCalledOnce()
+    vi.unstubAllGlobals()
+  })
+
+  it("keeps adapter imports together at the entry seam", () => {
+    // What matters is that one module knows both adapters exist and nothing else does — not
+    // how it spells the imports. The object path itself is named once, in `host-xll.ts`,
+    // because it is a contract with the C# side and two copies drift apart silently.
+    const entry = readFileSync(`${sourceRoot}/excel/host-entry.ts`, "utf8")
+    expect(entry).toContain('from "./host-office"')
+    expect(entry).toContain('from "./host-xll"')
+    const pathMentions = sourceFiles(sourceRoot).filter((path) =>
+      readFileSync(path, "utf8").includes("hostObjects"),
+    )
+    expect(pathMentions).toEqual([`${sourceRoot}/excel/host-xll.ts`])
+    const adapterImporters = sourceFiles(sourceRoot).filter((path) => {
+      const source = readFileSync(path, "utf8")
+      return source.includes('from "./host-office"') && source.includes('from "./host-xll"')
+    })
+    expect(adapterImporters).toEqual([`${sourceRoot}/excel/host-entry.ts`])
   })
 
   it("states the host failures the pane has to tell apart", () => {

@@ -38,6 +38,15 @@ today.
 - **Both paths run over it.** `resolveReferences`, `summariseReferences`, `listSheets` and
   `readWindow` for reads; the real `runWrite` with a real history for `write_range`,
   `clear_range`, `insert_rows`, `delete_range`, `fill_formula` and `create_sheet`.
+- **A second host exists.** `host-xll.ts` implements `ExcelHost` over the bridge and
+  `host-entry.ts` picks between it and Office.js — the pane no longer has one hardcoded
+  adapter, which under an XLL meant `Office.onReady` never firing and a blank pane with no
+  error. Three things fell out of building it that would have been invented badly in front
+  of a borrowed Windows machine: `isSetSupported`/`workbookUrl` are synchronous, so
+  capabilities and the workbook URL must arrive in a **handshake payload**; a host refusal
+  has to cross as **data**, since recovering a code from an error message turns the pane's
+  own bugs into fake Excel errors; and selection has to be **pushed**, because the pane
+  never polls.
 - **The two local-service features are behind a port.** `host-services.ts` states what the
   pane needs besides the workbook — read a rectangle out of a saved file, read the native
   editor state — with the current HTTP calls as one adapter. Neither `external-workbook.ts`
@@ -55,8 +64,13 @@ today.
    `bridge: no dispatch for "…" — the host object still owes this member`. **That message
    is the backlog**, and it is the same backlog the C# side has. Every wire *shape* is
    already fixed, so each remaining member is one dispatch entry and one transcript.
-2. **A host-object implementation of `HostServices`.** The port exists; nothing implements
-   it except the HTTP adapter.
+2. **`HostServices` on the same wire.** The port exists with only an HTTP adapter, so an
+   XLL host would have to answer `execute(ops)` *and* serve two endpoints. Both should be
+   dispatch members, so the C# side implements one table.
+3. **`data-tools.ts` needs no wire changes** — it takes the same `OperateContext`, so what
+   it lacks is backend members: `dataValidation`, `autoFilter`, `tables`, `protection`,
+   `removeDuplicates`, `pivotTables`, `pageLayout`, `names.add`, `application.calculate`,
+   sheet `copy`/`activate`. Each is one dispatch entry and one transcript.
 
 ## Blocked on a Windows PC
 

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 
 const main = readFileSync(new URL("./main.ts", import.meta.url), "utf8")
 const adapter = readFileSync(new URL("../excel/host-office.ts", import.meta.url), "utf8")
+const entry = readFileSync(new URL("../excel/host-entry.ts", import.meta.url), "utf8")
 
 /**
  * The pane bundle is a deferred module: its top level runs while office.js is still polling
@@ -54,11 +55,13 @@ describe("task pane bootstrap order", () => {
     expect(main).not.toMatch(/requirements:\s*Office\.context\.requirements/)
   })
 
-  it("registers Office.onReady as the only startup entry point", () => {
+  it("routes startup through host selection before registering Office.onReady", () => {
     // Given: office.js polls for Office.onReady or Office.initialize and throws without it.
-    // The registration moved into the adapter, so the pane reaches it through one call.
+    // The registration stays in the adapter, while the pane reaches the selection seam.
     expect(adapter).toContain("Office.onReady(")
-    expect(main).toContain("startOfficeHost((ready) =>")
+    expect(entry).toContain("startOfficeHost(onReady)")
+    expect(main).toContain("startHost((ready) =>")
+    expect(main).not.toContain("startOfficeHost")
     expect(main).not.toContain("Office.onReady(")
   })
 

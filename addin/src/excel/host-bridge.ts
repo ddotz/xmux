@@ -4,13 +4,9 @@ import type {
   CalculationKind,
   CalculationMode,
   ChartKind,
-  ClearApplyTo,
   ConditionalFormatKind,
   CopyType,
-  DeleteShift,
-  FillType,
   HorizontalAlignment,
-  InsertShift,
   OperateContext,
   OperateRange,
   OperateSheet,
@@ -18,6 +14,7 @@ import type {
   PaperSize,
   SeriesBy,
   SheetPosition,
+  SheetVisibility,
   SummarizeBy,
 } from "./office-shapes"
 
@@ -39,7 +36,9 @@ import type {
  *
  * What the other side owes, in full:
  *
- * - `execute(ops)` → a map from handle id to the properties that were loaded for it.
+ * - `execute(ops)` → `{ values }`, a map from handle id to the properties that were loaded
+ *   for it, or `{ values, failure }` when an op was refused. `failure.code` is the host's
+ *   stable error name, including `cellEditMode`.
  * - A dispatch table, keyed by member name. `bridge-memory.ts` is its reference
  *   implementation and the authoritative list; the transcripts in the tests are how each
  *   member's arguments are fixed. A member with no implementation must say so by name
@@ -76,13 +75,39 @@ export type BridgeOp =
 
 /** One handle's loaded properties. A collection's `items` carries the host's child ids. */
 export type BridgeValues = Readonly<Record<string, unknown>>
-export type BridgeResponse = Readonly<Record<number, BridgeValues>>
+export type BridgeFailure = { readonly code: string; readonly message: string }
+export type BridgeResponse = {
+  readonly values: Readonly<Record<number, BridgeValues>>
+  readonly failure?: BridgeFailure
+}
 export type BridgeSend = (ops: readonly BridgeOp[]) => Promise<BridgeResponse>
 
 /** A child the host materialised: its id, plus whatever `items/...` asked for. */
 export type BridgeChild = { readonly id: number } & BridgeValues
 
+/** A protocol violation on the pane's side: it read what it never loaded, or used a dead
+ * handle. It belongs to the caller, so `classify` must let it through rather than dress it
+ * up as something Excel did. */
 class BridgeError extends Error {}
+
+/**
+ * A refusal from the host, carried as data rather than as prose.
+ *
+ * Folding the code into the message and splitting it back out on `": "` reads fine until a
+ * pane-side `BridgeError` (`sheet Main: read "visibility" without loading it`) parses as a
+ * host failure with the code `sheet Main` and gets shown to the user as Excel's answer. The
+ * code is a field, and `classify` asks with `instanceof` — the same shape `host-office.ts`
+ * uses against `OfficeExtension.Error`.
+ */
+export class BridgeHostError extends Error {
+  readonly failure: BridgeFailure
+
+  constructor(failure: BridgeFailure) {
+    super(`${failure.code}: ${failure.message}`)
+    this.name = "BridgeHostError"
+    this.failure = failure
+  }
+}
 
 const isChildList = (value: unknown): value is readonly BridgeChild[] =>
   Array.isArray(value) &&
@@ -201,14 +226,26 @@ export const buildBridgeContext = (send: BridgeSend) => {
       const value = read(id, label, "formulas")
       return Array.isArray(value) ? value : []
     },
+    get values(): unknown[][] {
+      const value = read(id, label, "values")
+      return Array.isArray(value) ? value : []
+    },
+    get valueTypes(): string[][] {
+      const value = read(id, label, "valueTypes")
+      return Array.isArray(value) ? value : []
+    },
     set formulas(value: unknown[][]) {
       set(id, "formulas", value)
     },
-    get numberFormat(): unknown[][] {
+    get numberFormat(): string[][] {
       const value = read(id, label, "numberFormat")
-      return Array.isArray(value) ? value : []
+      return Array.isArray(value)
+        ? value.map((row) =>
+            Array.isArray(row) ? row.map((cell) => (typeof cell === "string" ? cell : "")) : [],
+          )
+        : []
     },
-    set numberFormat(value: unknown[][]) {
+    set numberFormat(value: string[][]) {
       set(id, "numberFormat", value)
     },
     get rowCount(): number {
@@ -222,6 +259,17 @@ export const buildBridgeContext = (send: BridgeSend) => {
     get cellCount(): number {
       const value = read(id, label, "cellCount")
       return typeof value === "number" ? value : 0
+    },
+    get rowIndex(): number {
+      const value = read(id, label, "rowIndex")
+      return typeof value === "number" ? value : 0
+    },
+    get columnIndex(): number {
+      const value = read(id, label, "columnIndex")
+      return typeof value === "number" ? value : 0
+    },
+    get worksheet() {
+      return sheet(call(id, "worksheet", []), `${label} worksheet`)
     },
     get rowHidden(): boolean {
       return read(id, label, "rowHidden") === true
@@ -279,13 +327,15 @@ export const buildBridgeContext = (send: BridgeSend) => {
     },
     getColumn: (index: number) => range(call(id, "getColumn", [index]), `${label} column ${index}`),
     getRow: (index: number) => range(call(id, "getRow", [index]), `${label} row ${index}`),
+    getCell: (row: number, column: number) =>
+      range(call(id, "getCell", [row, column]), `${label} cell ${row},${column}`),
     getResizedRange: (rows: number, columns: number) =>
       range(call(id, "getResizedRange", [rows, columns]), `${label} resized range`),
     getUsedRangeOrNullObject: (valuesOnly?: boolean) =>
       range(call(id, "getUsedRange", [valuesOnly ?? false]), `${label} used range`),
-    insert: (shift: InsertShift) => call(id, "insert", [shift]),
-    delete: (shift: DeleteShift) => call(id, "delete", [shift]),
-    clear: (applyTo?: ClearApplyTo) => call(id, "clear", [applyTo]),
+    insert: (shift: string) => call(id, "insert", [shift]),
+    delete: (shift: string) => call(id, "delete", [shift]),
+    clear: (applyTo?: string) => call(id, "clear", [applyTo]),
     select: () => call(id, "select", []),
     sort: {
       apply: (fields: readonly unknown[], matchCase: boolean, hasHeaders: boolean) =>
@@ -293,7 +343,7 @@ export const buildBridgeContext = (send: BridgeSend) => {
     },
     merge: (across?: boolean) => call(id, "merge", [across]),
     unmerge: () => call(id, "unmerge", []),
-    autoFill: (destination: OperateRange, type: FillType) =>
+    autoFill: (destination: object, type: string) =>
       call(id, "autoFill", [{ handle: Reflect.get(destination, "handle") }, type]),
     copyFrom: (
       source: OperateRange,
@@ -378,14 +428,22 @@ export const buildBridgeContext = (send: BridgeSend) => {
       const value = read(id, label, "name")
       return typeof value === "string" ? value : ""
     },
-    get visibility(): string {
-      const value = read(id, label, "visibility")
+    get id(): string {
+      const value = read(id, label, "id")
       return typeof value === "string" ? value : ""
+    },
+    get visibility(): SheetVisibility {
+      const value = read(id, label, "visibility")
+      return value === "Hidden" || value === "VeryHidden" ? value : "Visible"
     },
     get isNullObject(): boolean {
       return read(id, label, "isNullObject") === true
     },
     getRange: (address: string) => range(call(id, "getRange", [address]), `${label}!${address}`),
+    getCell: (row: number, column: number) =>
+      range(call(id, "getCell", [row, column]), `${label} cell ${row},${column}`),
+    getRangeByIndexes: (row: number, column: number, height: number, width: number) =>
+      range(call(id, "getRangeByIndexes", [row, column, height, width]), `${label} indexed range`),
     getUsedRangeOrNullObject: (valuesOnly?: boolean) =>
       range(call(id, "getUsedRange", [valuesOnly ?? false]), `${label} used range`),
     activate: () => call(id, "activate", []),
@@ -418,6 +476,10 @@ export const buildBridgeContext = (send: BridgeSend) => {
       },
     },
     tables: {
+      load: (properties: string) => request(id, `tables/${properties}`),
+      get items() {
+        return []
+      },
       add: (address: string, hasHeaders: boolean) => {
         const table = call(id, "tables.add", [address, hasHeaders])
         return {
@@ -544,15 +606,53 @@ export const buildBridgeContext = (send: BridgeSend) => {
         sheet(call(id, "getItemOrNullObject", [name]), `sheet ${name}`),
       getActiveWorksheet: () => sheet(call(id, "getActiveWorksheet", []), "active sheet"),
       add: (name: string) => call(id, "add", [name]),
+      onSelectionChanged: {
+        add: (
+          handler: (event: {
+            readonly address: string
+            readonly worksheetId: string
+          }) => Promise<void>,
+        ) => call(id, "onSelectionChanged.add", [handler]),
+      },
+      onSingleClicked: {
+        add: (
+          handler: (event: {
+            readonly address: string
+            readonly worksheetId: string
+          }) => Promise<void>,
+        ) => call(id, "onSingleClicked.add", [handler]),
+      },
     }
   }
 
   const context = {
     workbook: {
+      linkedWorkbooks: {
+        load: (properties: string) => request(WORKBOOK, `linkedWorkbooks/${properties}`),
+        get items(): readonly { readonly id: string }[] {
+          const value = read(WORKBOOK, "linkedWorkbooks", "linkedWorkbooks")
+          if (!isChildList(value)) return []
+          const items: { id: string }[] = []
+          for (const child of value) {
+            const id = Reflect.get(child, "id")
+            if (typeof id === "string") items.push({ id })
+          }
+          return items
+        },
+        refreshAll: () => call(WORKBOOK, "linkedWorkbooks.refreshAll", []),
+      },
       get worksheets() {
         return worksheets()
       },
       names: {
+        load: (properties: string) => request(WORKBOOK, `names/${properties}`),
+        get items(): readonly {
+          readonly name: string
+          readonly formula: unknown
+          readonly scope: string
+        }[] {
+          return []
+        },
         getItemOrNullObject: (name: string) => ({
           getRangeOrNullObject: () => range(call(WORKBOOK, "getNameRange", [name]), `name ${name}`),
         }),
@@ -594,6 +694,10 @@ export const buildBridgeContext = (send: BridgeSend) => {
         countA: functionOn("COUNTA"),
         sum: functionOn("SUM"),
         average: functionOn("AVERAGE"),
+        min: functionOn("MIN"),
+        max: functionOn("MAX"),
+        count: functionOn("COUNT"),
+        countBlank: functionOn("COUNTBLANK"),
       },
       application: {
         set calculationMode(value: CalculationMode) {
@@ -603,6 +707,30 @@ export const buildBridgeContext = (send: BridgeSend) => {
         load: (properties: string) => request(WORKBOOK, `application/${properties}`),
       },
       getSelectedRange: () => range(call(WORKBOOK, "getSelectedRange", []), "selection"),
+      getSelectedRanges: () => {
+        const selected = call(WORKBOOK, "getSelectedRanges", [])
+        return {
+          load: (properties: string) => request(selected, properties),
+          get address(): string {
+            const value = read(selected, "selected areas", "address")
+            return typeof value === "string" ? value : ""
+          },
+          get worksheet(): { readonly name: string } {
+            const value = read(selected, "selected areas", "worksheet/name")
+            return { name: typeof value === "string" ? value : "" }
+          },
+          get areas(): { readonly items: readonly { readonly cellCount: number }[] } {
+            const value = read(selected, "selected areas", "areas/items")
+            if (!isChildList(value)) return { items: [] }
+            return {
+              items: value.map((child) => {
+                const cellCount = Reflect.get(child, "cellCount")
+                return { cellCount: typeof cellCount === "number" ? cellCount : 0 }
+              }),
+            }
+          },
+        }
+      },
     },
     sync: async (): Promise<void> => {
       assertOpen("context")
@@ -611,7 +739,8 @@ export const buildBridgeContext = (send: BridgeSend) => {
       if (ops.length === 0) return
       transcript.push(ops)
       const response = await send(ops)
-      for (const [id, values] of Object.entries(response)) absorb(Number(id), values)
+      if (response.failure !== undefined) throw new BridgeHostError(response.failure)
+      for (const [id, values] of Object.entries(response.values)) absorb(Number(id), values)
     },
   }
 

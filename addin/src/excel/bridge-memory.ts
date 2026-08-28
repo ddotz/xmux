@@ -1,4 +1,5 @@
 import { formatArea, type GridArea, parseArea } from "./address"
+import type { HostSelectionEvent } from "./host"
 import type { BridgeArg, BridgeOp, BridgeResponse, BridgeSend, BridgeValues } from "./host-bridge"
 import { WORKBOOK } from "./host-bridge"
 
@@ -29,6 +30,11 @@ export type MemoryWorkbook = {
   readonly tables?: Readonly<Record<string, string>>
   /** What `getSelectedRange()` answers, for the external-reference fallback path. */
   readonly selected?: { readonly address: string; readonly text: string }
+}
+
+export type MemoryBridge = BridgeSend & {
+  readonly fireSelection: (event: HostSelectionEvent) => Promise<void>
+  readonly failNext: (code: string, message: string) => void
 }
 
 type RangeTarget = {
@@ -174,11 +180,17 @@ const deleteArea = (target: RangeTarget, shift: string): void => {
  * Build the host side for one pane session. The returned `send` holds the handle table, the
  * way an in-process host object holds it for as long as the WebView2 is alive.
  */
-export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
+export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
   const handles = new Map<number, Target>([[WORKBOOK, { kind: "workbook" }]])
   const childIds = new Map<string, number>()
   const rangeProperties = new Map<string, unknown>()
   let nextChild = -1
+  let nextFailure: { readonly code: string; readonly message: string } | undefined
+  const selectionHandlers = new Set<(event: HostSelectionEvent) => Promise<void>>()
+
+  const isSelectionHandler = (
+    value: unknown,
+  ): value is (event: HostSelectionEvent) => Promise<void> => typeof value === "function"
 
   const rangeKey = (target: RangeTarget): string => {
     if (target.sheet === null || target.area === null) throw new Error("bridge: range is null")
@@ -227,6 +239,14 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
     switch (member) {
       case "worksheets":
         return { kind: "worksheets" }
+      case "onSelectionChanged.add":
+      case "onSingleClicked.add": {
+        if (target.kind !== "worksheets") throw new Error(`bridge: ${member} needs worksheets`)
+        const handler = args[0]
+        if (!isSelectionHandler(handler)) throw new Error(`bridge: ${member} needs a handler`)
+        selectionHandlers.add(handler)
+        return target
+      }
       case "getItem": {
         const name = literal(args[0])
         const sheet = workbook.sheets.find((candidate) => candidate.name === name)
@@ -396,7 +416,7 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
     }),
   })
 
-  return async (ops: readonly BridgeOp[]): Promise<BridgeResponse> => {
+  const send = async (ops: readonly BridgeOp[]): Promise<BridgeResponse> => {
     const response: Record<number, Record<string, unknown>> = {}
     // Strictly in issue order, mutations included — clause 3 of the protocol. Holding writes
     // back to the end of the batch would be cheaper here and wrong everywhere: Office runs
@@ -404,6 +424,11 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
     // value. A host that reorders answers a different question than the Office adapter does,
     // which is the one thing a second adapter may never do.
     for (const op of ops) {
+      if (nextFailure !== undefined) {
+        const failure = nextFailure
+        nextFailure = undefined
+        return { values: response, failure }
+      }
       if (op.op === "call") {
         handles.set(op.id, dispatch(op.on, op.member, op.args))
         continue
@@ -414,6 +439,15 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
       else for (const path of op.properties) values[path] = property(target, path)
       response[op.on] = values
     }
-    return response
+    return { values: response }
   }
+
+  return Object.assign(send, {
+    fireSelection: async (event: HostSelectionEvent): Promise<void> => {
+      await Promise.all([...selectionHandlers].map((handler) => handler(event)))
+    },
+    failNext: (code: string, message: string): void => {
+      nextFailure = { code, message }
+    },
+  })
 }
