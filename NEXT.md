@@ -32,6 +32,9 @@ the per-case evidence; this is only the order.
 3. **XLL spike (only if the pilot fails).** Three gates before any bridge code: a CTP
    hosting WebView2 that renders `dist/index.html` through a virtual host mapping, one
    host-object round trip to a real cell, and an unsigned `.xll` loading on the target PC.
+   The pane-side half of that work is already de-risked: the read path is proven to obey
+   the load/sync protocol under `strict-context.ts`. The write path is not — extending that
+   context over `operate.ts` is the first move if the spike starts.
 
 ## Blocked on a network
 

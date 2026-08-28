@@ -58,13 +58,20 @@ import type {
  *    decides what to show from `classify`, so a host that swallows a refusal into an empty
  *    read turns "Excel is in cell-edit mode" into "the cell is blank".
  *
- * `excel/eval-context.ts` is a reference implementation of the *read* half of this protocol
- * (`InspectContext`, plus enough of the write path for the fill tests) over in-memory
- * fixtures, where `sync` is nearly a no-op because nothing is remote. A host with a real
- * boundary — an in-process COM bridge behind WebView2 — has to supply the deferral itself:
- * queue the accessors and loads, resolve them on `sync`, and only then populate the handles.
- * That work is the actual cost of a second adapter, and it is not visible in the member
- * list below.
+ * None of that is checkable by types, so it is checked by a test: `excel/strict-context.ts`
+ * implements the read contracts with the deferral made strict — reading an unloaded
+ * property throws, reading a loaded one before `sync` throws, and a handle outliving its
+ * batch throws — and `strict-context.test.ts` runs `resolveReferences`, `summariseReferences`,
+ * `listSheets` and `readWindow` through it. Those consumers obey the protocol; that is a
+ * result, not an assumption. The write side (`operate.ts`) has no such check yet.
+ *
+ * `excel/eval-context.ts` is a separate stand-in for the evaluation harness, satisfying
+ * `InspectContext` plus enough of the write path for the fill tests. It is lenient about the
+ * protocol by design, so it proves the reads answerable off Office but not the deferral.
+ * A host with a real boundary — an in-process COM bridge behind WebView2 — has to supply
+ * that deferral itself, in TypeScript, on the pane side: queue the accessors and loads,
+ * resolve them in one round trip on `sync`, and only then populate the handles. That work is
+ * the actual cost of a second adapter, and it is not visible in the member list below.
  *
  * What is *not* behind this port, and is owed separately: the pane also talks to its local
  * service over HTTP for two features — `/xmux/external` (`external-workbook.ts`, reading a
