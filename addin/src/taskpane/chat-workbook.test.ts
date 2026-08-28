@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import type { HostContext } from "../excel/host"
 import { listSheets } from "../excel/sheets"
 import { readWorkbookContext } from "./chat-workbook"
 
@@ -69,7 +70,7 @@ const contextFor = (
     context: {
       workbook: { getSelectedRange: () => selection },
       sync: vi.fn().mockResolvedValue(undefined),
-    } as unknown as Excel.RequestContext,
+    } as unknown as HostContext,
   }
 }
 

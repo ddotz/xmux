@@ -22,6 +22,7 @@ import {
 } from "../ai/tools"
 import { formatArea, parseArea } from "../excel/address"
 import type { History } from "../excel/history"
+import type { HostContext } from "../excel/host"
 import { type InspectObservation, observeTool, type RangeEvidence } from "../excel/inspect"
 import type { InspectContext, OperateContext } from "../excel/office-shapes"
 import { runWrite } from "../excel/operate"
@@ -72,7 +73,7 @@ import { readWorkbookContext } from "./chat-workbook"
 
 export type ChattingDeps = {
   readonly redraw: () => void
-  readonly run: (work: (context: Excel.RequestContext) => Promise<void>) => Promise<void>
+  readonly run: (work: (context: HostContext) => Promise<void>) => Promise<void>
   readonly anchor: () => { readonly address: string; readonly formula: string } | null
   readonly history: History
 }

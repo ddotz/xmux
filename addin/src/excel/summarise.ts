@@ -16,7 +16,8 @@ export type ResolvedReference = {
 
 export type SummaryRange = {
   readonly load: (properties: string) => void
-  readonly text: string[][]
+  /** Read-only: a summary never writes, and the host's read side hands back frozen rows. */
+  readonly text: readonly (readonly string[])[]
 }
 
 type SummaryResult = {

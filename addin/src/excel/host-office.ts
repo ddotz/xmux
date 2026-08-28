@@ -1,4 +1,4 @@
-import type { ExcelHost, HostFailure } from "./host"
+import type { ExcelHost, HostContext, HostFailure } from "./host"
 
 /**
  * The Office.js implementation of the pane's host port — and the only module that touches
@@ -6,7 +6,13 @@ import type { ExcelHost, HostFailure } from "./host"
  * it). Everything here is a thin forward: no pane logic lives at this layer.
  */
 export const officeHost: ExcelHost = {
-  run: (work) => Excel.run(work),
+  // The one structural cast in the pane, and the reason it is safe: Office's own overloads
+  // are wider than the slice `office-shapes.ts` names (`Excel.RequestContext extends
+  // InspectContext` is false), so assignability cannot carry it. The `KeysFit` parity
+  // assertions there are the compile-time evidence that every member the port names really
+  // exists on the installed Office typings — a renamed member breaks the build there, not
+  // here, and not in a user's workbook.
+  run: (work) => Excel.run((context) => work(context as unknown as HostContext)),
   isSetSupported: (name, minimumVersion) =>
     Office.context.requirements.isSetSupported(name, minimumVersion),
   classify: (error): HostFailure | null => {

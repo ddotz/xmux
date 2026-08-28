@@ -19,22 +19,11 @@ const sourceFiles = (directory: string): string[] => {
   return found
 }
 
-// Runtime reaches for the host, not type positions or prose: `Excel.Range` as a type and a
-// comment naming Office.context are both fine, and banning them would push the parity
-// assertions in office-shapes.ts out of the language they document.
-//
-// The member-access pattern is what catches an enum read like `Excel.SheetVisibility.visible`
-// — a value, not a type, and one no second host can answer. A namespace followed by a
-// lowercase member is always a runtime read; `Excel.Range` and `Excel.SheetVisibility` alone
-// are type positions and stay legal.
-const runtimeGlobals = [
-  /\bExcel\.run\(/,
-  /\bExcel\.[A-Z]\w*\.[a-z]/,
-  /\bOffice\.context\./,
-  /\bOffice\.onReady/,
-  /\bOffice\.HostType\./,
-  /\bOfficeExtension\./,
-]
+// Now that the port is stated in this project's own types, nothing outside the two allowed
+// files needs to name Office at all — not at runtime, not in a type position. Prose is
+// exempt because comments are stripped first; a sentence about Office.context explains the
+// seam rather than depending on it.
+const officeGlobals = [/\bExcel\./, /\bOffice\./, /\bOfficeExtension\./]
 
 const withoutComments = (source: string): string =>
   source
@@ -57,7 +46,7 @@ describe("Excel host port", () => {
     for (const path of sourceFiles(sourceRoot)) {
       if (allowed.includes(path)) continue
       const source = withoutComments(readFileSync(path, "utf8"))
-      for (const global of runtimeGlobals) {
+      for (const global of officeGlobals) {
         const found = global.exec(source)
         if (found !== null) offenders.push(`${path.slice(sourceRoot.length + 1)}: ${found[0]}`)
       }
@@ -80,5 +69,19 @@ describe("Excel host port", () => {
     // keep its last good render. A host that cannot name it would blank the pane.
     expect(port).toContain('kind: "cellEditMode"')
     expect(port).toContain('kind: "host"')
+  })
+
+  it("leaves the one Office cast in the adapter, with the parity check behind it", () => {
+    // Given: Office does not satisfy the port by assignability — its own overloads are wider
+    // than the slice we name — so exactly one structural cast bridges the two.
+    const adapter = readFileSync(`${sourceRoot}/excel/host-office.ts`, "utf8")
+    expect(adapter).toContain("context as unknown as HostContext")
+    expect(adapter.match(/as unknown as/g)).toHaveLength(1)
+    // Then: what makes that cast honest is the compile-time parity between the shapes the
+    // port names and the installed Office typings. Losing those assertions turns a renamed
+    // Office member into a runtime failure inside a user's workbook.
+    const shapes = readFileSync(`${sourceRoot}/excel/office-shapes.ts`, "utf8")
+    expect(shapes).toContain("KeysFit<OperateRange, Excel.Range>")
+    expect(shapes).toContain("KeysFit<OperateSheet, Excel.Worksheet>")
   })
 })

@@ -1,6 +1,7 @@
 import { formatArea, type GridArea, MAX_COLUMN, MAX_ROW } from "../excel/address"
 import type { History } from "../excel/history"
 import { recordWrite } from "../excel/history"
+import type { HostContext } from "../excel/host"
 import { listSheets, readWindow } from "../excel/sheets"
 import type { ViewportState } from "../model"
 import type { CellEdit } from "./sheet"
@@ -20,7 +21,7 @@ const CONTEXT = { rows: 2, columns: 1 } as const
 
 export type ViewportDeps = {
   readonly redraw: () => void
-  readonly run: (work: (context: Excel.RequestContext) => Promise<void>) => Promise<void>
+  readonly run: (work: (context: HostContext) => Promise<void>) => Promise<void>
   /** Every write records what was there before, so the pane can put it back. */
   readonly history: History
 }

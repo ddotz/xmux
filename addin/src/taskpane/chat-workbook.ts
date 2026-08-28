@@ -1,4 +1,5 @@
 import { type GridArea, MAX_COLUMN, MAX_ROW } from "../excel/address"
+import type { HostContext, HostRange } from "../excel/host"
 import { listSheets } from "../excel/sheets"
 import { summariseTokens } from "../excel/summaries"
 import { scanReferences } from "../formula/scanner"
@@ -54,7 +55,7 @@ const selectionNeighborhood = (
 
 /** Read a bounded neighborhood and cheap Excel-computed summaries of formula references. */
 export const readWorkbookContext = async (
-  context: Excel.RequestContext,
+  context: HostContext,
   attachment: SelectionAttachment | null = null,
 ): Promise<WorkbookContext> => {
   const sheets = await listSheets(context)
@@ -130,7 +131,7 @@ export const readWorkbookContext = async (
   const found =
     tokens.length === 0
       ? null
-      : await summariseTokens<Excel.Range>(context, tokens, selection.worksheet.name)
+      : await summariseTokens<HostRange>(context, tokens, selection.worksheet.name)
   const references: ReferenceSummary[] = []
   if (found !== null) {
     for (const item of found) if (item !== null) references.push(item)

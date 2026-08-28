@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   budgetFor,
@@ -12,6 +13,7 @@ import { AiError, askModel, type ChatMessage, testConnection } from "../ai/clien
 import { DEFAULT_SETTINGS } from "../ai/settings"
 import { MAX_TOOL_ROUNDS } from "../ai/tools"
 import { createHistory } from "../excel/history"
+import type { HostContext } from "../excel/host"
 import { readWorkbookContext } from "./chat-workbook"
 import {
   boundRound,
@@ -211,7 +213,7 @@ describe("skill prompt selection", () => {
   })
 
   it("reads the Shift-clicked reference range rather than the current Excel selection", async () => {
-    const context = {} as Excel.RequestContext
+    const context = {} as unknown as HostContext
     const asked = nextReply()
     const chatting = createChatting({
       redraw: () => {},
@@ -354,7 +356,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -393,7 +395,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -454,7 +456,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history,
@@ -500,7 +502,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -549,7 +551,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -590,7 +592,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -626,7 +628,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -666,7 +668,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -719,7 +721,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -762,7 +764,7 @@ describe("workbook lookups before answering", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -850,7 +852,7 @@ describe("acting on announced work", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(lookupContext(looked) as unknown as Excel.RequestContext)
+        await work(lookupContext(looked) as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -948,7 +950,7 @@ describe("message order the server accepts", () => {
             },
           },
           sync: async () => {},
-        } as unknown as Excel.RequestContext)
+        } as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -1047,7 +1049,7 @@ describe("one thread at a time", () => {
       redraw: () => {},
       run: async (work) => {
         runs += 1
-        await work({} as Excel.RequestContext)
+        await work({} as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -1230,7 +1232,7 @@ describe("operating without approval", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as unknown as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history,
@@ -1270,7 +1272,7 @@ describe("asking without picking a range first", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work({} as unknown as Excel.RequestContext)
+        await work({} as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -1294,7 +1296,7 @@ describe("asking without picking a range first", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work({} as unknown as Excel.RequestContext)
+        await work({} as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -1389,7 +1391,7 @@ describe("working through a batch of tool calls", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -2130,7 +2132,7 @@ describe("a long build on the configured window", () => {
       const chatting = createChatting({
         redraw: () => {},
         run: async (work) => {
-          await work(context as unknown as Excel.RequestContext)
+          await work(context as unknown as HostContext)
         },
         anchor: () => ({ address: "원장!A1", formula: "" }),
         history: createHistory(),
@@ -2432,7 +2434,7 @@ describe("intake profile delivery", () => {
     } as never)
     const chatting = createChatting({
       redraw: () => {},
-      run: async (work) => work(context as unknown as Excel.RequestContext),
+      run: async (work) => work(context as unknown as HostContext),
       anchor: () => ({ address: "데이터!A1", formula: "" }),
       history: createHistory(),
     })
@@ -2485,7 +2487,7 @@ describe("cell-targeted questions", () => {
     } as never)
     const chatting = createChatting({
       redraw: () => {},
-      run: async (work) => work(context as unknown as Excel.RequestContext),
+      run: async (work) => work(context as unknown as HostContext),
       anchor: () => ({ address: "개요!G8", formula: "=SUM(C8:E8)" }),
       history: createHistory(),
     })
@@ -2525,7 +2527,7 @@ describe("explicit build requests", () => {
     } as never)
     const chatting = createChatting({
       redraw: () => {},
-      run: async (work) => work(context as unknown as Excel.RequestContext),
+      run: async (work) => work(context as unknown as HostContext),
       anchor: () => ({ address: "sheet 1!A8", formula: "" }),
       history: createHistory(),
     })
@@ -2563,7 +2565,7 @@ describe("explicit build requests", () => {
     } as never)
     const chatting = createChatting({
       redraw: () => {},
-      run: async (work) => work(context as unknown as Excel.RequestContext),
+      run: async (work) => work(context as unknown as HostContext),
       anchor: () => ({ address: "sheet 1!A8", formula: "" }),
       history: createHistory(),
     })
@@ -2597,7 +2599,7 @@ describe("explicit build requests", () => {
     } as never)
     const chatting = createChatting({
       redraw: () => {},
-      run: async (work) => work(context as unknown as Excel.RequestContext),
+      run: async (work) => work(context as unknown as HostContext),
       anchor: () => ({ address: "sheet 1!A8", formula: "" }),
       history: createHistory(),
     })
@@ -2751,7 +2753,7 @@ describe("pane-side write verification failure path", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(book.context as unknown as Excel.RequestContext)
+        await work(book.context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -2816,7 +2818,7 @@ describe("deterministic floors under the verification ladder", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(statsContext() as unknown as Excel.RequestContext)
+        await work(statsContext() as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -2851,7 +2853,7 @@ describe("deterministic floors under the verification ladder", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(statsContext() as unknown as Excel.RequestContext)
+        await work(statsContext() as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -2872,7 +2874,7 @@ describe("deterministic floors under the verification ladder", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(statsContext() as unknown as Excel.RequestContext)
+        await work(statsContext() as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -2928,7 +2930,7 @@ describe("selection-scoped reads", () => {
     createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(context as Excel.RequestContext)
+        await work(context as unknown as HostContext)
       },
       anchor: () => ({ address: "Main!A1", formula: "" }),
       history: createHistory(),
@@ -3096,7 +3098,7 @@ describe("provenance handling", () => {
     const chatting = createChatting({
       redraw: () => {},
       run: async (work) => {
-        await work(book.context as unknown as Excel.RequestContext)
+        await work(book.context as unknown as HostContext)
       },
       anchor: () => ({ address: "요약!A1", formula: "" }),
       history: createHistory(),

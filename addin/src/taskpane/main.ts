@@ -1,6 +1,6 @@
 import { formatArea, type GridArea, parseArea } from "../excel/address"
 import { createHistory } from "../excel/history"
-import type { ExcelHost, HostContext } from "../excel/host"
+import type { ExcelHost, HostContext, HostRange } from "../excel/host"
 import { startOfficeHost } from "../excel/host-office"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
@@ -334,7 +334,7 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
         // the user's number, so a multi-area selection shows no summary at all.
         const summary = multi
           ? null
-          : ((await summariseReferences<Excel.Range>(context, [target]))[0] ?? null)
+          : ((await summariseReferences<HostRange>(context, [target]))[0] ?? null)
         if (!isCurrent() || pane.kind !== "multiCell") return null
         show({ ...pane, summary }, badge)
         return target
@@ -362,7 +362,7 @@ async function explain(
   isCurrent: () => boolean,
 ): Promise<Resolved | null> {
   const { sheet } = splitAddress(mirrored.address)
-  const result = await resolveAndSummariseTokens<Excel.Range>(context, mirrored.tokens, sheet)
+  const result = await resolveAndSummariseTokens<HostRange>(context, mirrored.tokens, sheet)
   if (!isCurrent() || pane.kind !== "formula" || pane.address !== mirrored.address) return null
   if (result.summaries !== null) show({ ...pane, summaries: result.summaries }, badge)
   return result.resolved[0] ?? null
