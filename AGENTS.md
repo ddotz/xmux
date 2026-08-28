@@ -55,7 +55,8 @@ when you noticed it on a derived branch: land it on `main`, then rebase the bran
 | Finance desk rules the model must follow | `addin/src/taskpane/chat-prompt.ts` | 표시 형식, 원본 보존, 식별정보 |
 | Reference → real Excel range | `addin/src/excel/resolve.ts` | names, tables, cross-sheet |
 | What the pane renders | `addin/src/taskpane/view.ts`, `sheet.ts` | pure; no Excel I/O |
-| Pane bootstrap + selection mirror | `addin/src/taskpane/main.ts` | 414 LOC; the only `Excel.run` caller |
+|Pane bootstrap + selection mirror|`addin/src/taskpane/main.ts`|drives Excel through the host port; holds no Office global|
+|Host seam (swap Office.js for another host)|`addin/src/excel/host.ts` + `host-office.ts`|`host-office.ts` is the only module allowed the `Excel`/`Office` globals; `host.test.ts` enforces it|
 | Chat / AI request path | `taskpane/chatting.ts` → `ai/client.ts` | 2,167 LOC — largest file in repo |
 | Grounding: evidence, coverage, verification | `taskpane/chat-evidence.ts`, `chat-grounding.ts`, `chat-coverage.ts`, `chat-action-verification.ts` | pure siblings split out of `chatting.ts` |
 | Offline Office.js stand-in (eval only) | `addin/src/excel/eval-context.ts` | 626 LOC; openpyxl fixtures; pane never loads it |
@@ -95,8 +96,9 @@ Exports by domain: taskpane 156, excel 103, ai 103, formula 25. ~15.4k LOC of no
   17 opt into happy-dom, only 3 use `vi.mock` (`chatting`, `chat-workbook`,
   `chat-evidence-integration`).
 - `*.eval.test.ts` is a separate species: real network, real model, gated on `XMUX_EVAL=1`.
-- **`Excel.run` is called in `taskpane/main.ts` and nowhere else.** Every other module takes a
-  context or a `run` callback as a dependency — which is why no test mocks an Office global.
+- **`Excel.run` is called in `excel/host-office.ts` and nowhere else.** `taskpane/main.ts`
+  drives it through the `ExcelHost` port; every other module takes a context or a `run`
+  callback as a dependency — which is why no test mocks an Office global.
 - No path aliases. Relative imports only.
 - pnpm, not npm. All commands run from `addin/`.
 
