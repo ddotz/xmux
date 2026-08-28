@@ -101,11 +101,34 @@ XLL은 `SetVirtualHostNameToFolderMapping`(서비스·인증서·포트 전부 �
 | 단계 | 내용 | Windows PC | 상태 |
 |---|---|---|---|
 | 0 | 파일럿 브랜치 분리 + 근거 문서화 | 불필요 | **완료** |
-| 1 | `ExcelHost` 포트 추출 — main.ts 13개 지점을 포트 뒤로, Office.js 어댑터 1개만 존재. 동작 동일 | 불필요 | 다음 |
-| 2 | 포트 계약 테스트 — 어댑터가 지켜야 할 규약을 테스트로 고정(`eval-context`를 기준 구현으로 승격) | 불필요 | 대기 |
+| 1 | `ExcelHost` 포트 추출 — main.ts 13개 지점을 포트 뒤로, Office.js 어댑터 1개만 존재. 동작 동일 | 불필요 | **완료** |
+| 1.5 | 런타임 전역 완전 격리 — `Excel.SheetVisibility` 제거, 가드레일이 enum 읽기까지 잡도록 강화 | 불필요 | **완료** |
+| 2 | 컨텍스트 타입 탈Office — 아래 "2단계 설계 제약" 참조. 한 줄 치환이 아니라 설계 작업 | 불필요 | 다음 |
 | 3 | XLL 스파이크 — CTP+WebView2 렌더·host object 왕복·미서명 로드 게이트 3개 | **필요** | 대기 |
 | 4 | host-object 어댑터 구현 → 단계 2 계약 테스트 통과. Windows=XLL, Mac=Office.js 병행 | **필요** | 대기 |
 | P | (병행) 파일럿 브랜치 검증 | **필요** | 대기 |
+
+### 2단계 설계 제약 (시도 후 측정됨)
+
+`HostContext`를 `Excel.RequestContext`에서 프로젝트 소유 타입으로 바꾸는 건 **별칭 한 줄 교체가
+아니다.** 실제로 조립해본 결과 막힌 지점:
+
+1. **교차 타입이 시그니처 충돌을 만든다.** `InspectContext`와 `ResolveContext`가 둘 다
+   `workbook.getSelectedRange`를 서로 다른 반환 타입으로 선언한다. 교차하면 경합하는 호출
+   시그니처가 되어 `InspectRange | OperateRange` 같은 쓸 수 없는 유니온이 나온다.
+2. **가변성이 엇갈린다.** 읽기 쪽 `InspectRange.formulas`는 `readonly`, 쓰기 쪽
+   `OperateRange.formulas`와 `history.ts`의 `UndoRange`는 가변이다. 한 `getRange`가 양쪽을
+   동시에 만족시키려면 반환 타입을 교차해야 하는데, 그러면 1번 문제가 다시 생긴다.
+3. **Office 타입이 반공변으로 거부한다.** `InspectRange.autoFill(destination: InspectRange)` vs
+   Office의 `autoFill(destinationRange?: string | Excel.Range)` — 파라미터 반공변 때문에
+   우리 타입을 요구하는 자리에 Office 객체를 넣을 수 없다. 계약을 넓게 잡을수록 더 막힐다.
+
+결론: 계약들을 **교차하지 말고**, `HostRange`/`HostSheet` 한 쌍을 먼저 정의한 뒤 각 모듈
+계약을 거기서 **파생**시켜야 한다(`Pick`/`Omit`). 순서도 중요하다: 먼저 `office-shapes.ts`의
+읽기/쓰기 타입을 하나로 합치고, 그 다음 `eval-context.ts`를 그 합집합에 맞추고, 마지막에
+`HostContext`를 선언한다. 중간에 멈추면 한쪽만 살아난 반쪽짜리 리팩터가 남으므로, 한 번에
+끝낼 수 있는 세션에서 착수한다. 지금은 `HostContext = Excel.RequestContext` 별칭 한 줄이
+유일한 잔여 결합이고, 바꿀 지점이 그 한 줄로 모여 있다.
 
 **단계 1·2는 파일럿 결과와 무관하게 이득이다** — 테스트 용이성이 오르고, 평가 하네스가 지금
 암묵적으로 의존하는 계약이 명시되며, 어느 채널로 가든 필요하다. 단계 3·4는 파일럿이
