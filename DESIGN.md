@@ -205,10 +205,17 @@ published state cannot disagree.
 
 ### Deployment and icon assets
 
-The checked-in Windows PowerShell helper installs a chosen manifest into a local SMB trusted
-catalog; it is implemented but not claimed as live-verified on Windows. One manifest template
-feeds both localhost development generation and production generation, whose command requires
-a public HTTPS origin and rejects loopback hosts and path prefixes.
+The per-PC Windows package runs a loopback-only HTTPS service and registers its manifest in
+the current user's Office Developer store; it does not require an SMB share or elevation.
+On the measured LTSC 2024 target, a cold WEF profile cached both the full product manifest
+and a minimal manifest without requesting `SourceLocation` on the first Add. Opening and
+closing Office's error view, then adding the same Developer manifest again, loaded the pane.
+The installer guides this one-time warmup and binds completion to the current Office WEF
+cache generation. The separate development sideload helper can still create an SMB trusted
+catalog, but that path is not part of the per-PC package.
+
+One manifest template feeds both localhost development generation and production generation,
+whose command requires a public HTTPS origin and rejects loopback hosts and path prefixes.
 
 Office keeps the 16/32/64/80 asset names referenced by the manifest and receives a new
 versioned asset URL whenever the artwork changes, preventing a stale ribbon-icon cache. The
@@ -286,6 +293,7 @@ undo/redo, linked-workbook gating, built-in/local skills, bounded AI context, co
 testing, and explicit edit/skill proposal approval. The AI client is faked at the wire in
 tests, not at an SDK.
 
-The live Excel claims in this repository are limited to the documented Excel for Mac checks,
-including the companion F2/Tab cycle and a chat-driven apply against a local fake completions
-server. There is no claim of Windows live verification or real KDB connectivity.
+Live product behavior remains verified on Excel for Mac, including the companion F2/Tab cycle
+and a chat-driven apply against a local fake completions server. Windows evidence is limited
+to the LTSC 2024 first-acquisition boundary and Developer warmup recorded in `FINDINGS.md`;
+there is no claim of full Windows product verification or real KDB connectivity.

@@ -26,7 +26,7 @@ including values from `Data` without ever leaving `Main`.
 | M5 native companion (F2 + Tab inside the editor) | done — verified live: Tab cycles the highlight inside Excel's editor and the pane follows |
 | M6 대화 tab (skill-based AI edits) | done — built-in and local skills share one picker; workbook and skill proposals require explicit approval |
 | M3 degradation contract | done — missing sheet / external workbook / mid-edit each verified in Excel |
-| Windows sideload + production manifest tooling | implemented — not live-verified on Windows |
+| Windows localhost deployment | implemented — LTSC 2024 cold-WEF failure and Developer warmup verified on one target; full product flow not live-verified |
 
 ## How it reads
 
@@ -175,19 +175,23 @@ free, unblock the downloaded ZIP from **Properties > Unblock** when that option 
 extract it, open a normal Windows PowerShell window, and run:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
 The installer creates a current-user trusted `localhost` certificate, registers the
 manifest in Office's current-user developer registry, adds a current-user login startup
-entry, and starts the HTTPS service on loopback only. Close every Excel window, reopen
-Excel, then choose **Home > Add-ins > More Add-ins > Developer Add-ins > 땡땡엑셀 >
-Add** once.
+entry, and starts the HTTPS service on loopback only. It then opens a one-time Office
+initializer. On the measured LTSC 2024 cold profile, the first Developer Add stopped before
+`SourceLocation`; opening and closing Office's error view and adding the same manifest again
+made the pane load. The initializer guides that sequence, restores the Developer registration
+after Office closes, and records completion only for the WEF cache generation that loaded the
+pane.
 
-Use `manage.ps1 status|start|stop|restart` to control the service. Run `uninstall.ps1`
-from a normal PowerShell window to remove only the process, certificate, Office
-registration, startup entry, and files owned by 땡땡엑셀. Package-specific instructions
-are included in the ZIP.
+From the extracted package, use `.\scripts\manage.ps1 status|start|stop|restart` to control
+the service. Run `.\scripts\uninstall.ps1` from a normal PowerShell window to remove only
+the process, certificate, Office registration, startup entry, and files owned by 땡땡엑셀.
+The double-clickable installer menu exposes the same operations plus a first-run
+initialization retry.
 
 ### Sideload on Windows desktop Excel
 

@@ -41,6 +41,12 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 | script | does |
 |---|---|
 | `generate-manifest.mjs` | template → manifest; `--production` rejects loopback hosts |
+| `generate-manifest-matrix.mjs` | minimal + one-capability-at-a-time manifests for LTSC first-acquisition A/B testing |
+| `diagnose-wef-firstrun.ps1` | guided A/B/C/D WEF registry/cache snapshots, diffs, clean reset, manifest variants, OOXML diff |
+| `run-wef-investigation.ps1` | Korean one-menu runner for product, minimal, and trusted-catalog WEF acquisition cases |
+| `analyze-wef-run.ps1` | evidence-backed automatic verdict/report for standard and trusted-catalog capture folders |
+| `menu-wef-investigation.bat` | UTF-8 Windows launcher for the standalone WEF investigation kit |
+| `initialize-windows-local.ps1` | one-time LTSC WEF initializer: measured Developer error-view warmup, fresh-request check, WEF-cache-bound marker |
 | `vendor-office-js.mjs` | copies office.js + Excel desktop host bundles + en-us/ko-kr strings into `public/office/` (gitignored); runs ahead of both `dev` and `build` |
 | `local-server.mjs` | standalone HTTPS static server; `--root --host --port --cert --key --pfx --passphrase-file --ready-file --pid-file --wef-guid --wef-manifest` |
 | `sideload-mac.sh` | copies `manifest.xml` into Excel's container `wef/`, drops legacy `xmux.manifest.xml` |

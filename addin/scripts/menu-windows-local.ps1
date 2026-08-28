@@ -28,6 +28,7 @@ $installScript = Join-Path $PSScriptRoot "install.ps1"
 $manageScript = Join-Path $PSScriptRoot "manage.ps1"
 $uninstallScript = Join-Path $PSScriptRoot "uninstall.ps1"
 $installRoot = Join-Path $env:LOCALAPPDATA "DdotExcel"
+$initializeScript = Join-Path $installRoot "initialize.ps1"
 
 # Files extracted from a downloaded ZIP carry the mark of the web, and PowerShell refuses
 # to dot-source or run them under some policies. Clearing it here beats a cryptic error.
@@ -55,6 +56,16 @@ function Get-ManifestVersion {
     } catch {
         return $null
     }
+}
+
+function Test-InvocationAccount {
+    $current = "$env:USERDOMAIN\$env:USERNAME"
+    if ($InvokedBy -and $InvokedBy -ne $current) {
+        Write-Host ("  시작 계정은 $InvokedBy 이지만 현재 계정은 $current 입니다. " +
+            "다른 계정의 HKCU에는 작업하지 않습니다.") -ForegroundColor Red
+        return $false
+    }
+    return $true
 }
 
 function Show-Header {
@@ -138,6 +149,7 @@ while ($true) {
     Write-Host "  2. 상태 확인"
     Write-Host "  3. 서비스 다시 시작"
     Write-Host "  4. 제거"
+    Write-Host "  5. Office 첫 실행 초기화 다시 실행"
     Write-Host "  0. 끝내기"
     Write-Host ""
     $choice = Read-Host "  번호를 입력하세요"
@@ -145,15 +157,18 @@ while ($true) {
     switch ($choice.Trim()) {
         "1" {
             Invoke-Step "설치 / 업데이트" {
+                if (-not (Test-InvocationAccount)) { return }
                 if (-not (Test-Installed)) { return }
                 & $installScript
                 Write-Host ""
+                Write-Host "  설치와 Office 첫 실행 초기화가 완료되었습니다." -ForegroundColor Green
                 Write-Host "  Excel을 완전히 종료했다가 다시 실행하세요." -ForegroundColor Green
                 Write-Host "  리본 [홈] 탭에 땡땡엑셀 단추가 나타납니다."
             }
         }
         "2" {
             Invoke-Step "상태 확인" {
+                if (-not (Test-InvocationAccount)) { return }
                 if (-not (Test-Path -LiteralPath $manageScript -PathType Leaf)) {
                     Write-Host "  관리 스크립트를 찾을 수 없습니다." -ForegroundColor Red
                     return
@@ -164,6 +179,7 @@ while ($true) {
         }
         "3" {
             Invoke-Step "서비스 다시 시작" {
+                if (-not (Test-InvocationAccount)) { return }
                 if (-not (Test-Path -LiteralPath $manageScript -PathType Leaf)) {
                     Write-Host "  관리 스크립트를 찾을 수 없습니다." -ForegroundColor Red
                     return
@@ -174,6 +190,10 @@ while ($true) {
             }
         }
         "4" {
+            if (-not (Test-InvocationAccount)) {
+                Start-Sleep -Seconds 2
+                continue
+            }
             Show-Header
             Write-Host "  제거하면 로컬 서비스, 인증서, Excel 등록이 모두 삭제됩니다." -ForegroundColor Yellow
             $confirm = Read-Host "  정말 제거하시겠습니까? (y/N)"
@@ -186,12 +206,22 @@ while ($true) {
                 & $uninstallScript
             }
         }
+        "5" {
+            Invoke-Step "Office 첫 실행 초기화" {
+                if (-not (Test-InvocationAccount)) { return }
+                if (-not (Test-Path -LiteralPath $initializeScript -PathType Leaf)) {
+                    Write-Host "  먼저 1번 설치 / 업데이트를 실행하세요." -ForegroundColor Red
+                    return
+                }
+                & $initializeScript -InstallRoot $installRoot
+            }
+        }
         "0" {
             Write-Host ""
             exit 0
         }
         default {
-            Write-Host "  0부터 4 사이의 번호를 입력하세요." -ForegroundColor Yellow
+            Write-Host "  0부터 5 사이의 번호를 입력하세요." -ForegroundColor Yellow
             Start-Sleep -Seconds 1
         }
     }

@@ -1,7 +1,8 @@
 # Install the self-contained DdotExcel localhost service for the current user.
 [CmdletBinding()]
 param(
-    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "DdotExcel")
+    [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "DdotExcel"),
+    [switch]$SkipFirstRunInitialization
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,6 +12,7 @@ $CertificateName = "DdotExcel Local HTTPS"
 $CaCertificateName = "DdotExcel Local Development CA"
 $OwnershipRegistryPath = "HKCU:\Software\DdotExcel"
 $DeveloperRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
+$ProvidersRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Providers"
 $AutoStartRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $StartupApprovedRegistryPath =
     "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
@@ -32,6 +34,7 @@ $requiredFiles = @(
     (Join-Path $packageApp "external-range.mjs"),
     (Join-Path $packageRuntime "node.exe"),
     (Join-Path $PSScriptRoot "manage.ps1"),
+    (Join-Path $PSScriptRoot "initialize.ps1"),
     (Join-Path $PSScriptRoot "start-hidden.vbs"),
     (Join-Path $PSScriptRoot "uninstall.ps1")
 )
@@ -92,6 +95,7 @@ Copy-Item -LiteralPath (Join-Path $packageApp "local-server.mjs") -Destination $
 Copy-Item -LiteralPath (Join-Path $packageApp "external-range.mjs") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runtimeRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "initialize.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
 
@@ -319,5 +323,30 @@ Write-Host "DdotExcel local service installed."
 Write-Host "Service: https://localhost:3927"
 Write-Host "Office registration: current-user developer add-in"
 Write-Host ""
-Write-Host "Close every Excel window, reopen Excel, then select:"
-Write-Host "Home > Add-ins > More Add-ins > Developer Add-ins > DdotExcel > Add"
+$initialization = Get-ItemProperty `
+    -Path $OwnershipRegistryPath `
+    -ErrorAction SilentlyContinue
+$currentWefCacheId = Get-ItemPropertyValue `
+    -LiteralPath $ProvidersRegistryPath `
+    -Name "WefCacheId" `
+    -ErrorAction SilentlyContinue
+$initializationCurrent = (
+    $initialization.WefInitialized -eq 1 -and
+    $initialization.WefCacheId -and
+    $initialization.WefCacheId -eq $currentWefCacheId)
+
+if ($SkipFirstRunInitialization) {
+    Write-Host "First-run initialization was skipped."
+} elseif ($initializationCurrent) {
+    Write-Host "Office first-run initialization: already completed for this WEF cache."
+} else {
+    $initializePath = Join-Path $InstallRoot "initialize.ps1"
+    try {
+        & $initializePath -InstallRoot $InstallRoot
+    } catch {
+        Write-Warning ("Office first-run initialization did not complete: " +
+            "$($_.Exception.Message)")
+        throw ("The local service is installed, but Office first-run initialization " +
+            "is incomplete. Run menu item 5 to retry.")
+    }
+}

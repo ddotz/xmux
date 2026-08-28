@@ -12,6 +12,7 @@
     "check": "biome check .",
     "test": "vitest run",
     "manifest:dev": "node scripts/generate-manifest.mjs --host https://localhost:3927 --output manifest.xml",
+    "manifest:matrix": "node scripts/generate-manifest-matrix.mjs",
     "manifest:production": "node scripts/generate-manifest.mjs --production --output manifest.production.xml",
     "package:windows-local": "pwsh -NoProfile -File scripts/package-windows-local.ps1",
     "package:windows-local:arm64": "pwsh -NoProfile -File scripts/package-windows-local.ps1 -Architecture arm64",

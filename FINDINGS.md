@@ -1,7 +1,9 @@
 # xmux — measured platform facts
 
-Everything here was measured on the target machine, not assumed. Re-run with
-`probes/ax_probe` (build: `swiftc -parse-as-library -O probes/ax_probe.swift -o probes/ax_probe`).
+Everything here was measured on a named target, not assumed. F1-F7 use the Mac environment
+below and can be re-run with `probes/ax_probe` (build:
+`swiftc -parse-as-library -O probes/ax_probe.swift -o probes/ax_probe`). F8 records a separate
+Windows LTSC capture.
 
 Environment: macOS 26.6.1, Apple M4 Pro, **Excel for Mac 16.111.3**, Swift 6.3 / Xcode 26.6,
 node + bun + python3(openpyxl). The dev terminal already holds Accessibility permission
@@ -93,3 +95,50 @@ editor, and Excel's API stalls while a cell is being edited. Consequences:
 
 The macOS sideload directory does not exist yet and must be created on first sideload:
 `~/Library/Containers/com.microsoft.Excel/Data/Documents/wef`.
+
+## F8 — Office LTSC can stop a cold Developer acquisition before SourceLocation
+
+Measured on Office LTSC 2024 2408, build **16.0.17932.20842**, using two clean WEF runs:
+the product manifest (`firstrun-20260827-143308`) and a minimal Restricted-permission
+manifest (`firstrun-20260827-193239`).
+
+In both runs:
+
+* the first Add created the WEF provider/cache state but did not increase `service.log`;
+  Excel never requested `/index.html`;
+* Excel displayed a load error whose Office Add-ins view asked for an enabled add-in catalog;
+* opening and closing that error view, then adding the same Developer manifest again, produced
+  a new `GET /index.html -> 200`, WebView2 state, and an Office `Activated App` event.
+
+The same boundary with the full and minimal manifests rules out the product manifest's added
+permissions, external app domains, GetStarted block, and metadata URLs as the trigger among
+the tested variants. The evidence establishes a cold-profile failure before
+`SourceLocation` and the Developer error-view warmup as a working recovery on this target.
+It does not identify Office's internal cause, prove a Trusted Catalog workaround, prove
+reboot persistence, or verify the full Windows product flow.
+
+## F9 — The Developer warmup state is in-process; on-disk replay cannot substitute
+
+Derived from the diff artifacts of both F8 capture runs plus two operator experiments on
+the same LTSC target. Case-by-case verdicts and the response playbook live in
+`WEF-ACQUISITION.md`.
+
+* The complete on-disk delta between "first Add failed" (B0) and "error view opened" (B)
+  is the seven `Wef\Cache\UserIdentityCache` values (`ExcelOmexUserIdentity=Anonymous`,
+  `ExcelIsAnonymous=1`, `ExcelCacheExpire`, …). Closing the popup (B→C) changes **nothing**.
+  The successful re-Add (C→D) adds only an empty `AllowedAppDomains` key plus WebView2
+  profile files — outputs of success, not inputs to it.
+* `ExcelCacheExpire` is a FILETIME already ~4 s in the past at capture time, in both runs
+  (run 193239: expire 19:34:07, captured 19:34:11; run 143308 same shape). The on-disk
+  cache is born expired, so it cannot be the enabling state.
+* Provider `Entitlements` is a FILETIME ≈ 24 h after acquisition (delta to
+  `ExcelCacheExpire` is 86,385 s). A 24 h TTL on acquisition state is plausible and makes
+  warmup recurrence after one day an **unverified risk** for the shipped wizard.
+* Operator-reported (not kit-captured): (a) after a failed first Add, restarting Excel
+  *without* opening the error view and re-Adding still fails; (b) exporting the post-warmup
+  registry + WEF cache and replaying it onto a clean profile, then Adding, still fails.
+* Conclusion: the enabling state lives in Excel **process memory** — opening the Office
+  Add-ins error dialog initializes an in-process catalog/identity subsystem, and only that
+  session's re-Add succeeds. No registry/cache pre-seed can substitute; the warmup wizard
+  is a mitigation, not a root fix. The open root-fix candidate is the Trusted Catalog
+  channel (the failure popup itself asks for an add-in catalog).

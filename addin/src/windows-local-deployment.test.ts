@@ -27,6 +27,14 @@ const packageScript = readFileSync(
 )
 const menuBatch = readFileSync(new URL("../scripts/menu-windows-local.bat", import.meta.url))
 const menuScript = readFileSync(new URL("../scripts/menu-windows-local.ps1", import.meta.url))
+const diagnosticScript = readFileSync(
+  new URL("../scripts/diagnose-wef-firstrun.ps1", import.meta.url),
+  "utf8",
+)
+const initializeScript = readFileSync(
+  new URL("../scripts/initialize-windows-local.ps1", import.meta.url),
+  "utf8",
+)
 const serverScript = readFileSync(new URL("../scripts/local-server.mjs", import.meta.url), "utf8")
 const manifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 
@@ -646,6 +654,21 @@ describe("Windows package layout", () => {
     expect(packageScript).toContain("[Text.UTF8Encoding]::new($true))")
   })
 
+  it("ships the first-acquisition manifest matrix and PowerShell 5.1 diagnostic", () => {
+    expect(packageScript).toContain("generate-manifest-matrix.mjs")
+    expect(packageScript).toContain('(Join-Path $appRoot "manifest-variants")')
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "diagnose.ps1")')
+    expect(packageScript).toContain("diagnose-wef-firstrun.ps1")
+  })
+
+  it("ships the one-time initializer without a production SMB catalog", () => {
+    expect(packageScript).toContain("initialize-windows-local.ps1")
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "initialize.ps1")')
+    expect(installScript).toContain('(Join-Path $PSScriptRoot "initialize.ps1")')
+    expect(packageScript).not.toContain("catalog-windows-local.ps1")
+    expect(packageScript).not.toContain('(Join-Path $scriptsRoot "catalog.ps1")')
+  })
+
   it("declares every parameter its launcher passes", () => {
     // Given: PowerShell rejects an undeclared named parameter before the script body runs,
     // so a launcher that hands the menu an argument it never declared is not a degraded
@@ -693,5 +716,129 @@ describe("Windows package layout", () => {
     const call = text.indexOf("& $uninstallScript")
     expect(prompt).toBeGreaterThanOrEqual(0)
     expect(prompt).toBeLessThan(call)
+  })
+})
+
+describe("Office LTSC first-acquisition diagnostics", () => {
+  it("captures and diffs the Office-side state before any SourceLocation request", () => {
+    expect(diagnosticScript).toContain("Microsoft\\Office\\16.0\\Wef")
+    expect(diagnosticScript).toContain("Microsoft\\Office\\16.0\\Common\\Privacy")
+    expect(diagnosticScript).toContain("Microsoft\\Office\\16.0\\FirstRun")
+    expect(diagnosticScript).toContain('"registry.txt"')
+    expect(diagnosticScript).toContain('"wef-files.txt"')
+    expect(diagnosticScript).toContain('"service-log.txt"')
+    expect(diagnosticScript).toContain('Get-WinEvent -LogName "OAlerts"')
+    for (const label of ["A", "B0", "B", "C", "D"]) {
+      expect(diagnosticScript).toContain(`Save-Snapshot $runRoot "${label}"`)
+    }
+    expect(diagnosticScript).toContain("Resolve-GuideTarget $Name")
+    expect(diagnosticScript).toContain('(Join-Path $runRoot "target.txt")')
+  })
+
+  it("preserves Office-Addin-Scripts developer registration format", () => {
+    expect(diagnosticScript).toContain('"HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef\\Developer"')
+    expect(diagnosticScript).toContain("-Name $selected.Id")
+    expect(diagnosticScript).toContain("-Value $selected.Path")
+    expect(diagnosticScript).not.toContain("TrustedCatalogs")
+  })
+
+  it("backs up WEF state before the destructive clean-cache repro", () => {
+    const exportIndex = diagnosticScript.indexOf(
+      '& reg.exe export "HKCU\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef"',
+    )
+    const removeIndex = diagnosticScript.indexOf(
+      'Remove-Item `\n                -LiteralPath "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef"',
+      exportIndex,
+    )
+    expect(exportIndex).toBeGreaterThanOrEqual(0)
+    expect(removeIndex).toBeGreaterThan(exportIndex)
+    expect(diagnosticScript).toContain('"WINPROJ"')
+    expect(diagnosticScript).toContain("Rename-Item -LiteralPath $WefCacheRoot")
+  })
+
+  it("compares dirty workbooks at the OOXML part level", () => {
+    expect(diagnosticScript).toContain("Expand-Archive")
+    expect(diagnosticScript).toContain("Get-WorkbookPartHashes")
+    expect(diagnosticScript).toContain("[변경됨]")
+  })
+})
+
+describe("Office LTSC first-acquisition mitigation", () => {
+  it("keeps the production installer on the proven current-user Developer path", () => {
+    // Given: the Trusted Catalog channel is unverified until the pilot has a verdict
+    // (WEF-ACQUISITION.md case 7). Until then it lives on windows/trusted-catalog-pilot
+    // and must not reach a user's machine through this package.
+    for (const script of [installScript, initializeScript, packageScript, uninstallScript]) {
+      expect(script).not.toContain("catalog.ps1")
+      expect(script).not.toContain("catalog-windows-local.ps1")
+      expect(script).not.toContain("New-SmbShare")
+      expect(script).not.toContain("-Verb RunAs")
+    }
+  })
+
+  it("always restores the developer registration after Office closes", () => {
+    const attempt = initializeScript.indexOf("try {\n    Start-Excel")
+    const finallyBlock = initializeScript.indexOf("finally", attempt)
+    const guardedClose = initializeScript.indexOf("try {\n        Wait-OfficeClosed", finallyBlock)
+    const restoreFinally = initializeScript.indexOf("finally", guardedClose)
+    const restore = initializeScript.indexOf("Restore-DeveloperRegistration", restoreFinally)
+    expect(attempt).toBeGreaterThanOrEqual(0)
+    expect(finallyBlock).toBeGreaterThanOrEqual(0)
+    expect(guardedClose).toBeGreaterThan(finallyBlock)
+    expect(restoreFinally).toBeGreaterThan(guardedClose)
+    expect(restore).toBeGreaterThan(restoreFinally)
+    expect(initializeScript).toContain("-Name $ManifestId")
+    expect(initializeScript).toContain("-Value $RegisteredPath")
+  })
+
+  it("runs the proven error-view warmup and verifies a fresh SourceLocation request", () => {
+    expect(initializeScript).toContain("GET /index\\.html -> 200")
+    expect(initializeScript).toContain('Mark-Initialized "developer-warmup"')
+    expect(initializeScript).not.toContain('Mark-Initialized "trusted-catalog"')
+    expect(initializeScript).not.toContain("$Offset = 0")
+    expect(initializeScript).toContain("[DateTimeOffset]::UtcNow")
+    expect(initializeScript).toContain("[DateTimeOffset]::TryParse")
+  })
+
+  it("returns to its caller and reports an incomplete initialization as a failure", () => {
+    expect(initializeScript).not.toContain("exit 0")
+    const call = installScript.indexOf("& $initializePath -InstallRoot $InstallRoot")
+    const catchBlock = installScript.indexOf("} catch {", call)
+    const failure = installScript.indexOf("throw", catchBlock)
+    expect(call).toBeGreaterThanOrEqual(0)
+    expect(catchBlock).toBeGreaterThan(call)
+    expect(failure).toBeGreaterThan(catchBlock)
+  })
+
+  it("exposes a menu action to rerun first initialization", () => {
+    expect(menuScript.toString("utf8")).toContain("Office 첫 실행 초기화 다시 실행")
+    expect(menuScript.toString("utf8")).toContain("& $initializeScript -InstallRoot $installRoot")
+  })
+
+  it("binds completed initialization to the current Office WEF cache", () => {
+    expect(initializeScript).toContain('-Name "WefInitialized"')
+    expect(initializeScript).toContain('-Name "WefCacheId"')
+    const commit = initializeScript.indexOf('-Name "WefInitialized"')
+    const cacheId = initializeScript.indexOf('-Name "WefCacheId"')
+    expect(commit).toBeGreaterThan(cacheId)
+    expect(installScript).toContain("$initialization.WefCacheId -eq $currentWefCacheId")
+  })
+
+  it("invalidates the product marker when WEF state is reset or retried", () => {
+    for (const name of [
+      "WefInitialized",
+      "WefInitializationMethod",
+      "WefInitializedAt",
+      "WefCacheId",
+    ]) {
+      expect(initializeScript).toContain(`"${name}"`)
+      expect(diagnosticScript).toContain(`"${name}"`)
+    }
+  })
+
+  it("blocks every menu operation after elevation switches Windows accounts", () => {
+    expect(menuScript.toString("utf8")).toContain("function Test-InvocationAccount")
+    expect(menuScript.toString("utf8")).toContain("다른 계정의 HKCU에는 작업하지 않습니다")
+    expect(menuScript.toString("utf8").match(/Test-InvocationAccount/g)?.length).toBeGreaterThan(5)
   })
 })

@@ -26,6 +26,7 @@ xmux/
 ├── DESIGN.md       # requirements + behaviour spec — the authority for product decisions
 ├── HARNESS-DESIGN.md  # eval harness spec; §9 tier A defines the Office.js stand-in
 ├── FINDINGS.md     # measured platform facts every design claim rests on
+├── WEF-ACQUISITION.md  # Windows LTSC first-Add failure: case verdicts, pilot playbook, non-WEF channels
 └── NEXT.md         # working queue of what is being built next
 ```
 
@@ -49,7 +50,7 @@ xmux/
 | Pane state shape | `addin/src/model.ts` | `PaneState` / `ViewportState` unions |
 | Native editor state | `addin/src/companion.ts` | polls `/xmux/state`, optional by design |
 | Manifest / sideload / packaging | `addin/scripts/` | never hand-edit `manifest.xml` |
-| Why a platform decision was made | `FINDINGS.md` | empirical, measured on Mac Excel 16.111 |
+| Why a platform decision was made | `FINDINGS.md` | empirical; Mac Excel 16.111 plus scoped Windows LTSC first-acquisition evidence |
 
 ## CODE MAP
 
@@ -135,7 +136,9 @@ swiftc -parse-as-library -O companion/*.swift -o companion/xmux-companion && com
   `companion/references.swift`. Change one, port the other.
 - External workbook references fall back to Excel's cached display value in the sandbox;
   the Windows/Vite local service can read saved `.xlsx`/`.xlsm` source ranges read-only.
-- Live-verified on Mac Excel 16.111 only. Windows paths are implemented but not live-tested.
+- Product behavior is live-verified on Mac Excel 16.111. Windows live evidence is limited to
+  the LTSC 2024 cold-WEF failure and Developer warmup in `FINDINGS.md`; other Windows paths
+  remain unverified.
 - No CI. `pnpm test`, `pnpm typecheck`, and `pnpm check` locally are the entire gate.
 - `probes/fake_model.mjs` mocks the OpenAI endpoint over HTTPS so the chat tab can be
   exercised end-to-end without spending quota.

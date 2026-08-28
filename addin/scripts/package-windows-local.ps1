@@ -37,6 +37,18 @@ try {
     $runtimeArchive = Join-Path $stagingRoot $runtimeArchiveName
     $runtimeUrl = "https://nodejs.org/dist/$NodeVersion/$runtimeArchiveName"
     New-Item -ItemType Directory -Path $stagingRoot, $packageRoot | Out-Null
+    $variantRoot = Join-Path $stagingRoot "manifest-variants"
+    Push-Location $addinRoot
+    try {
+        & node scripts/generate-manifest-matrix.mjs `
+            --host https://localhost:3927 `
+            --output-dir $variantRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw "Diagnostic manifest generation failed with exit code $LASTEXITCODE."
+        }
+    } finally {
+        Pop-Location
+    }
     Write-Host "Downloading pinned Node runtime: $runtimeUrl"
     Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeArchive
     $actualHash = (Get-FileHash -LiteralPath $runtimeArchive -Algorithm SHA256).Hash.ToLower()
@@ -56,6 +68,10 @@ try {
     New-Item -ItemType Directory -Path $appRoot, $runtimeRoot | Out-Null
     Copy-Item -LiteralPath (Join-Path $addinRoot "dist") -Destination $appRoot -Recurse
     Copy-Item -LiteralPath (Join-Path $addinRoot "manifest.xml") -Destination $appRoot
+    Copy-Item `
+        -LiteralPath $variantRoot `
+        -Destination (Join-Path $appRoot "manifest-variants") `
+        -Recurse
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "local-server.mjs") `
         -Destination $appRoot
@@ -81,6 +97,18 @@ try {
     [IO.File]::WriteAllText(
         (Join-Path $scriptsRoot "menu.ps1"),
         (($menu -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($true))
+    $diagnostic = [IO.File]::ReadAllText(
+        (Join-Path $PSScriptRoot "diagnose-wef-firstrun.ps1"))
+    [IO.File]::WriteAllText(
+        (Join-Path $scriptsRoot "diagnose.ps1"),
+        (($diagnostic -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($true))
+    $initialize = [IO.File]::ReadAllText(
+        (Join-Path $PSScriptRoot "initialize-windows-local.ps1"))
+    [IO.File]::WriteAllText(
+        (Join-Path $scriptsRoot "initialize.ps1"),
+        (($initialize -replace "`r`n", "`n") -replace "`n", "`r`n"),
         [Text.UTF8Encoding]::new($true))
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "install-windows-local.ps1") `
