@@ -57,6 +57,66 @@ Developer 레지스트리(`HKCU\...\Wef\Developer`)로 사이드로드한 웹 �
    먼저 재검한다 — 재발한다면 위저드는 "한 번만"이 아니라 상시 절차가 되므로 대체 채널
    결정을 앞당겨야 한다.
 
+## 진행 방향 (2026-08-28 결정)
+
+회사 PC 검증이 막혀 있으므로, **Windows 없이 맥에서 할 수 있는 일을 먼저 하고 채널 선택은
+나중에 한다.** 그러려면 채널이 교체 가능해야 하고, 그게 호스트 어댑터 분리다.
+
+### 브랜치 분리 상태
+
+| 브랜치 | 내용 | 검증 |
+|---|---|---|
+| `main` | 진단 킷 + Developer 워밍 완화 + 근거 문서. 현재 유일하게 동작하는 배포 경로 | 852 tests |
+| `windows/trusted-catalog-pilot` | main + Trusted Catalog 채널 delta 7파일 (`catalog-windows-local.ps1`, 설치/제거/메뉴 6번/패키징/테스트/INSTALL) | 859 tests |
+| `wip/2026-08-28-snapshot` | 분리 전 전체 스냅샷 (안전망, main+pilot로 재구성 가능하므로 삭제해도 무방) | — |
+
+파일럿 브랜치의 zip은 카탈로그 채널이 들어간 빌드다. 회사 PC가 생기면 **그 브랜치의 zip만**
+가져가서 케이스 7을 판정하고, 통과하면 Windows에서 검증 후 main으로 병합한다.
+
+### 목표 구조 — 호스트 어댑터
+
+현재(측정됨): 모든 소비자가 이미 `run`을 주입받고 있고, 리터럴 `Excel.run`/`Office.*`는
+`taskpane/main.ts` 한 파일의 13개 지점에만 있다. 즉 시임은 이미 있고, 그 지점만 포트 뒤로
+숨기면 된다.
+
+```
+           ┌────────────── 공유 (채널과 무관, 손 안 댈) ────────────┐
+           │ taskpane view/sheet/chat · formula/* · ai/* · excel/*  │
+           └──────────────────────┬──────────────────────┘
+                                   │  ExcelHost 포트
+                                   │  (run / requirements / onReady)
+           ┌──────────────────────┼──────────────────────┐
+           │                       │                        │
+    host-office.ts          host-hostobject.ts          eval-context.ts
+    (Office.js)             (WebView2 host object)      (테스트·평가, 이미 존재)
+           │                       │                        │
+  Excel Mac/Win (WEF)   Excel Win (XLL in-process COM)   node/vitest
+```
+
+자산 경로도 채널마다 다르다: WEF는 `https://localhost:3927`(로컬 서비스+자체 CA),
+XLL은 `SetVirtualHostNameToFolderMapping`(서비스·인증서·포트 전부 불필요).
+
+### 단계
+
+| 단계 | 내용 | Windows PC | 상태 |
+|---|---|---|---|
+| 0 | 파일럿 브랜치 분리 + 근거 문서화 | 불필요 | **완료** |
+| 1 | `ExcelHost` 포트 추출 — main.ts 13개 지점을 포트 뒤로, Office.js 어댑터 1개만 존재. 동작 동일 | 불필요 | 다음 |
+| 2 | 포트 계약 테스트 — 어댑터가 지켜야 할 규약을 테스트로 고정(`eval-context`를 기준 구현으로 승격) | 불필요 | 대기 |
+| 3 | XLL 스파이크 — CTP+WebView2 렌더·host object 왕복·미서명 로드 게이트 3개 | **필요** | 대기 |
+| 4 | host-object 어댑터 구현 → 단계 2 계약 테스트 통과. Windows=XLL, Mac=Office.js 병행 | **필요** | 대기 |
+| P | (병행) 파일럿 브랜치 검증 | **필요** | 대기 |
+
+**단계 1·2는 파일럿 결과와 무관하게 이득이다** — 테스트 용이성이 오르고, 평가 하네스가 지금
+암묵적으로 의존하는 계약이 명시되며, 어느 채널로 가든 필요하다. 단계 3·4는 파일럿이
+실패했을 때만 착수한다.
+
+### 결정 규칙
+
+- 파일럿 성공 → 카탈로그 채널로 배포, 단계 3·4 취소. Mac 지원도 그대로 산다.
+- 파일럿 실패 → 단계 3부터 시작. 이때 Windows는 XLL, Mac은 Office.js로 **갈라진다**(교체 아니라 병행).
+- 어느 쪽이든 단계 1·2는 되돌리지 않는다.
+
 ## 미검증 항목 (다음 Windows 세션 체크리스트)
 
 - [ ] 워밍업 후 **24시간 뒤** 추가 기능이 그냥 열리는지 (`Entitlements` TTL 재발 검증)
