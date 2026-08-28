@@ -15,26 +15,29 @@ tool path with undo history behind every one.
 
 Gates on `main`: 857 tests, `tsc --noEmit`, Biome — all green, all local, no CI.
 
+## The direction: off WEF
+
+Every WEF acquisition path on the target environment is failed or unjudged — cases 1, 3 and
+4 failed, 6 is a session-scoped workaround with an unverified 24-hour TTL, and 7 needs a
+machine nobody has. **No WEF acquisition route is known to work there.** So the plan of
+record is the in-process host (XLL + WebView2 host object), and the Trusted Catalog pilot is
+a cheap parallel lottery ticket rather than a gate. `WEF-ACQUISITION.md` holds the evidence
+and the revised decision rule.
+
+That track lives on **`adapter/xll-host`**, not here: everything on it is unverified until
+an XLL loads on a real machine, and `main` has to stay the thing that installs today.
+
 ## Blocked on a Windows PC
 
-Nothing on this list can move on a Mac. `WEF-ACQUISITION.md` holds the decision rule and
-the per-case evidence; this is only the order.
-
-1. **Trusted Catalog pilot (case 7).** The kit is built and the branch is
-   `windows/trusted-catalog-pilot` (7 files, 864 tests, rebased on `main`). Carry that
-   branch's `pnpm package:windows-local` output to the target PC, run `setup`, judge the
-   first Add, then `verify-reboot`. Success retires the warmup wizard entirely; failure
-   starts the XLL track.
-2. **Warmup TTL re-check.** Does the add-in still open 24 hours after the wizard ran?
-   `Entitlements` carries a +24h FILETIME, and no one has watched it expire. If it
-   recurs, the wizard is a standing procedure rather than a one-time fix, and the channel
-   decision gets pulled forward.
-3. **XLL spike (only if the pilot fails).** Three gates before any bridge code: a CTP
-   hosting WebView2 that renders `dist/index.html` through a virtual host mapping, one
-   host-object round trip to a real cell, and an unsigned `.xll` loading on the target PC.
-   The pane-side half of that work is already de-risked: the read path is proven to obey
-   the load/sync protocol under `strict-context.ts`. The write path is not — extending that
-   context over `operate.ts` is the first move if the spike starts.
+1. **XLL spike.** Three gates: a CTP hosting WebView2 that renders `dist/index.html`
+   through a virtual host mapping, one host-object round trip to a real cell, and an
+   unsigned `.xll` loading on the target PC. Only the first is a genuine unknown — the
+   registry snapshot shows no Office policy and no `RequireAddinSig` on that machine.
+2. **Trusted Catalog pilot (case 7), in parallel.** The kit is built on
+   `windows/trusted-catalog-pilot`. If it passes, deployment gets easy immediately and the
+   XLL work still stands; if it fails, nothing about the schedule changes.
+3. **Warmup TTL re-check.** Does the add-in still open 24 hours after the wizard ran?
+   `Entitlements` carries a +24h FILETIME and no one has watched it expire.
 
 ## Blocked on a network
 

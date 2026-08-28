@@ -31,7 +31,7 @@ xmux/
 
 ## BRANCHES
 
-One trunk, one open bet. `main` is the only place core work lands; a derived branch exists
+One trunk, two open bets. `main` is the only place core work lands; a derived branch exists
 only to keep an *unverified* bet out of the shipping line, and stops existing when the bet
 is settled.
 
@@ -39,6 +39,7 @@ is settled.
 |---|---|---|
 |`main`|The version that deploys today: diagnosis kit + Developer warmup + the `ExcelHost` port|Must stay installable. Gates green before any push. **Core changes go here and only here**|
 |`windows/trusted-catalog-pilot`|`main` + the opt-in Trusted Catalog channel (7 files, no binary). Unverified until a Windows PC runs the pilot|Rebase onto `main`, never the reverse. Merges into `main` only after the pilot passes on a real LTSC machine|
+|`adapter/xll-host`|`main` + the non-WEF host track: the pane-side wire an in-process XLL would speak, and the dispatch table its `.NET` side owes|Rebase onto `main`. Merges only after the XLL spike passes on a real machine. Until then it is a bet, however green its tests are|
 
 A change that belongs to the product — pane, formula, excel, ai — is a `main` change even
 when you noticed it on a derived branch: land it on `main`, then rebase the branch. That is
