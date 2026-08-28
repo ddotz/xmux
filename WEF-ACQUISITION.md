@@ -39,10 +39,11 @@ Developer 레지스트리(`HKCU\...\Wef\Developer`)로 사이드로드한 웹 �
 
 **케이스 7 성공 (첫 추가 성공 + 재부팅 지속)** 이면:
 
-1. 배포 기본 채널을 Trusted Catalog로 전환. 설치 메뉴 6번(채널 전환)이 이미 구현되어
-   있으므로, `install-windows-local.ps1`의 기본값을 카탈로그 채널로 뒤집고 워밍업
-   위저드(`initialize.ps1`)와 메뉴 5번을 **삭제**한다 (fallback으로도 남기지 않는다 —
-   근원 해결 뒤 증상 패치를 유지하는 것은 부채다).
+1. 배포 기본 채널을 Trusted Catalog로 전환. 구현은 **`windows/trusted-catalog-pilot` 브랜치**에
+   살아 있다(`catalog-windows-local.ps1` + 설치/제거/메뉴 6번/패키징/테스트). 파일럿이
+   통과하면 그 브랜치를 Windows에서 검증한 뒤 main으로 병합하고, `install-windows-local.ps1`의
+   기본값을 카탈로그 채널로 뒤집은 다음 워밍 위저드(`initialize.ps1`)와 메뉴 5번을
+   **삭제**한다 (fallback으로도 남기지 않는다 — 근원 해결 뒤 증상 패치를 유지하는 것은 부채다).
 2. 카탈로그 위치는 사내 파일서버 UNC(관리자 불필요)를 1순위, 로컬 공유 생성(관리자 1회)을
    2순위로 문서화한다. `docs/INSTALL.md` 갱신.
 3. `FINDINGS.md` F8/F9에 파일럿 결과를 추가하고 이 문서의 케이스 7을 판정으로 채운다.
