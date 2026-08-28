@@ -8,6 +8,10 @@
 node_modules/
 addin/dist/
 addin/public/office/
+# Windows deployment packages: dist + a pinned Node runtime, 36 MB per build, regenerated
+# byte-for-byte by `pnpm package:windows-local`. Carried to the target PC as a file, never
+# cloned — 38 revisions of it were 1.27 GiB of the 1.3 GiB repository.
+addin/release/
 coverage/
 *.tsbuildinfo
 __pycache__/
