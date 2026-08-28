@@ -1,5 +1,4 @@
 import { formatArea, type GridArea, parseArea } from "./address"
-import type { HostSelectionEvent } from "./host"
 import type { BridgeArg, BridgeOp, BridgeResponse, BridgeSend, BridgeValues } from "./host-bridge"
 import { WORKBOOK } from "./host-bridge"
 
@@ -39,7 +38,6 @@ export type MemoryWorkbook = {
 }
 
 export type MemoryBridge = BridgeSend & {
-  readonly fireSelection: (event: HostSelectionEvent) => Promise<void>
   readonly failNext: (code: string, message: string) => void
   /** What was recorded rather than modelled — the only evidence those members ran. */
   readonly recorded: () => readonly string[]
@@ -217,12 +215,6 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
   const calls: string[] = []
   let nextChild = -1
   let nextFailure: { readonly code: string; readonly message: string } | undefined
-  const selectionHandlers = new Set<(event: HostSelectionEvent) => Promise<void>>()
-
-  const isSelectionHandler = (
-    value: unknown,
-  ): value is (event: HostSelectionEvent) => Promise<void> => typeof value === "function"
-
   const rangeKey = (target: RangeTarget): string => {
     if (target.sheet === null || target.area === null) throw new Error("bridge: range is null")
     return `${target.sheet.name}!${formatArea(target.area)}`
@@ -283,14 +275,13 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
     switch (member) {
       case "worksheets":
         return { kind: "worksheets" }
+      // Registration carries no callback: a JS function cannot cross to a COM object, so
+      // the op only says which event to start reporting and the handler stays pane-side.
       case "onSelectionChanged.add":
-      case "onSingleClicked.add": {
+      case "onSingleClicked.add":
         if (target.kind !== "worksheets") throw new Error(`bridge: ${member} needs worksheets`)
-        const handler = args[0]
-        if (!isSelectionHandler(handler)) throw new Error(`bridge: ${member} needs a handler`)
-        selectionHandlers.add(handler)
+        calls.push(member)
         return target
-      }
       case "getItem": {
         const name = literal(args[0])
         const sheet = workbook.sheets.find((candidate) => candidate.name === name)
@@ -747,9 +738,6 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
   }
 
   return Object.assign(send, {
-    fireSelection: async (event: HostSelectionEvent): Promise<void> => {
-      await Promise.all([...selectionHandlers].map((handler) => handler(event)))
-    },
     recorded: (): readonly string[] => [...calls],
     failNext: (code: string, message: string): void => {
       nextFailure = { code, message }

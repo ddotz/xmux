@@ -1,3 +1,4 @@
+import type { HostSelectionEvent } from "./host"
 import type {
   BorderEdge,
   BorderStyle,
@@ -120,7 +121,35 @@ const isChildList = (value: unknown): value is readonly BridgeChild[] =>
  * A context over the wire. `send` is the only thing that differs between the in-memory
  * backend the tests use and the host object a WebView2 pane would call.
  */
-export const buildBridgeContext = (send: BridgeSend) => {
+/**
+ * Where selection handlers live.
+ *
+ * Not in the batch: Office keeps a registration alive long after the `run` that made it, and
+ * the pane registers once at startup and then relies on it for every update afterwards. A
+ * per-batch registry would drop the pane's only trigger the moment its `run` settled, and
+ * nothing would report the loss — the pane would simply stop following the selection.
+ */
+export type BridgeEvents = {
+  readonly selection: Set<(event: HostSelectionEvent) => Promise<void>>
+  readonly click: Set<(event: HostSelectionEvent) => Promise<void>>
+}
+
+export const createBridgeEvents = (): BridgeEvents => ({
+  selection: new Set(),
+  click: new Set(),
+})
+
+/** What the host pushes when the selection moves — the direction where it speaks first. */
+export const deliverBridgeEvent = async (
+  events: BridgeEvents,
+  kind: "selection" | "click",
+  event: HostSelectionEvent,
+): Promise<void> => {
+  const handlers = kind === "selection" ? events.selection : events.click
+  await Promise.all([...handlers].map((handler) => handler(event)))
+}
+
+export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents()) => {
   let nextId = 1
   let queued: BridgeOp[] = []
   let closed = false
@@ -128,6 +157,8 @@ export const buildBridgeContext = (send: BridgeSend) => {
   const loaded = new Map<number, Map<string, unknown>>()
   /** Every batch this context sent, in order — the transcript a bridge has to satisfy. */
   const transcript: (readonly BridgeOp[])[] = []
+  const selectionHandlers = events.selection
+  const clickHandlers = events.click
 
   const assertOpen = (label: string): void => {
     if (closed) {
@@ -615,21 +646,21 @@ export const buildBridgeContext = (send: BridgeSend) => {
         sheet(call(id, "getItemOrNullObject", [name]), `sheet ${name}`),
       getActiveWorksheet: () => sheet(call(id, "getActiveWorksheet", []), "active sheet"),
       add: (name: string) => call(id, "add", [name]),
+      // A handler cannot be an op argument. Ops are JSON on the way to the host — a COM
+      // object cannot be handed a JS function — so the callback stays on this side and the
+      // op only says which event to start reporting. Delivery comes back the other way,
+      // through whatever push channel the host has, and lands on `deliver` below.
       onSelectionChanged: {
-        add: (
-          handler: (event: {
-            readonly address: string
-            readonly worksheetId: string
-          }) => Promise<void>,
-        ) => call(id, "onSelectionChanged.add", [handler]),
+        add: (handler: (event: HostSelectionEvent) => Promise<void>) => {
+          selectionHandlers.add(handler)
+          return call(id, "onSelectionChanged.add", [])
+        },
       },
       onSingleClicked: {
-        add: (
-          handler: (event: {
-            readonly address: string
-            readonly worksheetId: string
-          }) => Promise<void>,
-        ) => call(id, "onSingleClicked.add", [handler]),
+        add: (handler: (event: HostSelectionEvent) => Promise<void>) => {
+          clickHandlers.add(handler)
+          return call(id, "onSingleClicked.add", [])
+        },
       },
     }
   }
@@ -763,6 +794,7 @@ export const buildBridgeContext = (send: BridgeSend) => {
   return {
     context: context satisfies OperateContext,
     transcript,
+    events,
     close: (): void => {
       closed = true
     },
@@ -776,8 +808,9 @@ export type BridgeRange = ReturnType<BridgeContext["workbook"]["getSelectedRange
 export const runBridgeBatch = async <T>(
   send: BridgeSend,
   work: (context: BridgeContext) => Promise<T>,
+  events?: BridgeEvents,
 ): Promise<T> => {
-  const bridge = buildBridgeContext(send)
+  const bridge = buildBridgeContext(send, events)
   try {
     return await work(bridge.context)
   } finally {

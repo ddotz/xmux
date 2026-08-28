@@ -1,12 +1,31 @@
 import { afterEach, describe, expect, it } from "vitest"
-import { createMemoryBridge } from "./bridge-memory"
+import { createMemoryBridge, type MemoryBridge } from "./bridge-memory"
 import type { ExcelHost } from "./host"
 import { startBridgeHost } from "./host-xll"
 
+/** Collects the page-side listener, which is how a WebView2 host pushes to the pane. */
+let pushToPane: ((message: { readonly data: unknown }) => void) | null = null
+
 const install = (host: object | undefined): void => {
+  pushToPane = null
   Object.defineProperty(globalThis, "window", {
     configurable: true,
-    value: host === undefined ? {} : { chrome: { webview: { hostObjects: { xmux: host } } } },
+    value:
+      host === undefined
+        ? {}
+        : {
+            chrome: {
+              webview: {
+                hostObjects: { xmux: host },
+                addEventListener: (
+                  _type: "message",
+                  listener: (message: { readonly data: unknown }) => void,
+                ): void => {
+                  pushToPane = listener
+                },
+              },
+            },
+          },
   })
 }
 
@@ -15,6 +34,37 @@ const readyHost = async (host: object): Promise<ExcelHost | null> => {
   return new Promise((resolve) => startBridgeHost(resolve))
 }
 
+/**
+ * The host object as WebView2 actually projects one: every argument and every answer is a
+ * JSON string, because `AddHostObjectToScript` marshals primitives faithfully and nested
+ * object graphs unreliably. Testing against rich objects would prove the adapter works
+ * across a boundary it will never meet.
+ */
+const asHostObject = (bridge: MemoryBridge, handshake: unknown) => ({
+  handshake: async (): Promise<string> => JSON.stringify(handshake),
+  execute: async (opsJson: string): Promise<string> => {
+    const ops: unknown = JSON.parse(opsJson)
+    if (!Array.isArray(ops)) throw new Error("the host was handed something that is not ops")
+    try {
+      // The memory host already answers in the wire shape; wrapping it again would drop
+      // the failure field, which is the part the adapter has to classify.
+      return JSON.stringify(await bridge(ops))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const cut = message.indexOf(": ")
+      return JSON.stringify({
+        values: {},
+        failure:
+          cut > 0
+            ? { code: message.slice(0, cut), message: message.slice(cut + 2) }
+            : { code: "host", message },
+      })
+    }
+  },
+  readExternalWorkbook: async (): Promise<string> => JSON.stringify({ values: [["1"]] }),
+  readNativeEditorState: async (): Promise<string> => JSON.stringify({ editing: false }),
+})
+
 afterEach(() => {
   Reflect.deleteProperty(globalThis, "window")
 })
@@ -22,13 +72,12 @@ afterEach(() => {
 describe("the XLL host", () => {
   it("caches its handshake and runs batches through the bridge", async () => {
     const bridge = createMemoryBridge({ sheets: [{ name: "Data", cells: [["1"]] }] })
-    const host = await readyHost({
-      handshake: async () => ({
+    const host = await readyHost(
+      asHostObject(bridge, {
         workbookUrl: "https://example.test/book.xlsx",
         capabilities: [{ name: "ExcelApi", version: "1.9" }],
       }),
-      execute: bridge,
-    })
+    )
     expect(host).not.toBeNull()
     if (host === null) throw new Error("missing XLL host")
     expect(host.workbookUrl()).toBe("https://example.test/book.xlsx")
@@ -47,10 +96,7 @@ describe("the XLL host", () => {
 
   it("classifies host failures and delivers pushed selections", async () => {
     const bridge = createMemoryBridge({ sheets: [{ name: "Data", cells: [[]] }] })
-    const host = await readyHost({
-      handshake: async () => ({ workbookUrl: "", capabilities: [] }),
-      execute: bridge,
-    })
+    const host = await readyHost(asHostObject(bridge, { workbookUrl: "", capabilities: [] }))
     if (host === null) throw new Error("missing XLL host")
     let event = ""
     await host.run(async (context) => {
@@ -59,7 +105,11 @@ describe("the XLL host", () => {
       })
       await context.sync()
     })
-    await bridge.fireSelection({ worksheetId: "sheet-1", address: "Data!A1" })
+    // The host speaks first here: a registration op went out carrying no callback, because
+    // a JS function cannot be a COM argument, and delivery comes back as a web message.
+    expect(pushToPane).not.toBeNull()
+    pushToPane?.({ data: { kind: "selection", worksheetId: "sheet-1", address: "Data!A1" } })
+    await Promise.resolve()
     expect(event).toBe("sheet-1:Data!A1")
 
     bridge.failNext("cellEditMode", "Excel is editing a cell")
@@ -87,10 +137,7 @@ describe("the XLL host", () => {
 
   it("leaves an error the host did not send to the caller", async () => {
     const bridge = createMemoryBridge({ sheets: [{ name: "Data", cells: [["1"]] }] })
-    const host = await readyHost({
-      handshake: async () => ({ workbookUrl: "", capabilities: [] }),
-      execute: bridge,
-    })
+    const host = await readyHost(asHostObject(bridge, { workbookUrl: "", capabilities: [] }))
     if (host === null) throw new Error("missing XLL host")
 
     // A protocol violation on this side reads exactly like a host refusal once the code is
