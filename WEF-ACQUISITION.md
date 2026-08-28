@@ -103,32 +103,37 @@ XLL은 `SetVirtualHostNameToFolderMapping`(서비스·인증서·포트 전부 �
 | 0 | 파일럿 브랜치 분리 + 근거 문서화 | 불필요 | **완료** |
 | 1 | `ExcelHost` 포트 추출 — main.ts 13개 지점을 포트 뒤로, Office.js 어댑터 1개만 존재. 동작 동일 | 불필요 | **완료** |
 | 1.5 | 런타임 전역 완전 격리 — `Excel.SheetVisibility` 제거, 가드레일이 enum 읽기까지 잡도록 강화 | 불필요 | **완료** |
-| 2 | 컨텍스트 타입 탈Office — 아래 "2단계 설계 제약" 참조. 한 줄 치환이 아니라 설계 작업 | 불필요 | 다음 |
+| 2 | 컨텍스트 타입 탈Office — `HostContext`를 프로젝트 소유 타입으로 선언, Office 캡스트는 어댑터 한 군데로 | 불필요 | **완료** |
 | 3 | XLL 스파이크 — CTP+WebView2 렌더·host object 왕복·미서명 로드 게이트 3개 | **필요** | 대기 |
 | 4 | host-object 어댑터 구현 → 단계 2 계약 테스트 통과. Windows=XLL, Mac=Office.js 병행 | **필요** | 대기 |
 | P | (병행) 파일럿 브랜치 검증 | **필요** | 대기 |
 
-### 2단계 설계 제약 (시도 후 측정됨)
+### 2단계에서 밝혀진 것 (이후 어댑터 작업의 전제)
 
-`HostContext`를 `Excel.RequestContext`에서 프로젝트 소유 타입으로 바꾸는 건 **별칭 한 줄 교체가
-아니다.** 실제로 조립해본 결과 막힌 지점:
+결정적 측정: **`Excel.RequestContext`는 `InspectContext`도 `OperateContext`도 만족하지
+않는다.** (타입 프로브로 확인: `Excel.RequestContext extends InspectContext` → `false`.)
+Office의 `autoFill`/`clear` 오버로드가 우리가 이름 붙인 슬라이스보다 넓어서 반공변으로 거부된다.
+즉 패인은 처음부터 **경계에서 구조적 캐스트로** Office 컬텍스트를 넘기고 있었고(테스트도
+`as unknown as Excel.RequestContext`로 가짜 컬텍스트를 넣고 있었다), 계약을 교차해서 양쪽을
+동시에 만족시키려던 시도는 애초에 잘못된 전제였다.
 
-1. **교차 타입이 시그니처 충돌을 만든다.** `InspectContext`와 `ResolveContext`가 둘 다
-   `workbook.getSelectedRange`를 서로 다른 반환 타입으로 선언한다. 교차하면 경합하는 호출
-   시그니처가 되어 `InspectRange | OperateRange` 같은 쓸 수 없는 유니온이 나온다.
-2. **가변성이 엇갈린다.** 읽기 쪽 `InspectRange.formulas`는 `readonly`, 쓰기 쪽
-   `OperateRange.formulas`와 `history.ts`의 `UndoRange`는 가변이다. 한 `getRange`가 양쪽을
-   동시에 만족시키려면 반환 타입을 교차해야 하는데, 그러면 1번 문제가 다시 생긴다.
-3. **Office 타입이 반공변으로 거부한다.** `InspectRange.autoFill(destination: InspectRange)` vs
-   Office의 `autoFill(destinationRange?: string | Excel.Range)` — 파라미터 반공변 때문에
-   우리 타입을 요구하는 자리에 Office 객체를 넣을 수 없다. 계약을 넓게 잡을수록 더 막힐다.
+그래서 2단계는 대통합이 아니라 세 가지로 끝난다:
 
-결론: 계약들을 **교차하지 말고**, `HostRange`/`HostSheet` 한 쌍을 먼저 정의한 뒤 각 모듈
-계약을 거기서 **파생**시켜야 한다(`Pick`/`Omit`). 순서도 중요하다: 먼저 `office-shapes.ts`의
-읽기/쓰기 타입을 하나로 합치고, 그 다음 `eval-context.ts`를 그 합집합에 맞추고, 마지막에
-`HostContext`를 선언한다. 중간에 멈추면 한쪽만 살아난 반쪽짜리 리팩터가 남으므로, 한 번에
-끝낼 수 있는 세션에서 착수한다. 지금은 `HostContext = Excel.RequestContext` 별칭 한 줄이
-유일한 잔여 결합이고, 바꿀 지점이 그 한 줄로 모여 있다.
+1. `HostContext`를 프로젝트 소유 타입으로 **명시 선언**한다. 교차 시 멤버가 경합하는
+   곳(`getRange`, `getUsedRangeOrNullObject`, `autoFill`, `worksheet`)은 `Omit`으로 걷어내고
+   한 번만 선언한다 — TypeScript가 교차된 오버로드 중 **첫 번째**를 고르기 때문에 생기는
+   문제였다.
+2. Office와의 간극은 **어댑터 안 캡스트 한 군데**로 몰아넣는다
+   (`context as unknown as HostContext`). 그 캡스트를 정직하게 만드는 근거는
+   `office-shapes.ts`의 `KeysFit` parity assert다 — Office가 멤버 이름을 바꾸면 사용자 통합
+   문서가 아니라 빌드가 깨진다.
+3. 가드레일을 최종형으로 조인다: **`Excel.`/`Office.`를 이름으로 언급할 수 있는 파일은
+   딜 둘**(`host-office.ts` 런타임, `office-shapes.ts` 타입 대조). 타입 위치까지 포함해
+   전면 금지이며, 캡스트가 단 1회임을 테스트가 검사한다.
+
+두 번째 어댑터가 지는 의무는 이제 `excel/host.ts` 한 파일을 읽으면 끝이다: `HostContext`의
+멤버를 채우고 `ExcelHost` 네 메서드를 구현하면 된다. `eval-context.ts`(626 LOC)가 읽기 절반의
+참조 구현이다.
 
 **단계 1·2는 파일럿 결과와 무관하게 이득이다** — 테스트 용이성이 오르고, 평가 하네스가 지금
 암묵적으로 의존하는 계약이 명시되며, 어느 채널로 가든 필요하다. 단계 3·4는 파일럿이
