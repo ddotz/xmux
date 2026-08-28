@@ -30,6 +30,21 @@ xmux/
 └── NEXT.md         # working queue of what is being built next
 ```
 
+## BRANCHES
+
+Three tracks, one trunk. `main` is the only place core work lands; the other two are thin
+derivations that exist to keep an unverified bet out of the shipping line.
+
+|Branch|What it is|Rule|
+|---|---|---|
+|`main`|The version that deploys today: diagnosis kit + Developer warmup|Must stay installable. Gates green before any push. **Core changes go here and only here**|
+|`windows/trusted-catalog-pilot`|`main` + the opt-in Trusted Catalog channel (7 files). Unverified until a Windows PC runs the pilot|Rebase onto `main`, never the reverse. Merges into `main` only after the pilot passes on a real LTSC machine|
+|`adapter/excel-host`|`main` + the host-port conversion, so a non-WEF host (XLL/COM) can exist without rewriting the pane|Rebase onto `main`. Merges back once the port is complete and Mac behaviour is unchanged|
+
+A change that belongs to the product — pane, formula, excel, ai — is a `main` change even
+when you noticed it on a derived branch: land it on `main`, then rebase the branch.
+`WEF-ACQUISITION.md` holds the decision rule for which track ends up winning.
+
 ## WHERE TO LOOK
 
 | Task | Location | Notes |
