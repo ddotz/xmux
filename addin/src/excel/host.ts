@@ -58,12 +58,13 @@ import type {
  *    decides what to show from `classify`, so a host that swallows a refusal into an empty
  *    read turns "Excel is in cell-edit mode" into "the cell is blank".
  *
- * None of that is checkable by types, so it is checked by a test: `excel/strict-context.ts`
- * implements the read contracts with the deferral made strict — reading an unloaded
- * property throws, reading a loaded one before `sync` throws, and a handle outliving its
- * batch throws — and `strict-context.test.ts` runs `resolveReferences`, `summariseReferences`,
- * `listSheets` and `readWindow` through it. Those consumers obey the protocol; that is a
- * result, not an assumption. The write side (`operate.ts`) has no such check yet.
+ * None of that is checkable by types, so it is checked by a test. `excel/host-bridge.ts`
+ * implements the read contracts over nothing but an op list and a response — which makes
+ * the protocol structural rather than advisory, since a property nobody loaded has nothing
+ * in the response to read — and `host-bridge.test.ts` runs `resolveReferences`,
+ * `summariseReferences`, `listSheets` and `readWindow` through it. Those consumers obey the
+ * protocol; that is a result, not an assumption. The write side (`operate.ts`) has no such
+ * check yet.
  *
  * `excel/eval-context.ts` is a separate stand-in for the evaluation harness, satisfying
  * `InspectContext` plus enough of the write path for the fill tests. It is lenient about the

@@ -24,8 +24,19 @@ record is the in-process host (XLL + WebView2 host object), and the Trusted Cata
 a cheap parallel lottery ticket rather than a gate. `WEF-ACQUISITION.md` holds the evidence
 and the revised decision rule.
 
-That track lives on **`adapter/xll-host`**, not here: everything on it is unverified until
-an XLL loads on a real machine, and `main` has to stay the thing that installs today.
+This branch is that track. Everything here is unverified until an XLL loads on a real
+machine, which is why it is not on `main` — `main` has to stay the thing that installs
+today.
+
+## Next, and none of it needs Windows
+
+1. **Write-path ops.** The read path already runs over the bridge wire end to end
+   (`host-bridge.ts` + `bridge-memory.ts`, transcripts asserted). `operate.ts`'s members are
+   not on the dispatch table yet; adding them is mechanical and finishes the pane's half.
+2. **Replace what dies with the local service.** An XLL serves assets from a virtual host
+   mapping, which is how it drops the HTTPS service, the private CA, port 3927 and the
+   logon autostart — and with them `/xmux/external` (external workbook reads) and
+   `/xmux/state` (the macOS companion). Both need a host-object answer.
 
 ## Blocked on a Windows PC
 
@@ -33,10 +44,13 @@ an XLL loads on a real machine, and `main` has to stay the thing that installs t
    through a virtual host mapping, one host-object round trip to a real cell, and an
    unsigned `.xll` loading on the target PC. Only the first is a genuine unknown — the
    registry snapshot shows no Office policy and no `RequireAddinSig` on that machine.
-2. **Trusted Catalog pilot (case 7), in parallel.** The kit is built on
+2. **The C# bridge.** Implement the dispatch table fixed in `host-bridge.ts` over
+   `QueueAsMacro` → COM. Eight members and `load`; the reference implementation to match is
+   `bridge-memory.ts`.
+3. **Trusted Catalog pilot (case 7), in parallel.** The kit is built on
    `windows/trusted-catalog-pilot`. If it passes, deployment gets easy immediately and the
    XLL work still stands; if it fails, nothing about the schedule changes.
-3. **Warmup TTL re-check.** Does the add-in still open 24 hours after the wizard ran?
+4. **Warmup TTL re-check.** Does the add-in still open 24 hours after the wizard ran?
    `Entitlements` carries a +24h FILETIME and no one has watched it expire.
 
 ## Blocked on a network
