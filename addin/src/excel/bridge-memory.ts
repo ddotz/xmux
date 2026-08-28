@@ -19,11 +19,11 @@ import { WORKBOOK } from "./host-bridge"
 export type MemorySheet = {
   readonly name: string
   readonly hidden?: boolean
-  readonly cells: readonly (readonly string[])[]
+  cells: string[][]
 }
 
 export type MemoryWorkbook = {
-  readonly sheets: readonly MemorySheet[]
+  sheets: MemorySheet[]
   /** Defined name to the qualified address it resolves to, e.g. `Revenue` → `Data!B2:D3`. */
   readonly names?: Readonly<Record<string, string>>
   readonly tables?: Readonly<Record<string, string>>
@@ -125,6 +125,49 @@ const locate = (workbook: MemoryWorkbook, qualified: string | undefined): RangeT
 const literal = (arg: BridgeArg | undefined): string =>
   typeof arg === "string" ? arg : String(arg ?? "")
 
+const writeArea = (target: RangeTarget, rows: readonly BridgeArg[]): void => {
+  if (target.sheet === null || target.area === null) throw new Error("bridge: range is null")
+  for (const [row, values] of rows.entries()) {
+    if (!Array.isArray(values)) throw new Error("bridge: formulas need rows")
+    const destination = target.sheet.cells[target.area.top - 1 + row] ?? []
+    while (destination.length < target.area.left - 1) destination.push("")
+    for (const [column, value] of values.entries())
+      destination[target.area.left - 1 + column] = String(value ?? "")
+    target.sheet.cells[target.area.top - 1 + row] = destination
+  }
+}
+
+const clearArea = (target: RangeTarget): void => {
+  if (target.sheet === null || target.area === null) throw new Error("bridge: range is null")
+  for (let row = 0; row < target.area.height; row++) {
+    const destination = target.sheet.cells[target.area.top - 1 + row] ?? []
+    for (let column = 0; column < target.area.width; column++)
+      destination[target.area.left - 1 + column] = ""
+    target.sheet.cells[target.area.top - 1 + row] = destination
+  }
+}
+
+const deleteArea = (target: RangeTarget, shift: string): void => {
+  if (target.sheet === null || target.area === null) throw new Error("bridge: range is null")
+  const { area, sheet } = target
+  if (shift === "Up") {
+    const height = sheet.cells.length
+    for (let column = area.left - 1; column < area.left - 1 + area.width; column++) {
+      for (let row = area.top - 1; row < height - area.height; row++)
+        (sheet.cells[row] ?? [])[column] = sheet.cells[row + area.height]?.[column] ?? ""
+      for (let row = Math.max(area.top - 1, height - area.height); row < height; row++)
+        (sheet.cells[row] ?? [])[column] = ""
+    }
+    return
+  }
+  for (let row = area.top - 1; row < area.top - 1 + area.height; row++) {
+    const cells = sheet.cells[row] ?? []
+    cells.splice(area.left - 1, area.width)
+    cells.push(...Array.from({ length: area.width }, () => ""))
+    sheet.cells[row] = cells
+  }
+}
+
 /**
  * Build the host side for one pane session. The returned `send` holds the handle table, the
  * way an in-process host object holds it for as long as the WebView2 is alive.
@@ -132,7 +175,13 @@ const literal = (arg: BridgeArg | undefined): string =>
 export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
   const handles = new Map<number, Target>([[WORKBOOK, { kind: "workbook" }]])
   const childIds = new Map<string, number>()
+  const rangeProperties = new Map<string, unknown>()
   let nextChild = -1
+
+  const rangeKey = (target: RangeTarget): string => {
+    if (target.sheet === null || target.area === null) throw new Error("bridge: range is null")
+    return `${target.sheet.name}!${formatArea(target.area)}`
+  }
 
   const childId = (name: string): number => {
     const held = childIds.get(name)
@@ -156,9 +205,18 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
   }
 
   const asRange = (arg: BridgeArg | undefined): RangeTarget => {
-    if (typeof arg !== "object" || arg === null) throw new Error("bridge: expected a handle")
-    const target = resolve(arg.handle)
-    if (target.kind !== "range") throw new Error(`bridge: handle ${arg.handle} is not a range`)
+    if (
+      typeof arg !== "object" ||
+      arg === null ||
+      Array.isArray(arg) ||
+      typeof Reflect.get(arg, "handle") !== "number"
+    ) {
+      throw new Error("bridge: expected a handle")
+    }
+    const handle = Reflect.get(arg, "handle")
+    if (typeof handle !== "number") throw new Error("bridge: expected a handle")
+    const target = resolve(handle)
+    if (target.kind !== "range") throw new Error(`bridge: handle ${handle} is not a range`)
     return target
   }
 
@@ -172,6 +230,26 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
         const sheet = workbook.sheets.find((candidate) => candidate.name === name)
         // Excel throws for a sheet that is not there; `getItemOrNullObject` is the other one.
         if (sheet === undefined) throw new Error(`시트를 찾을 수 없습니다: ${name}`)
+        return { kind: "sheet", sheet }
+      }
+      case "getItemOrNullObject": {
+        const sheet = workbook.sheets.find((candidate) => candidate.name === literal(args[0]))
+        return sheet === undefined
+          ? { kind: "range", sheet: null, area: null }
+          : { kind: "sheet", sheet }
+      }
+      case "getActiveWorksheet": {
+        const sheet = workbook.sheets[0]
+        if (sheet === undefined) throw new Error("bridge: workbook has no active worksheet")
+        return { kind: "sheet", sheet }
+      }
+      case "add": {
+        if (target.kind !== "worksheets") throw new Error("bridge: add needs worksheets")
+        const name = literal(args[0])
+        if (workbook.sheets.some((sheet) => sheet.name === name))
+          throw new Error(`시트가 이미 있습니다: ${name}`)
+        const sheet = { name, cells: [] }
+        workbook.sheets.push(sheet)
         return { kind: "sheet", sheet }
       }
       case "getRange": {
@@ -194,6 +272,48 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
       }
       case "func":
         return { kind: "func", fn: literal(args[0]), source: asRange(args[1]) }
+      case "set": {
+        if (target.kind !== "range") throw new Error("bridge: set needs a range")
+        const property = literal(args[0])
+        if (property === "formulas") {
+          if (!Array.isArray(args[1])) throw new Error("bridge: formulas need rows")
+          writeArea(target, args[1])
+        } else if (property === "numberFormat") {
+          rangeProperties.set(rangeKey(target), args[1])
+        } else {
+          throw new Error(`bridge: unknown set ${property}`)
+        }
+        return target
+      }
+      case "insert": {
+        if (target.kind !== "range" || target.sheet === null || target.area === null)
+          throw new Error("bridge: insert needs a range")
+        for (let row = 0; row < target.area.height; row++)
+          target.sheet.cells.splice(target.area.top - 1, 0, [])
+        return target
+      }
+      case "delete": {
+        if (target.kind !== "range") throw new Error("bridge: delete needs a range")
+        deleteArea(target, literal(args[0]))
+        return target
+      }
+      case "clear": {
+        if (target.kind !== "range") throw new Error("bridge: clear needs a range")
+        clearArea(target)
+        return target
+      }
+      case "autoFill": {
+        if (target.kind !== "range") throw new Error("bridge: autoFill needs a range")
+        const destination = asRange(args[0])
+        if (destination.sheet === null || destination.area === null)
+          throw new Error("bridge: autoFill destination is null")
+        const formula = textIn(target)[0]?.[0] ?? ""
+        writeArea(
+          destination,
+          Array.from({ length: destination.area.height }, () => [formula]),
+        )
+        return target
+      }
       default:
         throw new Error(`bridge: unknown member ${member}`)
     }
@@ -211,6 +331,14 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
             return target.sheet === null || target.area === null
           case "text":
             return textIn(target)
+          case "formulas":
+            return textIn(target)
+          case "rowCount":
+            return target.area?.height ?? 0
+          case "columnCount":
+            return target.area?.width ?? 0
+          case "numberFormat":
+            return rangeProperties.get(rangeKey(target)) ?? []
           default:
             throw new Error(`bridge: a range has no "${path}"`)
         }
@@ -220,6 +348,8 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
             return target.sheet.name
           case "visibility":
             return target.sheet.hidden === true ? "Hidden" : "Visible"
+          case "isNullObject":
+            return false
           default:
             throw new Error(`bridge: a worksheet has no "${path}"`)
         }
@@ -247,6 +377,11 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): BridgeSend => {
 
   return async (ops: readonly BridgeOp[]): Promise<BridgeResponse> => {
     const response: Record<number, Record<string, unknown>> = {}
+    // Strictly in issue order, mutations included — clause 3 of the protocol. Holding writes
+    // back to the end of the batch would be cheaper here and wrong everywhere: Office runs
+    // the queue as it was written, so a load after a write in the same batch reads the new
+    // value. A host that reorders answers a different question than the Office adapter does,
+    // which is the one thing a second adapter may never do.
     for (const op of ops) {
       if (op.op === "call") {
         handles.set(op.id, dispatch(op.on, op.member, op.args))

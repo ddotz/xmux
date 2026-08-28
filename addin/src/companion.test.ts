@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { watchCompanion } from "./companion"
+import { createLocalHostServices } from "./host-services"
 
 const unavailable = (): Promise<Response> => Promise.reject(new TypeError("not running"))
 
@@ -20,7 +21,6 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.unstubAllGlobals()
   vi.useRealTimers()
 })
 
@@ -29,8 +29,10 @@ describe("companion polling", () => {
     // Given: the optional companion stays unavailable
     const fetcher = vi.fn(unavailable)
     const changes: boolean[] = []
-    vi.stubGlobal("fetch", fetcher)
-    const stop = watchCompanion((state) => changes.push(state.editing))
+    const stop = watchCompanion(
+      (state) => changes.push(state.editing),
+      createLocalHostServices(fetcher),
+    )
 
     // When: five seconds pass without the helper
     await vi.advanceTimersByTimeAsync(5_000)
@@ -48,14 +50,13 @@ describe("companion polling", () => {
       .mockImplementationOnce(unavailable)
       .mockImplementationOnce(unavailable)
       .mockImplementation(() => available(true))
-    vi.stubGlobal("fetch", fetcher)
     let announceRecovery = (): void => {}
     const recovered = new Promise<void>((resolve) => {
       announceRecovery = resolve
     })
     const stop = watchCompanion((state) => {
       if (state.editing) announceRecovery()
-    })
+    }, createLocalHostServices(fetcher))
 
     // When: the backed-off third poll succeeds
     await vi.advanceTimersByTimeAsync(1_050)

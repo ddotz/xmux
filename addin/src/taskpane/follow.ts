@@ -1,4 +1,5 @@
 import { watchCompanion } from "../companion"
+import type { HostServices } from "../host-services"
 import type { PaneState } from "../model"
 
 /**
@@ -15,6 +16,12 @@ export type FollowDeps = {
   /** Re-render with a badge, without changing which cell is mirrored. */
   readonly note: (badge: string | null) => void
   readonly openReference: (index: number) => void
+  /**
+   * Where editor state comes from. Injected rather than defaulted: under a host that has
+   * no local service, a default would poll an endpoint nobody serves and back off into
+   * silence, which reads exactly like "no companion is running".
+   */
+  readonly services: HostServices
 }
 
 export const followEditor = (deps: FollowDeps): void => {
@@ -44,5 +51,5 @@ export const followEditor = (deps: FollowDeps): void => {
     if (index < 0 || index === pane.activeIndex) return
     deps.note("편집 추적 중")
     deps.openReference(index)
-  })
+  }, deps.services)
 }

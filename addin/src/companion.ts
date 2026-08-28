@@ -1,4 +1,7 @@
-import { z } from "zod"
+import { CompanionUnavailable, type HostServices, type NativeEditorState } from "./host-services"
+
+export type { NativeEditorState as CompanionState } from "./host-services"
+export { CompanionUnavailable } from "./host-services"
 
 /**
  * The optional native companion.
@@ -9,23 +12,6 @@ import { z } from "zod"
  * reference the user is stepping through with Tab; when it is not, nothing changes.
  */
 
-const spanSchema = z.tuple([z.number().int(), z.number().int()])
-
-const stateSchema = z.discriminatedUnion("editing", [
-  z.object({ editing: z.literal(false) }),
-  z.object({
-    editing: z.literal(true),
-    formula: z.string(),
-    caret: z.number().int(),
-    spans: z.array(spanSchema),
-    highlighted: spanSchema.nullable(),
-  }),
-])
-
-export type CompanionState = z.infer<typeof stateSchema>
-
-/** Where the dev server exposes the companion's state file. */
-const STATE_URL = "/xmux/state"
 const POLL_MS = 150
 const MAX_POLL_MS = 30_000
 
@@ -33,7 +19,10 @@ const MAX_POLL_MS = 30_000
  * Poll the companion and report every change. The companion is optional, so a missing
  * or unreadable endpoint is not an error: it simply means "no companion", reported once.
  */
-export const watchCompanion = (onChange: (state: CompanionState) => void): (() => void) => {
+export const watchCompanion = (
+  onChange: (state: NativeEditorState) => void,
+  services: HostServices,
+): (() => void) => {
   let last = ""
   let stopped = false
   let delay = POLL_MS
@@ -48,17 +37,13 @@ export const watchCompanion = (onChange: (state: CompanionState) => void): (() =
 
   const tick = async (): Promise<void> => {
     try {
-      const response = await fetch(STATE_URL, { cache: "no-store" })
-      if (!response.ok) throw new CompanionUnavailable(`status ${response.status}`)
-      const body: unknown = await response.json()
-      const parsed = stateSchema.safeParse(body)
-      if (!parsed.success) throw new CompanionUnavailable("unexpected payload")
+      const state = await services.readNativeEditorState()
 
       delay = POLL_MS
-      const signature = JSON.stringify(parsed.data)
+      const signature = JSON.stringify(state)
       if (signature !== last) {
         last = signature
-        onChange(parsed.data)
+        onChange(state)
       }
     } catch (error) {
       if (error instanceof CompanionUnavailable || error instanceof TypeError) {
@@ -79,12 +64,5 @@ export const watchCompanion = (onChange: (state: CompanionState) => void): (() =
   return () => {
     stopped = true
     if (timer !== null) clearTimeout(timer)
-  }
-}
-
-export class CompanionUnavailable extends Error {
-  constructor(reason: string) {
-    super(`companion unavailable: ${reason}`)
-    this.name = "CompanionUnavailable"
   }
 }

@@ -1,3 +1,5 @@
+import type { OperateContext } from "./office-shapes"
+
 /**
  * The wire between the pane and a host that is not Office.js.
  *
@@ -34,7 +36,7 @@
 export const WORKBOOK = 0
 
 /** A call argument. `{ handle }` refers to something an earlier op in the same batch made. */
-export type BridgeArg = string | number | boolean | null | { readonly handle: number }
+export type BridgeArg = unknown
 
 export type BridgeOp =
   | {
@@ -90,6 +92,10 @@ export const buildBridgeContext = (send: BridgeSend) => {
     const id = nextId++
     queued.push({ op: "call", id, on, member, args })
     return id
+  }
+
+  const set = (on: number, property: string, value: BridgeArg): void => {
+    call(on, "set", [property, value])
   }
 
   const request = (on: number, properties: string): void => {
@@ -166,11 +172,36 @@ export const buildBridgeContext = (send: BridgeSend) => {
       const value = read(id, label, "text")
       return Array.isArray(value) ? (value as readonly (readonly string[])[]) : []
     },
+    get formulas(): unknown[][] {
+      const value = read(id, label, "formulas")
+      return Array.isArray(value) ? (value as unknown[][]) : []
+    },
+    set formulas(value: unknown[][]) {
+      set(id, "formulas", value)
+    },
+    get numberFormat(): unknown[][] {
+      const value = read(id, label, "numberFormat")
+      return Array.isArray(value) ? (value as unknown[][]) : []
+    },
+    set numberFormat(value: unknown[][]) {
+      set(id, "numberFormat", value)
+    },
+    get rowCount(): number {
+      const value = read(id, label, "rowCount")
+      return typeof value === "number" ? value : 0
+    },
+    get columnCount(): number {
+      const value = read(id, label, "columnCount")
+      return typeof value === "number" ? value : 0
+    },
+    insert: (shift: string) => call(id, "insert", [shift]),
+    delete: (shift: string) => call(id, "delete", [shift]),
+    clear: (applyTo?: string) => call(id, "clear", [applyTo ?? "All"]),
+    autoFill: (destination: { readonly handle: number }, type: string) =>
+      call(id, "autoFill", [{ handle: destination.handle }, type]),
     /** Not part of any consumer contract: how a range is named as an argument on the wire. */
     handle: id,
   })
-
-  type BridgeRange = ReturnType<typeof range>
 
   const sheet = (id: number, label: string) => ({
     load: (properties: string) => request(id, properties),
@@ -181,6 +212,9 @@ export const buildBridgeContext = (send: BridgeSend) => {
     get visibility(): string {
       const value = read(id, label, "visibility")
       return typeof value === "string" ? value : ""
+    },
+    get isNullObject(): boolean {
+      return read(id, label, "isNullObject") === true
     },
     getRange: (address: string) => range(call(id, "getRange", [address]), `${label}!${address}`),
     getUsedRangeOrNullObject: (valuesOnly?: boolean) =>
@@ -194,8 +228,11 @@ export const buildBridgeContext = (send: BridgeSend) => {
     },
   })
 
-  const functionOn = (name: string) => (target: BridgeRange) =>
-    result(call(WORKBOOK, "func", [name, { handle: target.handle }]), name)
+  const functionOn = (name: string) => (target: object) => {
+    const handle = Reflect.get(target, "handle")
+    if (typeof handle !== "number") throw new BridgeError(`${name}: range is not a bridge handle`)
+    return result(call(WORKBOOK, "func", [name, { handle }]), name)
+  }
 
   let worksheetsId: number | null = null
   const worksheets = () => {
@@ -210,6 +247,10 @@ export const buildBridgeContext = (send: BridgeSend) => {
           : []
       },
       getItem: (name: string) => sheet(call(id, "getItem", [name]), `sheet ${name}`),
+      getItemOrNullObject: (name: string) =>
+        sheet(call(id, "getItemOrNullObject", [name]), `sheet ${name}`),
+      getActiveWorksheet: () => sheet(call(id, "getActiveWorksheet", []), "active sheet"),
+      add: (name: string) => call(id, "add", [name]),
     }
   }
 
@@ -247,7 +288,7 @@ export const buildBridgeContext = (send: BridgeSend) => {
   }
 
   return {
-    context,
+    context: context as typeof context & OperateContext,
     transcript,
     close: (): void => {
       closed = true

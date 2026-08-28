@@ -1,7 +1,7 @@
-import { z } from "zod"
-import { clampArea, formatArea, parseArea } from "./excel/address"
+import { clampArea, parseArea } from "./excel/address"
 import type { SheetWindow } from "./excel/sheets"
 import type { RefTarget } from "./formula/types"
+import type { HostServices } from "./host-services"
 
 /**
  * Reading a cross-workbook reference from its saved file.
@@ -22,11 +22,6 @@ export type ExternalRead =
 /** Same viewport bound the resolver applies to unbounded local references. */
 const EXTERNAL_LIMIT = { rows: 200, columns: 40 }
 
-const responseSchema = z.union([
-  z.object({ values: z.array(z.array(z.string())) }),
-  z.object({ error: z.string() }),
-])
-
 /** The folder the host workbook sits in, separator preserved. Web documents have none. */
 export const workbookFolder = (documentUrl: string): string | null => {
   if (/^https?:/i.test(documentUrl)) return null
@@ -45,11 +40,11 @@ export const externalFilePath = (target: ExternalTarget, documentUrl: string): s
   return folder === null ? null : folder + target.book
 }
 
-/** Fetch the referenced rectangle from the saved file through the local service. */
+/** Fetch the referenced rectangle from whichever host service can read saved files. */
 export const fetchExternalWindow = async (
   target: ExternalTarget,
   documentUrl: string,
-  fetcher: typeof fetch = fetch,
+  services: HostServices,
 ): Promise<ExternalRead> => {
   const path = externalFilePath(target, documentUrl)
   if (path === null)
@@ -58,19 +53,11 @@ export const fetchExternalWindow = async (
   if (parsed === null)
     return { kind: "unavailable", reason: "외부 파일에서는 셀 범위만 읽을 수 있음" }
   const area = clampArea(parsed, EXTERNAL_LIMIT)
-  const query = new URLSearchParams({ path, range: formatArea(area), sheet: target.sheet })
-  try {
-    const response = await fetcher(`/xmux/external?${query.toString()}`, { cache: "no-store" })
-    const body: unknown = await response.json()
-    const result = responseSchema.safeParse(body)
-    if (!result.success) return { kind: "unavailable", reason: "로컬 서비스의 응답을 읽을 수 없음" }
-    if ("error" in result.data) return { kind: "unavailable", reason: result.data.error }
-    return {
-      kind: "window",
-      source: path,
-      window: { sheet: target.sheet, area, rows: result.data.values },
-    }
-  } catch {
-    return { kind: "unavailable", reason: "로컬 서비스에 연결할 수 없음" }
+  const result = await services.readExternalWorkbook({ path, sheet: target.sheet, area })
+  if (result.kind === "unavailable") return result
+  return {
+    kind: "window",
+    source: path,
+    window: { sheet: target.sheet, area, rows: result.values },
   }
 }

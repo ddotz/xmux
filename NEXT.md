@@ -28,15 +28,28 @@ This branch is that track. Everything here is unverified until an XLL loads on a
 machine, which is why it is not on `main` — `main` has to stay the thing that installs
 today.
 
-## Next, and none of it needs Windows
+## Done on this branch, none of it needing Windows
 
-1. **Write-path ops.** The read path already runs over the bridge wire end to end
-   (`host-bridge.ts` + `bridge-memory.ts`, transcripts asserted). `operate.ts`'s members are
-   not on the dispatch table yet; adding them is mechanical and finishes the pane's half.
-2. **Replace what dies with the local service.** An XLL serves assets from a virtual host
-   mapping, which is how it drops the HTTPS service, the private CA, port 3927 and the
-   logon autostart — and with them `/xmux/external` (external workbook reads) and
-   `/xmux/state` (the macOS companion). Both need a host-object answer.
+- **The wire.** `host-bridge.ts` + `bridge-memory.ts`: accessors, property assignments and
+  loads become a generic op list, one batch per `sync`, and the response is the only source
+  a read has. Fourteen dispatch members plus `load`, fixed by transcript assertions.
+- **Both paths run over it.** `resolveReferences`, `summariseReferences`, `listSheets` and
+  `readWindow` for reads; the real `runWrite` with a real history for `write_range`,
+  `clear_range`, `insert_rows`, `delete_range`, `fill_formula` and `create_sheet`.
+- **The two local-service features are behind a port.** `host-services.ts` states what the
+  pane needs besides the workbook — read a rectangle out of a saved file, read the native
+  editor state — with the current HTTP calls as one adapter. Neither `external-workbook.ts`
+  nor `companion.ts` reaches for `fetch` any more, and neither defaults to the local
+  service: under a host with no service, a default would poll an endpoint nobody serves and
+  back off into silence that reads exactly like "no companion is running".
+
+## Next on this branch
+
+1. **The rest of the write surface.** `operate.ts`'s formatting, sort, filter, table and
+   pivot tools are not on the dispatch table yet; the six covered tools fixed every wire
+   shape, so the rest is enumeration.
+2. **A host-object implementation of `HostServices`.** The port exists; nothing implements
+   it except the HTTP adapter.
 
 ## Blocked on a Windows PC
 
