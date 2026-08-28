@@ -71,12 +71,10 @@ today.
    `bridge: no dispatch for "…" — the host object still owes this member`. **That message
    is the backlog**, and it is the same backlog the C# side has. Every wire *shape* is
    already fixed, so each remaining member is one dispatch entry and one transcript.
-2. **Charts and pivot tables.** The last members that still answer
-   `bridge: no dispatch for "…"`. Neither has meaningful in-memory behaviour, so covering
-   them means deciding what a reference host records rather than simulates — the same
-   decision already taken for protection and page layout.
-3. **The C# side, when there is a machine.** `bridge-memory.ts` is the thing to match; the
-   named failures are the only gaps left in it.
+2. **Nothing else, until there is a Windows machine.** Every member the pane's tools reach
+   is implemented or recorded, and each is exercised by a real tool call over the wire. What
+   is left is the C# side, the XLL shell, and finding out whether WebView2 initialises
+   inside a CTP — and none of those can be answered here.
 
 ## Blocked on a Windows PC
 

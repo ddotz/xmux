@@ -41,6 +41,8 @@ export type MemoryWorkbook = {
 export type MemoryBridge = BridgeSend & {
   readonly fireSelection: (event: HostSelectionEvent) => Promise<void>
   readonly failNext: (code: string, message: string) => void
+  /** What was recorded rather than modelled — the only evidence those members ran. */
+  readonly recorded: () => readonly string[]
 }
 
 type RangeTarget = {
@@ -67,6 +69,12 @@ type Target =
   | { readonly kind: "tableColumn"; readonly range: RangeTarget }
   /** What a replacement pass did. Excel answers with the count and nothing else. */
   | { readonly kind: "replaced"; readonly count: number }
+  /**
+   * A handle to something this host records rather than models — a chart, a pivot, a
+   * conditional format. Writes through it are recorded too; a *read* has nothing behind it
+   * and says so, because a fixture that answered would be inventing Excel's behaviour.
+   */
+  | { readonly kind: "opaque"; readonly label: string }
 
 const cellAt = (sheet: MemorySheet, row: number, column: number): string =>
   sheet.cells[row - 1]?.[column - 1] ?? ""
@@ -401,6 +409,12 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
             `bridge: no dispatch for "${property}" — the host object still owes this member`,
           )
         }
+        if (target.kind === "opaque") {
+          // Writing into a recorded thing is recorded too. Refusing would be wrong — the
+          // pane is doing something legitimate that a real host applies.
+          calls.push(`${target.label}:${property}`)
+          return target
+        }
         if (target.kind !== "range") throw new Error("bridge: set needs a range")
         if (property === "formulas") {
           if (!Array.isArray(args[1])) throw new Error("bridge: formulas need rows")
@@ -497,6 +511,11 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
         const removed = rows.length - kept.length
         return { kind: "removeDuplicates", removed, uniqueRemaining: kept.length }
       }
+      // Recorded, not simulated. A chart, a pivot, a frozen pane and a conditional format
+      // have no representation in a grid of display strings, and inventing one would be a
+      // fiction the C# side might trust. What a reference host owes here is that the call
+      // arrived with the arguments the pane sent — which is what a transcript asserts — and
+      // the loud absence of an answer nobody asked for.
       case "autoFilter.apply":
       case "autoFilter.clearCriteria":
       case "autoFilter.remove":
@@ -505,8 +524,22 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       case "activate":
       case "application.calculate":
       case "pageLayout.setPrintTitleRows":
+      case "freezePanes.freezeRows":
+      case "freezePanes.freezeColumns":
         calls.push(member)
         return target
+      case "charts.add":
+        if (target.kind !== "sheet") throw new Error("bridge: charts.add needs a worksheet")
+        calls.push(`${target.sheet.name}:charts.add:${literal(args[0])}`)
+        return { kind: "opaque", label: "chart" }
+      case "conditionalFormats.add":
+        if (target.kind !== "range") throw new Error("bridge: conditionalFormats.add needs a range")
+        calls.push(`${rangeKey(target)}:conditionalFormats.add:${literal(args[0])}`)
+        return { kind: "opaque", label: "conditional format" }
+      case "pivotTables.add":
+        if (target.kind !== "sheet") throw new Error("bridge: pivotTables.add needs a worksheet")
+        calls.push(`${target.sheet.name}:pivotTables.add:${literal(args[0])}`)
+        return { kind: "opaque", label: "pivot table" }
       case "names.add":
         if (target.kind !== "workbook") throw new Error("bridge: names.add needs workbook")
         names.set(literal(args[0]), rangeKey(asRange(args[1])))
@@ -664,6 +697,8 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       case "replaced":
         if (path === "value") return target.count
         throw new Error(`bridge: a replacement result has no "${path}"`)
+      case "opaque":
+        throw new Error(`bridge: a ${target.label} is recorded, not modelled — it has no "${path}"`)
       case "worksheets":
         throw new Error(`bridge: the collection is loaded through items/${path}`)
       case "workbook":
@@ -715,6 +750,7 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
     fireSelection: async (event: HostSelectionEvent): Promise<void> => {
       await Promise.all([...selectionHandlers].map((handler) => handler(event)))
     },
+    recorded: (): readonly string[] => [...calls],
     failNext: (code: string, message: string): void => {
       nextFailure = { code, message }
     },

@@ -383,3 +383,82 @@ describe("write tools over the bridge", () => {
     ])
   })
 })
+
+describe("what the reference host records instead of modelling", () => {
+  it("runs the tools with no grid representation, and says the call arrived", async () => {
+    // Given: a chart, a pivot, a frozen pane and a conditional format have no meaning in a
+    // grid of display strings. Simulating them would be a fiction the C# side might trust,
+    // so the host records the call and its arguments — which is what a transcript asserts.
+    const book = workbook()
+    const host = createMemoryBridge(book)
+    const bridge = buildBridgeContext(host)
+    const history = createHistory()
+
+    expect(
+      await runWrite(bridge.context, history, { tool: "freeze_panes", sheet: "Data", rows: 1 }),
+    ).toBe("Data 틀을 고정했습니다. (행 1, 열 0)")
+    expect(
+      await runWrite(bridge.context, history, {
+        tool: "add_chart",
+        sheet: "Data",
+        address: "A1:B3",
+        chartType: "ColumnClustered",
+        title: "매출",
+      }),
+    ).toBe("Data에 ColumnClustered 차트를 넣었습니다. (되돌리기에 포함되지 않습니다)")
+    expect(
+      await runWrite(bridge.context, history, {
+        tool: "conditional_format",
+        sheet: "Data",
+        address: "A1:B3",
+        kind: "cellValue",
+        fill: "#FFFF00",
+      }),
+    ).toContain("조건부 서식")
+
+    // Then: each one is evidence that the member ran with what the pane sent, and nothing
+    // pretends to have produced a chart.
+    const recorded = host.recorded()
+    expect(recorded).toContain("freezePanes.freezeRows")
+    expect(recorded).toContain("Data:charts.add:ColumnClustered")
+    expect(recorded).toContain("chart:title.text")
+    expect(recorded.some((call) => call.includes("conditionalFormats.add:CellValue"))).toBe(true)
+  })
+
+  it("refuses to answer a read about something it only recorded", async () => {
+    // A fixture that answered here would be inventing Excel's behaviour, which is worse
+    // than admitting the gap: the C# side is written against what this host says.
+    const host = createMemoryBridge(workbook())
+    const bridge = buildBridgeContext(host)
+    const chart = bridge.context.workbook.worksheets
+      .getItem("Data")
+      .charts.add("Line", bridge.context.workbook.worksheets.getItem("Data").getRange("A1"), "Auto")
+    chart.title.text = "제목"
+    await bridge.context.sync()
+    expect(host.recorded()).toContain("chart:title.text")
+  })
+})
+
+describe("a member the host does not have", () => {
+  it("fails by name, so the gap reads as the work still to do", async () => {
+    // Given: this is the guarantee that made the façade stop lying. Before it, a member the
+    // pane called and the host lacked dereferenced undefined and died naming nothing; the
+    // C# side had no way to learn what it still owed. It must hold for any member, not just
+    // the ones that happen to be unimplemented today — every one of those has since been
+    // covered, so the op is issued straight at the host.
+    const host = createMemoryBridge(workbook())
+    await expect(
+      host([{ op: "call", id: 1, on: 0, member: "somethingNobodyImplemented", args: [] }]),
+    ).rejects.toThrow(
+      'bridge: no dispatch for "somethingNobodyImplemented" — the host object still owes this member',
+    )
+    // And the same for a property write the host does not apply.
+    await expect(
+      host([
+        { op: "call", id: 1, on: 0, member: "worksheets", args: [] },
+        { op: "call", id: 2, on: 1, member: "getItem", args: ["Data"] },
+        { op: "call", id: 3, on: 2, member: "set", args: ["notAProperty", 1] },
+      ]),
+    ).rejects.toThrow('bridge: no dispatch for "notAProperty"')
+  })
+})
