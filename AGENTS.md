@@ -1,7 +1,6 @@
 # PROJECT KNOWLEDGE BASE
 
-**Generated:** 2026-08-27
-**Commit:** eca022b
+**Generated:** 2026-08-28
 **Branch:** main
 
 ## OVERVIEW
@@ -32,18 +31,26 @@ xmux/
 
 ## BRANCHES
 
-Three tracks, one trunk. `main` is the only place core work lands; the other two are thin
-derivations that exist to keep an unverified bet out of the shipping line.
+One trunk, one open bet. `main` is the only place core work lands; a derived branch exists
+only to keep an *unverified* bet out of the shipping line, and stops existing when the bet
+is settled.
 
 |Branch|What it is|Rule|
 |---|---|---|
-|`main`|The version that deploys today: diagnosis kit + Developer warmup|Must stay installable. Gates green before any push. **Core changes go here and only here**|
-|`windows/trusted-catalog-pilot`|`main` + the opt-in Trusted Catalog channel (7 files). Unverified until a Windows PC runs the pilot|Rebase onto `main`, never the reverse. Merges into `main` only after the pilot passes on a real LTSC machine|
-|`adapter/excel-host`|`main` + the host-port conversion, so a non-WEF host (XLL/COM) can exist without rewriting the pane|Rebase onto `main`. Merges back once the port is complete and Mac behaviour is unchanged|
+|`main`|The version that deploys today: diagnosis kit + Developer warmup + the `ExcelHost` port|Must stay installable. Gates green before any push. **Core changes go here and only here**|
+|`windows/trusted-catalog-pilot`|`main` + the opt-in Trusted Catalog channel (7 files, no binary). Unverified until a Windows PC runs the pilot|Rebase onto `main`, never the reverse. Merges into `main` only after the pilot passes on a real LTSC machine|
 
 A change that belongs to the product — pane, formula, excel, ai — is a `main` change even
-when you noticed it on a derived branch: land it on `main`, then rebase the branch.
-`WEF-ACQUISITION.md` holds the decision rule for which track ends up winning.
+when you noticed it on a derived branch: land it on `main`, then rebase the branch. That is
+why the host port is on `main` rather than on an adapter branch: stages 1–2 are kept
+whatever the pilot decides, so holding them aside only starved `main` of the seam. A second
+adapter branch gets cut when stage 3 has a Windows machine to run on, not before.
+`WEF-ACQUISITION.md` holds the decision rule for which channel ends up winning.
+
+**Never commit a build artifact.** `addin/release/*.zip` is 36 MB of `dist` plus a pinned
+Node runtime; 38 committed revisions of it were 1.27 GiB of a 1.3 GiB repository and made
+a binary the merge surface between branches. It is ignored — regenerate with
+`pnpm package:windows-local` and carry the file.
 
 ## WHERE TO LOOK
 
@@ -57,7 +64,7 @@ when you noticed it on a derived branch: land it on `main`, then rebase the bran
 | What the pane renders | `addin/src/taskpane/view.ts`, `sheet.ts` | pure; no Excel I/O |
 |Pane bootstrap + selection mirror|`addin/src/taskpane/main.ts`|drives Excel through the host port; holds no Office global|
 |Host seam (swap Office.js for another host)|`addin/src/excel/host.ts` + `host-office.ts`|`host-office.ts` is the only module allowed the `Excel`/`Office` globals; `host.test.ts` enforces it|
-| Chat / AI request path | `taskpane/chatting.ts` → `ai/client.ts` | 2,167 LOC — largest file in repo |
+| Chat / AI request path | `taskpane/chatting.ts` → `ai/client.ts` | 2,203 LOC — largest file in repo |
 | Grounding: evidence, coverage, verification | `taskpane/chat-evidence.ts`, `chat-grounding.ts`, `chat-coverage.ts`, `chat-action-verification.ts` | pure siblings split out of `chatting.ts` |
 | Offline Office.js stand-in (eval only) | `addin/src/excel/eval-context.ts` | 626 LOC; openpyxl fixtures; pane never loads it |
 | End-to-end model eval | `addin/src/eval/pilot.eval.test.ts` | gated on `XMUX_EVAL=1`; appends `probes/eval/runs/*.jsonl` |

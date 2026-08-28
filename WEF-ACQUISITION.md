@@ -62,16 +62,21 @@ Developer 레지스트리(`HKCU\...\Wef\Developer`)로 사이드로드한 웹 �
 회사 PC 검증이 막혀 있으므로, **Windows 없이 맥에서 할 수 있는 일을 먼저 하고 채널 선택은
 나중에 한다.** 그러려면 채널이 교체 가능해야 하고, 그게 호스트 어댑터 분리다.
 
-### 브랜치 분리 상태
+### 브랜치 분리 상태 (2026-08-28 정리 후)
 
 | 브랜치 | 내용 | 검증 |
 |---|---|---|
-| `main` | 진단 킷 + Developer 워밍 완화 + 근거 문서. 현재 유일하게 동작하는 배포 경로 | 852 tests |
-| `windows/trusted-catalog-pilot` | main + Trusted Catalog 채널 delta 7파일 (`catalog-windows-local.ps1`, 설치/제거/메뉴 6번/패키징/테스트/INSTALL) | 859 tests |
-| `wip/2026-08-28-snapshot` | 분리 전 전체 스냅샷 (안전망, main+pilot로 재구성 가능하므로 삭제해도 무방) | — |
+| `main` | 진단 킷 + Developer 워밍 완화 + 근거 문서 + **`ExcelHost` 포트(단계 1·1.5·2)** | 857 tests |
+| `windows/trusted-catalog-pilot` | main + Trusted Catalog 채널 delta 7파일 (`catalog-windows-local.ps1`, 설치/제거/메뉴 6번/패키징/테스트/INSTALL) | 864 tests |
 
-파일럿 브랜치의 zip은 카탈로그 채널이 들어간 빌드다. 회사 PC가 생기면 **그 브랜치의 zip만**
-가져가서 케이스 7을 판정하고, 통과하면 Windows에서 검증 후 main으로 병합한다.
+`adapter/excel-host`는 main에 흡수되고 삭제됐다 — 단계 1·2는 파일럿 결과와 무관하게
+유지하기로 이미 결정한 변경이라 파생 브랜치에 남길 이유가 없었다. 단계 3(XLL 스파이크)은
+돌릴 Windows 기계가 생길 때 브랜치를 새로 딴다. `wip/2026-08-28-snapshot`은 main+pilot로
+완전히 재구성 가능함을 diff로 확인하고 삭제했다.
+
+배포 zip은 더 이상 커밋하지 않는다(빌드 산출물 36 MB × 38 리비전 = 저장소 1.3 GiB 중
+1.27 GiB). 회사 PC가 생기면 **파일럿 브랜치에서 `pnpm package:windows-local`을 돌려** 나온
+zip을 가져가 케이스 7을 판정하고, 통과하면 Windows에서 검증 후 main으로 병합한다.
 
 ### 목표 구조 — 호스트 어댑터
 
