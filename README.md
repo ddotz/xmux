@@ -153,8 +153,8 @@ Keep that terminal running while the add-in is open.
 
 ### Package for per-PC Windows localhost deployment
 
-For distribution where every Windows PC must host its own private local service, create a
-self-contained package:
+For distribution where every Windows PC hosts its own private local service, create the
+Windows package without redistributing Node.js:
 
 ```powershell
 cd addin
@@ -162,17 +162,17 @@ pnpm package:windows-local          # Windows x64
 pnpm package:windows-local:arm64    # Windows ARM64
 ```
 
-The command builds the pane, regenerates the localhost manifest, downloads the pinned
-official Node.js Windows runtime, verifies its SHA-256 checksum, and creates:
+The command builds the pane, regenerates the localhost manifest, and creates the release
+archive. It does not download or package `node.exe`:
 
 ```text
 addin/release/ddot-excel-windows-x64.zip
 ```
 
-The target PC does **not** need Node.js, pnpm, an SMB share, or local-administrator
-rights. Sign in with the Windows account that will run Excel, make sure TCP port 3927 is
-free, unblock the downloaded ZIP from **Properties > Unblock** when that option appears,
-extract it, open a normal Windows PowerShell window, and run:
+The target PC needs **Node.js 24.x** installed first; `pnpm` is not required. The app itself
+installs per-user without local-administrator rights. Sign in with the Windows account that
+runs Excel, verify `node --version` starts with `v24.`, make sure TCP port 3927 is free,
+unblock the downloaded ZIP from **Properties > Unblock**, extract it, and run:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
@@ -187,6 +187,9 @@ initializer. On the measured LTSC 2024 cold profile, the first Developer Add sto
 made the pane load. The initializer guides that sequence, restores the Developer registration
 after Office closes, and records completion only for the WEF cache generation that loaded the
 pane.
+
+The Trusted Catalog pilot is available from menu item 6. Use an existing corporate UNC share
+without elevation, or create a local SMB share with one administrator approval.
 
 From the extracted package, use `.\scripts\manage.ps1 status|start|stop|restart` to control
 the service. Run `.\scripts\uninstall.ps1` from a normal PowerShell window to remove only

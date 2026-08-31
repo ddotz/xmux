@@ -1,4 +1,4 @@
-# Install the self-contained DdotExcel localhost service for the current user.
+# Install DdotExcel for the current user using a separately installed Node.js runtime.
 [CmdletBinding()]
 param(
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "DdotExcel"),
@@ -25,16 +25,21 @@ if ($env:OS -ne "Windows_NT") {
     throw "This installer must be run on Windows."
 }
 
+$nodeCommand = Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($null -eq $nodeCommand) {
+    throw "Node.js 24.x를 먼저 설치하세요: https://nodejs.org/"
+}
+$nodeSourcePath = [IO.Path]::GetFullPath($nodeCommand.Source)
+
 # The installer ships in the package's scripts folder; the payload sits beside that folder.
 $packageRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $packageApp = Join-Path $packageRoot "app"
-$packageRuntime = Join-Path $packageRoot "runtime"
 $requiredFiles = @(
     (Join-Path $packageApp "dist\index.html"),
     (Join-Path $packageApp "manifest.xml"),
     (Join-Path $packageApp "local-server.mjs"),
     (Join-Path $packageApp "external-range.mjs"),
-    (Join-Path $packageRuntime "node.exe"),
     (Join-Path $PSScriptRoot "manage.ps1"),
     (Join-Path $PSScriptRoot "initialize.ps1"),
     (Join-Path $PSScriptRoot "catalog.ps1"),
@@ -98,30 +103,48 @@ function Remove-InstalledDeveloperRegistration {
     }
 }
 
-$installedController = Join-Path $InstallRoot "manage.ps1"
-Remove-InstalledDeveloperRegistration
-if (Test-Path -LiteralPath $installedController -PathType Leaf) {
-    & $installedController stop -InstallRoot $InstallRoot
+$nodeStagingRoot = Join-Path ([IO.Path]::GetTempPath()) "ddot-excel-node-$([Guid]::NewGuid())"
+$stagedNodePath = Join-Path $nodeStagingRoot "node.exe"
+New-Item -ItemType Directory -Path $nodeStagingRoot -ErrorAction Stop | Out-Null
+try {
+    Copy-Item -LiteralPath $nodeSourcePath -Destination $stagedNodePath -ErrorAction Stop
+    $nodeVersionText = (& $stagedNodePath --version | Select-Object -First 1).Trim()
+    if ($LASTEXITCODE -ne 0 -or $nodeVersionText -notmatch "^v24\.") {
+        throw "Node.js 24.x가 필요합니다. 현재 실행 파일: $nodeSourcePath ($nodeVersionText)"
+    }
+} catch {
+    Remove-Item -LiteralPath $nodeStagingRoot -Recurse -Force -ErrorAction SilentlyContinue
+    throw
 }
-# The old service may have repaired the value between the first deletion and its shutdown.
-Remove-InstalledDeveloperRegistration
-if (Test-Path -LiteralPath $InstallRoot) {
-    Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+
+try {
+    $installedController = Join-Path $InstallRoot "manage.ps1"
+    Remove-InstalledDeveloperRegistration
+    if (Test-Path -LiteralPath $installedController -PathType Leaf) {
+        & $installedController stop -InstallRoot $InstallRoot
+    }
+    # The old service may have repaired the value between the first deletion and its shutdown.
+    Remove-InstalledDeveloperRegistration
+    if (Test-Path -LiteralPath $InstallRoot) {
+        Remove-Item -LiteralPath $InstallRoot -Recurse -Force
+    }
+    $appRoot = Join-Path $InstallRoot "app"
+    $runtimeRoot = Join-Path $InstallRoot "runtime"
+    $certificateRoot = Join-Path $InstallRoot "certificate"
+    New-Item -ItemType Directory -Path $appRoot, $runtimeRoot, $certificateRoot | Out-Null
+    Copy-Item -LiteralPath (Join-Path $packageApp "dist") -Destination $appRoot -Recurse
+    Copy-Item -LiteralPath (Join-Path $packageApp "manifest.xml") -Destination $appRoot
+    Copy-Item -LiteralPath (Join-Path $packageApp "local-server.mjs") -Destination $appRoot
+    Copy-Item -LiteralPath (Join-Path $packageApp "external-range.mjs") -Destination $appRoot
+    Copy-Item -LiteralPath $stagedNodePath -Destination (Join-Path $runtimeRoot "node.exe")
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "initialize.ps1") -Destination $InstallRoot
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "catalog.ps1") -Destination $InstallRoot
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
+} finally {
+    Remove-Item -LiteralPath $nodeStagingRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-$appRoot = Join-Path $InstallRoot "app"
-$runtimeRoot = Join-Path $InstallRoot "runtime"
-$certificateRoot = Join-Path $InstallRoot "certificate"
-New-Item -ItemType Directory -Path $appRoot, $runtimeRoot, $certificateRoot | Out-Null
-Copy-Item -LiteralPath (Join-Path $packageApp "dist") -Destination $appRoot -Recurse
-Copy-Item -LiteralPath (Join-Path $packageApp "manifest.xml") -Destination $appRoot
-Copy-Item -LiteralPath (Join-Path $packageApp "local-server.mjs") -Destination $appRoot
-Copy-Item -LiteralPath (Join-Path $packageApp "external-range.mjs") -Destination $appRoot
-Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runtimeRoot
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "initialize.ps1") -Destination $InstallRoot
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "catalog.ps1") -Destination $InstallRoot
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
 
 # Edge WebView2 renders the task pane, and Chromium's Windows verifier only accepts a Root
 # store entry as a trust anchor when it is a CA (basic constraints CA:TRUE). A self-signed
@@ -267,16 +290,23 @@ Export-PfxCertificate `
 $manifestPath = Join-Path $appRoot "manifest.xml"
 $channel = if ($ownership.Channel) { $ownership.Channel } else { "developer" }
 if ($channel -eq "trusted-catalog") {
-    if ($ownership.CatalogManifestPath) {
-        try {
-            Copy-Item `
-                -LiteralPath $manifestPath `
-                -Destination $ownership.CatalogManifestPath `
-                -Force
-        } catch {
-            Write-Warning ("Trusted Catalog manifest could not be refreshed: " +
-                "$($_.Exception.Message)")
-        }
+    if (-not $ownership.CatalogManifestPath) {
+        throw "Trusted Catalog ownership metadata is missing its manifest path."
+    }
+    if ($ownership.CatalogShareCreated -eq 1) {
+        New-Item `
+            -ItemType Directory `
+            -Path ([IO.Path]::GetDirectoryName([string]$ownership.CatalogManifestPath)) `
+            -Force |
+            Out-Null
+    }
+    try {
+        Copy-Item `
+            -LiteralPath $manifestPath `
+            -Destination $ownership.CatalogManifestPath `
+            -Force
+    } catch {
+        throw "Trusted Catalog manifest could not be refreshed: $($_.Exception.Message)"
     }
 } else {
     # The Node service owns the GUID value. Creating it here, before either loopback listener is

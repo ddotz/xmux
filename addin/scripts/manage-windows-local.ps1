@@ -16,6 +16,7 @@ $AppRoot = Join-Path $InstallRoot "app"
 $ManifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 $ManifestPath = Join-Path $AppRoot "manifest.xml"
 $DeveloperRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Developer"
+$OwnershipRegistryPath = "HKCU:\Software\DdotExcel"
 $AutoStartName = "DdotExcelLocalService"
 $AutoStartRegistryPath = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
 $StartupApprovedRegistryPath =
@@ -92,6 +93,14 @@ function Test-ScriptHostDisabled {
     return $false
 }
 
+function Use-DeveloperChannel {
+    $channel = Get-ItemPropertyValue `
+        -LiteralPath $OwnershipRegistryPath `
+        -Name "Channel" `
+        -ErrorAction SilentlyContinue
+    return $channel -ne "trusted-catalog"
+}
+
 function Get-DeveloperRegistration {
     if (-not (Test-Path -LiteralPath $DeveloperRegistryPath -ErrorAction Stop)) {
         return $null
@@ -116,6 +125,10 @@ function Remove-OwnedDeveloperRegistration {
 }
 
 function Set-DeveloperRegistration {
+    if (-not (Use-DeveloperChannel)) {
+        Remove-OwnedDeveloperRegistration
+        return
+    }
     if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
         throw "DdotExcel manifest is missing: $ManifestPath"
     }
@@ -271,7 +284,7 @@ function Start-LocalService {
         }
     }
 
-    $arguments = @(
+    $argumentParts = @(
         "`"$ServerPath`""
         "--root `"$DistPath`""
         "--pfx `"$PfxPath`""
@@ -279,10 +292,13 @@ function Start-LocalService {
         "--port `"3927`""
         "--ready-file `"$ReadyPath`""
         "--pid-file `"$ProcessIdPath`""
-        "--wef-guid `"$ManifestId`""
-        "--wef-manifest `"$ManifestPath`""
-        "--log-file `"$LogPath`""
-    ) -join " "
+    )
+    if (Use-DeveloperChannel) {
+        $argumentParts += "--wef-guid `"$ManifestId`""
+        $argumentParts += "--wef-manifest `"$ManifestPath`""
+    }
+    $argumentParts += "--log-file `"$LogPath`""
+    $arguments = $argumentParts -join " "
     if ($Action -eq "supervise" -and (Test-LaunchCancelled)) {
         throw "The service launch was cancelled before Node started."
     }
@@ -349,7 +365,15 @@ function Write-StartupChain([bool]$ServiceHealthy) {
         -LiteralPath $DeveloperRegistryPath `
         -Name $ManifestId `
         -ErrorAction SilentlyContinue
-    if ($registeredManifest -eq $ManifestPath) {
+    if (-not (Use-DeveloperChannel)) {
+        if ($registeredManifest -eq $ManifestPath) {
+            Write-Host "Office registration: UNEXPECTED for Trusted Catalog - restart the service."
+        } elseif ($null -eq $registeredManifest) {
+            Write-Host "Office registration: not used (Trusted Catalog)"
+        } else {
+            Write-Host "Office registration: points elsewhere ($registeredManifest)"
+        }
+    } elseif ($registeredManifest -eq $ManifestPath) {
         Write-Host "Office registration: present"
     } elseif ($null -eq $registeredManifest) {
         if ($ServiceHealthy) {

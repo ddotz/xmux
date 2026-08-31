@@ -646,10 +646,10 @@ describe("Windows local deployment lifecycle", () => {
 })
 
 describe("Windows package layout", () => {
-  it("puts the double-clickable launcher beside app, runtime, and scripts", () => {
+  it("puts the double-clickable launcher beside app and scripts", () => {
     // Given: a user who unzips the package and looks for the one thing to click.
     // When: the packager places the launcher.
-    // Then: it lands at the package root next to app\ and runtime\, not inside scripts\.
+    // Then: it lands at the package root next to app\ and scripts\.
     expect(packageScript).toContain('(Join-Path $packageRoot "땡땡엑셀 설치.bat")')
     expect(packageScript).toContain('$scriptsRoot = Join-Path $packageRoot "scripts"')
     expect(packageScript).not.toContain('-Destination (Join-Path $scriptsRoot "땡')
@@ -658,7 +658,8 @@ describe("Windows package layout", () => {
   it("keeps every operator script under scripts\\", () => {
     expect(packageScript).toContain('(Join-Path $scriptsRoot "menu.ps1")')
     expect(packageScript).not.toContain('-Destination (Join-Path $packageRoot "menu.ps1")')
-    for (const name of ["install.ps1", "manage.ps1", "uninstall.ps1"]) {
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "install.ps1")')
+    for (const name of ["manage.ps1", "uninstall.ps1"]) {
       expect(packageScript).toContain(`-Destination (Join-Path $scriptsRoot "${name}")`)
       expect(packageScript).not.toContain(`-Destination (Join-Path $packageRoot "${name}")`)
     }
@@ -670,17 +671,37 @@ describe("Windows package layout", () => {
     expect(packageScript).not.toContain(".md")
   })
 
-  it("resolves the payload from the package root now that it ships one level down", () => {
-    // Given: install.ps1 moved into scripts\, so $PSScriptRoot is no longer the payload.
-    // When: it locates app\ and runtime\.
-    // Then: it walks up one level first, or every install fails as "incomplete package".
+  it("resolves app payload from the package root and installs system Node", () => {
     expect(installScript).toContain(
       '$packageRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))',
     )
     expect(installScript).toContain('$packageApp = Join-Path $packageRoot "app"')
-    expect(installScript).toContain('$packageRuntime = Join-Path $packageRoot "runtime"')
-    // Its siblings still sit beside it, so those stay on $PSScriptRoot.
+    expect(installScript).not.toContain("$packageRuntime")
+    expect(installScript).toContain("Get-Command node.exe")
+    expect(installScript).toContain('$nodeVersionText -notmatch "^v24\\."')
+    expect(installScript).toContain(
+      'Copy-Item -LiteralPath $stagedNodePath -Destination (Join-Path $runtimeRoot "node.exe")',
+    )
+    const stageNode = installScript.indexOf("$stagedNodePath --version")
+    const stopInstalled = installScript.indexOf("$installedController stop")
+    expect(stageNode).toBeGreaterThanOrEqual(0)
+    expect(stopInstalled).toBeGreaterThan(stageNode)
+    const portPreflight = installScript.indexOf("$null -ne $portOwner")
+    const staging = installScript.indexOf("$nodeStagingRoot =")
+    expect(staging).toBeGreaterThan(portPreflight)
     expect(installScript).toContain('(Join-Path $PSScriptRoot "manage.ps1")')
+  })
+
+  it("rejects Node binaries from the staged release tree", () => {
+    expect(packageScript).not.toContain("Invoke-WebRequest")
+    expect(packageScript).not.toContain('$runtimeRoot = Join-Path $packageRoot "runtime"')
+    const guard = packageScript.indexOf('$_.Name -ieq "node.exe"')
+    const zipGuard = packageScript.indexOf("^node-v[0-9].*-win-(x64|arm64)\\.zip$")
+    const archive = packageScript.indexOf("Compress-Archive")
+    expect(guard).toBeGreaterThanOrEqual(0)
+    expect(zipGuard).toBeGreaterThanOrEqual(0)
+    expect(archive).toBeGreaterThan(guard)
+    expect(archive).toBeGreaterThan(zipGuard)
   })
 
   it("launches the menu through a code page the Korean messages survive", () => {
@@ -708,6 +729,13 @@ describe("Windows package layout", () => {
     expect(menuScript.toString("utf8")).toContain("땡땡엑셀 설치 도우미")
     expect(packageScript).toContain('(($menu -replace "`r`n", "`n") -replace "`n", "`r`n")')
     expect(packageScript).toContain("[Text.UTF8Encoding]::new($true))")
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "install.ps1")')
+    expect(packageScript).toContain('(($install -replace "`r`n", "`n") -replace "`n", "`r`n")')
+    const installWriter = packageScript.slice(
+      packageScript.indexOf("$install ="),
+      packageScript.indexOf("Copy-Item `", packageScript.indexOf("$install =")),
+    )
+    expect(installWriter).toContain("[Text.UTF8Encoding]::new($true)")
   })
 
   it("ships the first-acquisition manifest matrix and PowerShell 5.1 diagnostic", () => {
@@ -820,16 +848,14 @@ describe("Office LTSC first-acquisition diagnostics", () => {
 })
 
 describe("Office LTSC first-acquisition mitigation", () => {
-  it("keeps the default install on the proven current-user Developer path", () => {
-    // Given: the Trusted Catalog channel is unverified until the pilot verdict
-    // (WEF-ACQUISITION.md case 7), so a fresh install must still land on Developer +
-    // warmup. The catalog becomes active only after the explicit menu switch records
-    // Channel=trusted-catalog in the ownership registry.
+  it("keeps new installs on Developer until an explicit catalog switch", () => {
     expect(installScript).toContain('else { "developer" }')
-    const channelCheck = installScript.indexOf('if ($channel -eq "trusted-catalog") {')
-    const developerRegistration = installScript.indexOf("-Name $ManifestId", channelCheck)
-    expect(channelCheck).toBeGreaterThanOrEqual(0)
-    expect(developerRegistration).toBeGreaterThan(channelCheck)
+    expect(installScript).toContain('if ($channel -eq "trusted-catalog") {')
+    expect(manageScript).toContain("function Use-DeveloperChannel")
+    expect(manageScript).toContain('return $channel -ne "trusted-catalog"')
+    expect(manageScript).toContain("if (Use-DeveloperChannel) {")
+    expect(launcherScript).toContain("developerChannel = UseDeveloperChannel()")
+    expect(launcherScript).toContain("If developerChannel Then")
     // The warmup wizard itself stays a pure Developer-channel tool.
     expect(initializeScript).not.toContain("TrustedCatalogs")
     expect(initializeScript).not.toContain("-Verb RunAs")
@@ -930,21 +956,19 @@ describe("Trusted Catalog channel (opt-in)", () => {
   })
 
   it("switches channels without stranding both registrations", () => {
-    // Given: two active acquisition channels would double-list the add-in in Excel.
-    // When: switching to the catalog, the Developer value is dropped only when its data
-    // matches this install's recorded manifest path.
     expect(catalogScript).toContain("Remove-OwnedDeveloperRegistration")
     expect(catalogScript).toContain("$registeredManifestPath -eq $Ownership.ManifestPath")
-    // Then: use-developer restores the registration from the recorded install state and
-    // removes the catalog key it owns by GUID.
+    expect(catalogScript).toContain("Restart-ServiceForChannel")
     const useDeveloper = catalogScript.indexOf("function Use-DeveloperChannel")
     expect(useDeveloper).toBeGreaterThanOrEqual(0)
-    expect(catalogScript.indexOf("-Value $ownership.ManifestPath", useDeveloper)).toBeGreaterThan(
-      useDeveloper,
-    )
+    expect(catalogScript.indexOf('-Value "developer"', useDeveloper)).toBeGreaterThan(useDeveloper)
     expect(catalogScript.indexOf("$CatalogRegistryPath", useDeveloper)).toBeGreaterThan(
       useDeveloper,
     )
+    expect(catalogScript.indexOf("Restart-ServiceForChannel", useDeveloper)).toBeGreaterThan(
+      useDeveloper,
+    )
+    expect(manageScript).toContain("Office registration: not used (Trusted Catalog)")
   })
 
   it("skips Developer registration and warmup when the catalog channel is recorded", () => {
@@ -953,6 +977,14 @@ describe("Trusted Catalog channel (opt-in)", () => {
     expect(installScript).toContain("Office 첫 실행 초기화가 필요하지 않습니다")
     // On update the installer refreshes the manifest copy inside the catalog instead.
     expect(installScript).toContain("$ownership.CatalogManifestPath")
+  })
+
+  it("keeps the local catalog outside replaceable install files", () => {
+    expect(catalogScript).toContain(
+      '$catalogFolder = Join-Path $env:LOCALAPPDATA "DdotExcelCatalog"',
+    )
+    expect(installScript).toContain("$ownership.CatalogShareCreated -eq 1")
+    expect(installScript).toContain("Trusted Catalog manifest could not be refreshed")
   })
 
   it("uninstalls its own catalog artifacts and guards the share deletion", () => {

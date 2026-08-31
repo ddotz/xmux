@@ -34,6 +34,14 @@ function Get-InstalledManifestPath {
     return $manifestPath
 }
 
+function Restart-ServiceForChannel {
+    $managePath = Join-Path $InstallRoot "manage.ps1"
+    if (-not (Test-Path -LiteralPath $managePath -PathType Leaf)) {
+        throw "서비스 관리 스크립트를 찾을 수 없습니다: $managePath"
+    }
+    & $managePath restart -InstallRoot $InstallRoot
+}
+
 function Remove-OwnedDeveloperRegistration([object]$Ownership) {
     $registeredManifestPath = Get-ItemPropertyValue `
         -LiteralPath $DeveloperRegistryPath `
@@ -81,7 +89,6 @@ function Register-TrustedCatalog(
         -PropertyType DWord `
         -Force |
         Out-Null
-    Remove-OwnedDeveloperRegistration $ownership
 
     New-Item -Path $OwnershipRegistryPath -Force | Out-Null
     New-ItemProperty `
@@ -120,6 +127,8 @@ function Register-TrustedCatalog(
             -Force `
             -ErrorAction SilentlyContinue
     }
+    Remove-OwnedDeveloperRegistration $ownership
+    Restart-ServiceForChannel
 
     Write-Host "Trusted Catalog (실험 채널 — 파일럿 검증 전)으로 전환했습니다."
     Write-Host "Excel 완전 종료 후: 삽입 > 추가 기능 > 내 추가 기능 > 공유 폴더 > 땡땡엑셀 > 추가"
@@ -145,7 +154,7 @@ function Use-UncCatalog {
 
 function Use-LocalShareCatalog {
     $installedManifestPath = Get-InstalledManifestPath
-    $catalogFolder = Join-Path (Join-Path $env:LOCALAPPDATA "DdotExcel") "catalog"
+    $catalogFolder = Join-Path $env:LOCALAPPDATA "DdotExcelCatalog"
     $catalogManifestPath = Join-Path $catalogFolder $CatalogManifestName
     New-Item -ItemType Directory -Path $catalogFolder -Force | Out-Null
     Copy-Item -LiteralPath $installedManifestPath -Destination $catalogManifestPath -Force
@@ -176,14 +185,6 @@ function Use-DeveloperChannel {
     if (-not $ownership.ManifestPath) {
         throw "설치 소유 매니페스트 정보가 없습니다. 먼저 설치를 실행하세요."
     }
-    New-Item -Path $DeveloperRegistryPath -Force | Out-Null
-    New-ItemProperty `
-        -Path $DeveloperRegistryPath `
-        -Name $ManifestId `
-        -Value $ownership.ManifestPath `
-        -PropertyType String `
-        -Force |
-        Out-Null
     Remove-Item `
         -LiteralPath $CatalogRegistryPath `
         -Recurse `
@@ -221,6 +222,7 @@ function Use-DeveloperChannel {
             -Force `
             -ErrorAction SilentlyContinue
     }
+    Restart-ServiceForChannel
     Write-Host "Developer 채널로 전환했습니다."
     Write-Host "Office 첫 실행 초기화(메뉴 5번)가 아직 완료되지 않았다면 실행하세요."
 }

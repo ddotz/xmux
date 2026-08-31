@@ -8,9 +8,9 @@
 
 땡땡엑셀은 각 Windows PC에서 `https://localhost:3927` 로컬 서비스를 실행합니다.
 
-- 로컬 관리자 권한이 필요하지 않습니다.
-- Node.js나 pnpm을 별도로 설치하지 않습니다.
-- SMB 공유 폴더나 Microsoft 365 관리자 배포를 사용하지 않습니다.
+- 땡땡엑셀 설치 자체에는 로컬 관리자 권한이 필요하지 않습니다.
+- 배포 ZIP에는 Node.js가 포함되지 않습니다. 대상 PC에 **Node.js 24.x**를 먼저 설치합니다.
+- Trusted Catalog의 사내 UNC 경로는 관리자 권한이 필요 없으며, 로컬 SMB 공유 생성만 관리자 승인이 필요합니다.
 - 서비스는 이 PC의 loopback 주소(`127.0.0.1`, `::1`)에만 연결되므로 다른 PC에서는
   접근할 수 없습니다.
 - Synology Drive는 ZIP 파일을 전달하고 보관하는 용도로만 사용합니다.
@@ -22,6 +22,7 @@
 - Microsoft 365용 Excel 또는 Excel 2019 이상
 - Excel을 사용할 Windows 계정으로 로그인
 - TCP 3927번 포트가 비어 있어야 함
+- 일반 PowerShell에서 `node --version`이 `v24.`로 시작해야 함
 
 3927번 포트 사용 여부는 일반 PowerShell에서 확인할 수 있습니다.
 
@@ -31,6 +32,10 @@ Get-NetTCPConnection -LocalPort 3927 -State Listen -ErrorAction SilentlyContinue
 
 아무것도 표시되지 않으면 포트를 사용할 수 있습니다. 다른 프로세스가 표시되면
 그 프로그램을 종료하거나 담당자에게 확인한 뒤 설치합니다.
+
+Node.js가 없거나 버전이 다르면 [Node.js 공식 다운로드](https://nodejs.org/)에서 24.x를
+설치합니다. 회사 PC에서 설치 권한이 없으면 IT 담당자에게 Node.js 24.x 설치를 요청합니다.
+배포 ZIP에는 `node.exe`를 넣지 않습니다.
 
 ## 3. 설치
 
@@ -50,9 +55,11 @@ Get-NetTCPConnection -LocalPort 3927 -State Listen -ErrorAction SilentlyContinue
 ```text
 땡땡엑셀 설치.bat     <- 두 번 클릭
 app\                  프로그램 파일
-runtime\              내장 Node 런타임
 scripts\              설치·관리·제거 스크립트
 ```
+
+설치기는 시스템의 Node.js 24.x를 확인한 뒤 `%LOCALAPPDATA%\DdotExcel\runtime\node.exe`로
+복사하여 서비스가 고정된 실행 파일을 사용하게 합니다.
 
 정상 설치되면 다음 주소가 표시됩니다.
 
@@ -181,16 +188,24 @@ Get-NetTCPConnection -LocalPort 3927 -State Listen
 
 표시된 프로세스를 확인하고 종료한 뒤 다시 설치합니다.
 
+### `Node.js 24.x를 먼저 설치하세요`
+
+배포 ZIP은 Node.js를 포함하지 않습니다. 일반 PowerShell에서 다음을 확인합니다.
+
+```powershell
+node --version
+```
+
+`v24.`로 시작하지 않으면 Node.js 24.x를 설치한 뒤 다시 실행합니다.
+
 ### `The deployment package is incomplete`
 
-ZIP이 부분적으로 압축 해제되었습니다. 새 로컬 폴더에 전체 압축 해제한 뒤 다시
-실행합니다.
+ZIP이 부분적으로 압축 해제되었습니다. 새 로컬 폴더에 전체 압축 해제한 뒤 다시 실행합니다.
 
-### 서비스가 15초 안에 시작되지 않음
+### 서비스가 30초 안에 시작되지 않음
 
-백신, AppLocker 또는 WDAC가 포함된 `node.exe` 실행을 차단했을 수 있습니다.
-회사 정책 담당자에게 `%LOCALAPPDATA%\DdotExcel\runtime\node.exe` 실행 허용을
-문의합니다.
+백신, AppLocker 또는 WDAC가 설치 과정에서 복사된 `node.exe` 실행을 차단했을 수 있습니다.
+회사 정책 담당자에게 `%LOCALAPPDATA%\DdotExcel\runtime\node.exe` 실행 허용을 문의합니다.
 
 ### HTTPS health check 실패
 

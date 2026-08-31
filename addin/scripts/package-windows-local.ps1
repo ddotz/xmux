@@ -1,4 +1,4 @@
-# Build a self-contained Windows package with the static pane and a pinned Node runtime.
+# Build a Windows package with the static pane; Node.js is installed separately on the target.
 [CmdletBinding()]
 param(
     [ValidateSet("x64", "arm64")]
@@ -7,11 +7,6 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$NodeVersion = "v24.19.0"
-$NodeHashes = @{
-    "x64" = "57f71ab3652e797d84acddc79c81cc9ff1c6ddb2a1974cdb83f00fee9bff4c73"
-    "arm64" = "8502f4a50b458d4cc38ed8f2001556c2cd239d464920f74017926ccb1e1c157f"
-}
 $addinRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $stagingRoot = Join-Path ([IO.Path]::GetTempPath()) "ddot-excel-$([Guid]::NewGuid())"
 $packageName = "ddot-excel-windows-$Architecture"
@@ -33,9 +28,6 @@ try {
         Pop-Location
     }
 
-    $runtimeArchiveName = "node-$NodeVersion-win-$Architecture.zip"
-    $runtimeArchive = Join-Path $stagingRoot $runtimeArchiveName
-    $runtimeUrl = "https://nodejs.org/dist/$NodeVersion/$runtimeArchiveName"
     New-Item -ItemType Directory -Path $stagingRoot, $packageRoot | Out-Null
     $variantRoot = Join-Path $stagingRoot "manifest-variants"
     Push-Location $addinRoot
@@ -49,23 +41,9 @@ try {
     } finally {
         Pop-Location
     }
-    Write-Host "Downloading pinned Node runtime: $runtimeUrl"
-    Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeArchive
-    $actualHash = (Get-FileHash -LiteralPath $runtimeArchive -Algorithm SHA256).Hash.ToLower()
-    if ($actualHash -ne $NodeHashes[$Architecture]) {
-        throw "Node runtime checksum mismatch: $actualHash"
-    }
-
-    $expandedRuntime = Join-Path $stagingRoot "node"
-    Expand-Archive -LiteralPath $runtimeArchive -DestinationPath $expandedRuntime
-    $nodePath = Join-Path $expandedRuntime "node-$NodeVersion-win-$Architecture\node.exe"
-    if (-not (Test-Path -LiteralPath $nodePath -PathType Leaf)) {
-        throw "The downloaded Node runtime did not contain node.exe."
-    }
 
     $appRoot = Join-Path $packageRoot "app"
-    $runtimeRoot = Join-Path $packageRoot "runtime"
-    New-Item -ItemType Directory -Path $appRoot, $runtimeRoot | Out-Null
+    New-Item -ItemType Directory -Path $appRoot | Out-Null
     Copy-Item -LiteralPath (Join-Path $addinRoot "dist") -Destination $appRoot -Recurse
     Copy-Item -LiteralPath (Join-Path $addinRoot "manifest.xml") -Destination $appRoot
     Copy-Item `
@@ -78,16 +56,13 @@ try {
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "external-range.mjs") `
         -Destination $appRoot
-    Copy-Item -LiteralPath $nodePath -Destination $runtimeRoot
 
     # One file sits at the package root: the launcher a user double-clicks. Everything it
     # drives lives in scripts\, so the top level cannot be mistaken for a menu of choices.
     $scriptsRoot = Join-Path $packageRoot "scripts"
     New-Item -ItemType Directory -Path $scriptsRoot | Out-Null
-    # cmd.exe needs CRLF, and Windows PowerShell 5.1 needs a BOM to read the menu's Korean
-    # as UTF-8 instead of ANSI. Editors and git clients rewrite line endings in the working
-    # tree, so copying these two verbatim ships whatever the last tool happened to leave.
-    # The packager writes the exact bytes Windows requires and stops depending on that.
+    # cmd.exe needs CRLF, and Windows PowerShell 5.1 needs a BOM for scripts containing Korean.
+    # The packager writes deterministic bytes instead of depending on working-tree line endings.
     $launcher = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "menu-windows-local.bat"))
     [IO.File]::WriteAllText(
         (Join-Path $packageRoot "땡땡엑셀 설치.bat"),
@@ -116,9 +91,11 @@ try {
         (Join-Path $scriptsRoot "catalog.ps1"),
         (($catalog -replace "`r`n", "`n") -replace "`n", "`r`n"),
         [Text.UTF8Encoding]::new($true))
-    Copy-Item `
-        -LiteralPath (Join-Path $PSScriptRoot "install-windows-local.ps1") `
-        -Destination (Join-Path $scriptsRoot "install.ps1")
+    $install = [IO.File]::ReadAllText((Join-Path $PSScriptRoot "install-windows-local.ps1"))
+    [IO.File]::WriteAllText(
+        (Join-Path $scriptsRoot "install.ps1"),
+        (($install -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($true))
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "manage-windows-local.ps1") `
         -Destination (Join-Path $scriptsRoot "manage.ps1")
@@ -128,6 +105,16 @@ try {
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "uninstall-windows-local.ps1") `
         -Destination (Join-Path $scriptsRoot "uninstall.ps1")
+
+    $forbiddenNodeFiles = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File |
+        Where-Object {
+            $_.Name -ieq "node.exe" -or
+            $_.Name -match "^node-v[0-9].*-win-(x64|arm64)\.zip$"
+        })
+    if ($forbiddenNodeFiles.Count -ne 0) {
+        $forbiddenNames = ($forbiddenNodeFiles | ForEach-Object { $_.FullName }) -join "; "
+        throw "The release package contains a forbidden Node runtime: $forbiddenNames"
+    }
 
     New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($archivePath)) -Force |
         Out-Null

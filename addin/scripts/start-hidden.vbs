@@ -1,11 +1,11 @@
 ' Start and supervise the local service at logon without a console window.
 Option Explicit
 
-Dim shell, fso, root, node, server, dist, pfx, password, manifest, registration
+Dim shell, fso, root, node, server, dist, pfx, password, manifest, registration, channelRegistration
 Dim readyFile, pidFile, tokenFile, token, lockPath, lockOwnerPath, lockCancelPath, stopFile, logFile, command
 Dim wmi, startup, processClass, processId, launchResult, processes, child, attempts, nodeCreatedAt
 Dim ownedChildren
-Dim managedLaunch
+Dim managedLaunch, developerChannel
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
@@ -27,6 +27,7 @@ lockOwnerPath = fso.BuildPath(lockPath, "owner")
 lockCancelPath = fso.BuildPath(lockPath, "cancel")
 stopFile = fso.BuildPath(root, "service.stop")
 registration = "HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer\6374B2A1-D997-4BB0-B23B-17F28561827B"
+channelRegistration = "HKCU\Software\DdotExcel\Channel"
 
 Sub AppendLog(message)
   Dim stream
@@ -55,6 +56,22 @@ Function ServiceHealthy()
   End If
   Err.Clear
   On Error GoTo 0
+End Function
+
+Function UseDeveloperChannel()
+  Dim value, errorNumber
+  UseDeveloperChannel = True
+  On Error Resume Next
+  value = shell.RegRead(channelRegistration)
+  errorNumber = Err.Number
+  Err.Clear
+  On Error GoTo 0
+  If errorNumber = 0 Then
+    UseDeveloperChannel = (LCase(CStr(value)) <> "trusted-catalog")
+  ElseIf errorNumber <> -2147024894 Then
+    AppendLog "channel read failed: " & CStr(errorNumber)
+    WScript.Quit 2
+  End If
 End Function
 
 Function ReadRegistration(ByRef exists)
@@ -219,6 +236,7 @@ If LaunchCancelled() Then
   ReleaseLaunchLock
   WScript.Quit 0
 End If
+developerChannel = UseDeveloperChannel()
 RemoveOwnedRegistration
 DeleteMarker readyFile
 DeleteMarker pidFile
@@ -232,10 +250,13 @@ command = """" & node & """ """ & server & """" & _
   " --ready-file """ & readyFile & """" & _
   " --pid-file """ & pidFile & """" & _
   " --instance-token """ & token & """" & _
-  " --token-file """ & tokenFile & """" & _
-  " --wef-guid ""6374B2A1-D997-4BB0-B23B-17F28561827B""" & _
-  " --wef-manifest """ & manifest & """" & _
-  " --log-file """ & logFile & """"
+  " --token-file """ & tokenFile & """"
+If developerChannel Then
+  command = command & _
+    " --wef-guid ""6374B2A1-D997-4BB0-B23B-17F28561827B""" & _
+    " --wef-manifest """ & manifest & """"
+End If
+command = command & " --log-file """ & logFile & """"
 
 ' WMI exposes the Node PID, unlike WScript.Shell.Run. That lets this supervisor terminate a
 ' synchronous registry PowerShell child if Node is killed while the child is still running.

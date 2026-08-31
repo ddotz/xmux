@@ -58,7 +58,7 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 | `local-server.mjs` | standalone HTTPS static server; `--root --host --port --cert --key --pfx --passphrase-file --ready-file --pid-file --wef-guid --wef-manifest` |
 | `sideload-mac.sh` | copies `manifest.xml` into Excel's container `wef/`, drops legacy `xmux.manifest.xml` |
 | `sideload-windows.ps1` | trusted SMB shared-folder catalog; needs one elevated shell |
-| `package-windows-local.ps1` | `pnpm build` + `pnpm manifest:dev`, bundles pinned Node v24.19.0 (per-arch SHA-256) into `release/*.zip`. Package layout: `땡땡엑셀 설치.bat` alone at the root beside `app/`, `runtime/`, `scripts/`; every operator script goes in `scripts/`; no markdown ships |
+| `package-windows-local.ps1` | `pnpm build` + `pnpm manifest:dev`; never downloads or ships Node. Target PCs install Node.js 24.x separately, and `install.ps1` validates then copies that executable into the per-user install. Package layout: `땡땡엑셀 설치.bat` alone at the root beside `app/` and `scripts/`; every operator script goes in `scripts/`; no markdown ships |
 | `menu-windows-local.bat` → `.ps1` | the one file a user double-clicks: the `.bat` only fixes the code page and execution policy, the `.ps1` is the Korean menu (설치/상태/재시작/제거) and delegates to install/manage/uninstall |
 | `install/manage/uninstall-windows-local.ps1` | per-user `%LOCALAPPDATA%\DdotExcel` service: HKCU developer registry, Run-key autostart (wscript, PowerShell fallback when WSH is policy-disabled), StartupApproved cleanup, PFX cert; `manage status` prints the whole logon chain; uninstall touches only what it owns |
 | `generate-icons.py` | Playwright Chromium renders `public/assets/icon.svg` → PNG 16/32/64/80 |
