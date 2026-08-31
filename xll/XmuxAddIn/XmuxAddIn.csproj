@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="System.Web.Extensions" />
+    <Reference Include="Microsoft.CSharp" />
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3240.44" />
   </ItemGroup>

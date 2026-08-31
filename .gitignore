@@ -20,6 +20,10 @@ __pycache__/
 # Locally compiled helper binaries
 companion/xmux-companion
 probes/ax_probe
+xll/XmuxAddIn/bin/
+xll/XmuxAddIn/obj/
+xll/out/
+xll/release/
 
 # Parity fixtures: generated from the local 2026.2Q corpus, never committed (probes/xlsx-parity.py)
 probes/parity-fixtures/

@@ -108,7 +108,7 @@ type UndoRange = {
 }
 
 type UndoSized = {
-  readonly format: { columnWidth: number; rowHeight: number }
+  readonly format: { columnWidth: number | null; rowHeight: number }
   readonly load: (properties: string) => void
 }
 

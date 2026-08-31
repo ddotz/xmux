@@ -40,6 +40,8 @@ import type {
  * - `execute(ops)` → `{ values }`, a map from handle id to the properties that were loaded
  *   for it, or `{ values, failure }` when an op was refused. `failure.code` is the host's
  *   stable error name, including `cellEditMode`.
+ * - `close()` after the run settles. It releases every host-side range, sheet, table, name,
+ *   and pivot handle; handles never survive into another `ExcelHost.run`.
  * - A dispatch table, keyed by member name. `bridge-memory.ts` is its reference
  *   implementation and the authoritative list; the transcripts in the tests are how each
  *   member's arguments are fixed. A member with no implementation must say so by name
@@ -81,7 +83,9 @@ export type BridgeResponse = {
   readonly values: Readonly<Record<number, BridgeValues>>
   readonly failure?: BridgeFailure
 }
-export type BridgeSend = (ops: readonly BridgeOp[]) => Promise<BridgeResponse>
+export type BridgeSend = ((ops: readonly BridgeOp[]) => Promise<BridgeResponse>) & {
+  readonly close?: () => Promise<void> | void
+}
 
 /** A child the host materialised: its id, plus whatever `items/...` asked for. */
 export type BridgeChild = { readonly id: number } & BridgeValues
@@ -188,13 +192,22 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
     const already = requested.get(on) ?? new Set<string>()
     for (const path of paths) {
       already.add(path)
-      // `items/name` makes `items` readable too: the collection is what the pane touches.
-      const head = path.split("/")[0]
-      if (head !== undefined) already.add(head)
+      // Loading a nested leaf makes every parent on its path readable too.
+      const parts = path.split("/")
+      for (let length = 1; length < parts.length; length++)
+        already.add(parts.slice(0, length).join("/"))
     }
     requested.set(on, already)
     queued.push({ op: "load", on, properties: paths })
   }
+
+  const scopedProperties = (scope: string, properties: string): string =>
+    properties
+      .split(",")
+      .map((property) => property.trim())
+      .filter((property) => property !== "")
+      .map((property) => `${scope}/${property}`)
+      .join(",")
 
   const read = (on: number, label: string, property: string): unknown => {
     assertOpen(label)
@@ -300,7 +313,13 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       return typeof value === "number" ? value : 0
     },
     get worksheet() {
-      return sheet(call(id, "worksheet", []), `${label} worksheet`)
+      const parent = loaded.get(id)
+      const knownName = parent?.get("worksheet/name")
+      return sheet(
+        call(id, "worksheet", []),
+        `${label} worksheet`,
+        typeof knownName === "string" ? knownName : null,
+      )
     },
     get rowHidden(): boolean {
       return read(id, label, "rowHidden") === true
@@ -334,8 +353,16 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       set horizontalAlignment(value: HorizontalAlignment) {
         set(id, "format.horizontalAlignment", value)
       },
+      get columnWidth(): number | null {
+        const value = read(id, label, "format/columnWidth")
+        return typeof value === "number" ? value : null
+      },
       set columnWidth(value: number) {
         set(id, "format.columnWidth", value)
+      },
+      get rowHeight(): number {
+        const value = read(id, label, "format/rowHeight")
+        return typeof value === "number" ? value : 0
       },
       set rowHeight(value: number) {
         set(id, "format.rowHeight", value)
@@ -458,9 +485,10 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
     handle: id,
   })
 
-  const sheet = (id: number, label: string) => ({
+  const sheet = (id: number, label: string, knownName: string | null = null) => ({
     load: (properties: string) => request(id, properties),
     get name(): string {
+      if (knownName !== null) return knownName
       const value = read(id, label, "name")
       return typeof value === "string" ? value : ""
     },
@@ -516,9 +544,27 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       },
     },
     tables: {
-      load: (properties: string) => request(id, `tables/${properties}`),
-      get items() {
-        return []
+      load: (properties: string) => request(id, scopedProperties("tables", properties)),
+      get items(): readonly {
+        readonly name: string
+        readonly showHeaders: boolean
+        readonly getRange: () => BridgeRange
+      }[] {
+        const value = read(id, `${label} tables`, "tables/items")
+        if (!isChildList(value)) return []
+        return value.flatMap((child) => {
+          const name = Reflect.get(child, "name")
+          const showHeaders = Reflect.get(child, "showHeaders")
+          return typeof name === "string" && typeof showHeaders === "boolean"
+            ? [
+                {
+                  name,
+                  showHeaders,
+                  getRange: () => range(call(child.id, "getRange", []), `table ${name}`),
+                },
+              ]
+            : []
+        })
       },
       add: (address: string, hasHeaders: boolean) => {
         const table = call(id, "tables.add", [address, hasHeaders])
@@ -602,13 +648,21 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       set centerHorizontally(value: boolean) {
         set(id, "pageLayout.centerHorizontally", value)
       },
-      zoom: {
-        set horizontalFitToPages(value: number) {
-          set(id, "pageLayout.zoom.horizontalFitToPages", value)
-        },
-        set verticalFitToPages(value: number) {
-          set(id, "pageLayout.zoom.verticalFitToPages", value)
-        },
+      get zoom() {
+        return {
+          set horizontalFitToPages(value: number) {
+            set(id, "pageLayout.zoom.horizontalFitToPages", value)
+          },
+          set verticalFitToPages(value: number) {
+            set(id, "pageLayout.zoom.verticalFitToPages", value)
+          },
+        }
+      },
+      set zoom(value: { horizontalFitToPages?: number; verticalFitToPages?: number }) {
+        if (value.horizontalFitToPages !== undefined)
+          set(id, "pageLayout.zoom.horizontalFitToPages", value.horizontalFitToPages)
+        if (value.verticalFitToPages !== undefined)
+          set(id, "pageLayout.zoom.verticalFitToPages", value.verticalFitToPages)
       },
       setPrintTitleRows: (rows: string) => call(id, "pageLayout.setPrintTitleRows", [rows]),
     },
@@ -668,13 +722,15 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
   const context = {
     workbook: {
       linkedWorkbooks: {
-        load: (properties: string) => request(WORKBOOK, `linkedWorkbooks/${properties}`),
+        load: (properties: string) =>
+          request(WORKBOOK, scopedProperties("linkedWorkbooks", properties)),
         get items(): readonly { readonly id: string }[] {
-          const value = read(WORKBOOK, "linkedWorkbooks", "linkedWorkbooks")
-          if (!isChildList(value)) return []
+          const value = read(WORKBOOK, "linkedWorkbooks", "linkedWorkbooks/items")
+          if (!Array.isArray(value)) return []
           const items: { id: string }[] = []
-          for (const child of value) {
-            const id = Reflect.get(child, "id")
+          for (const entry of value) {
+            if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue
+            const id = Reflect.get(entry, "id")
             if (typeof id === "string") items.push({ id })
           }
           return items
@@ -685,13 +741,22 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
         return worksheets()
       },
       names: {
-        load: (properties: string) => request(WORKBOOK, `names/${properties}`),
+        load: (properties: string) => request(WORKBOOK, scopedProperties("names", properties)),
         get items(): readonly {
           readonly name: string
           readonly formula: unknown
           readonly scope: string
         }[] {
-          return []
+          const value = read(WORKBOOK, "names", "names/items")
+          if (!isChildList(value)) return []
+          return value.flatMap((child) => {
+            const name = Reflect.get(child, "name")
+            const formula = Reflect.get(child, "formula")
+            const scope = Reflect.get(child, "scope")
+            return typeof name === "string" && typeof scope === "string"
+              ? [{ name, formula, scope }]
+              : []
+          })
         },
         getItemOrNullObject: (name: string) => ({
           getRangeOrNullObject: () => range(call(WORKBOOK, "getNameRange", [name]), `name ${name}`),
@@ -751,7 +816,8 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
           set(WORKBOOK, "application.calculationMode", value)
         },
         calculate: (type: CalculationKind) => call(WORKBOOK, "application.calculate", [type]),
-        load: (properties: string) => request(WORKBOOK, `application/${properties}`),
+        load: (properties: string) =>
+          request(WORKBOOK, scopedProperties("application", properties)),
       },
       getSelectedRange: () => range(call(WORKBOOK, "getSelectedRange", []), "selection"),
       getSelectedRanges: () => {
@@ -795,8 +861,12 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
     context: context satisfies OperateContext,
     transcript,
     events,
-    close: (): void => {
+    close: async (): Promise<void> => {
       closed = true
+      queued = []
+      requested.clear()
+      loaded.clear()
+      await send.close?.()
     },
   }
 }
@@ -811,9 +881,27 @@ export const runBridgeBatch = async <T>(
   events?: BridgeEvents,
 ): Promise<T> => {
   const bridge = buildBridgeContext(send, events)
+  let result: { readonly value: T } | undefined
+  let workFailure: { readonly error: unknown } | undefined
   try {
-    return await work(bridge.context)
-  } finally {
-    bridge.close()
+    result = { value: await work(bridge.context) }
+  } catch (error) {
+    workFailure = { error }
   }
+  let closeFailure: { readonly error: unknown } | undefined
+  try {
+    await bridge.close()
+  } catch (error) {
+    closeFailure = { error }
+  }
+  if (workFailure !== undefined && closeFailure !== undefined) {
+    throw new AggregateError(
+      [workFailure.error, closeFailure.error],
+      "Workbook operation and bridge cleanup both failed",
+    )
+  }
+  if (workFailure !== undefined) throw workFailure.error
+  if (closeFailure !== undefined) throw closeFailure.error
+  if (result === undefined) throw new BridgeError("bridge batch settled without a result")
+  return result.value
 }

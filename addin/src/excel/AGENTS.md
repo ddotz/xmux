@@ -85,4 +85,4 @@ The pane's whole demand on a non-WEF host, settled on a Mac so a Windows session
 - `resolveReferences` marks unavailable with **Korean reason strings** shown straight to the user: `잘못된 참조` (`#REF!`), `여러 시트에 걸친 참조` (3-D), `이름 "x" 없음`, `표 "x" 없음`, `빈 시트` / `빈 범위`, and external refs. External is special: it reports the selected cell's cached text and says the range can't be opened or edited.
 - The external path reads `getSelectedRange()` only when a token needs it, and only trusts the text when the selection is still on the origin sheet.
 - Summary quirk: single-cell refs return `value` and null sum/average; a range whose COUNTA is 0 gets sum and average nulled out on purpose.
-- `linked-workbooks.ts` guards on `ExcelApiOnline 1.1`, which desktop Excel doesn't have, so `{kind: "unsupported"}` is the normal Mac result, not an error.
+- `linked-workbooks.ts` guards on `ExcelApiOnline 1.1`: the WEF desktop host normally says unsupported, while the XLL host declares the set because its COM bridge implements link listing and refresh directly.

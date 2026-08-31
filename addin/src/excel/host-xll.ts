@@ -3,11 +3,12 @@ import {
   type HostServices,
   type HostServicesBridge,
 } from "../host-services"
-import type { ExcelHost, HostFailure } from "./host"
+import type { ExcelHost, HostContext, HostFailure } from "./host"
 import {
   type BridgeEvents,
   BridgeHostError,
   type BridgeResponse,
+  type BridgeSend,
   createBridgeEvents,
   deliverBridgeEvent,
   runBridgeBatch,
@@ -28,6 +29,7 @@ import {
  * - `handshake()` -> `{ workbookUrl, capabilities: [{ name, version }] }`. Not lazy:
  *   `isSetSupported` and `workbookUrl` are synchronous on the port and a bridge cannot make
  *   a round trip synchronously, so both answers must already be in hand.
+ * - `close()` releasing all COM-backed handles after the surrounding `ExcelHost.run` settles.
  * - `execute(opsJson)` -> `{ values }`, or `{ values, failure: { code, message } }` when an
  *   op was refused. `cellEditMode` is the code the pane must be able to recognise.
  * - `readExternalWorkbook(requestJson)` and `readNativeEditorState()` -> the two answers the
@@ -49,10 +51,11 @@ type BridgeHandshake = {
   readonly capabilities: readonly BridgeCapability[]
 }
 
-/** Four methods, and that is the whole surface. Strings across, strings back. */
+/** The complete JSON-string boundary exposed by the XLL host object. */
 type XllBridgeObject = {
   readonly handshake: () => Promise<string>
   readonly execute: (opsJson: string) => Promise<string>
+  readonly close: () => Promise<void>
   readonly readExternalWorkbook: (requestJson: string) => Promise<string>
   readonly readNativeEditorState: () => Promise<string>
 }
@@ -128,6 +131,7 @@ declare global {
           type: "message",
           listener: (message: { readonly data: unknown }) => void,
         ) => void
+        readonly postMessage?: (message: unknown) => void
       }
     }
   }
@@ -151,29 +155,40 @@ const hostFrom = (
   bridge: XllBridgeObject,
   handshake: BridgeHandshake,
   events: BridgeEvents,
-): ExcelHost => ({
-  run: (work) =>
-    runBridgeBatch(
-      async (ops) => readResponse(await bridge.execute(JSON.stringify(ops))),
-      work,
-      events,
-    ),
-  isSetSupported: (name, minimumVersion) =>
-    handshake.capabilities.some(
-      (capability) =>
-        capability.name === name &&
-        (minimumVersion === undefined || versionAtLeast(capability.version, minimumVersion)),
-    ),
-  // Only a refusal the host actually sent is a host failure. Everything else — a protocol
-  // violation on this side, a bug in a pane module — belongs to the caller and has to reach
-  // the top-level boundary instead of being reported as something Excel did.
-  classify: (error): HostFailure | null => {
-    if (!(error instanceof BridgeHostError)) return null
-    const { code, message } = error.failure
-    return code === "cellEditMode" ? { kind: "cellEditMode" } : { kind: "host", code, message }
-  },
-  workbookUrl: () => handshake.workbookUrl,
-})
+): ExcelHost => {
+  const send = Object.assign(
+    async (ops: Parameters<BridgeSend>[0]) =>
+      readResponse(await bridge.execute(JSON.stringify(ops))),
+    { close: async (): Promise<void> => bridge.close() },
+  ) satisfies BridgeSend
+  let runTail: Promise<void> = Promise.resolve()
+  const runSerially = <T>(work: (context: HostContext) => Promise<T>): Promise<T> => {
+    const result = runTail.then(() => runBridgeBatch(send, work, events))
+    runTail = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+  return {
+    run: runSerially,
+    isSetSupported: (name, minimumVersion) =>
+      handshake.capabilities.some(
+        (capability) =>
+          capability.name === name &&
+          (minimumVersion === undefined || versionAtLeast(capability.version, minimumVersion)),
+      ),
+    // Only a refusal the host actually sent is a host failure. Everything else — a protocol
+    // violation on this side, a bug in a pane module — belongs to the caller and has to reach
+    // the top-level boundary instead of being reported as something Excel did.
+    classify: (error): HostFailure | null => {
+      if (!(error instanceof BridgeHostError)) return null
+      const { code, message } = error.failure
+      return code === "cellEditMode" ? { kind: "cellEditMode" } : { kind: "host", code, message }
+    },
+    workbookUrl: () => handshake.workbookUrl,
+  }
+}
 
 /**
  * Whether this page is the XLL's WebView2, and the object to talk to if it is.
@@ -185,6 +200,18 @@ const hostFrom = (
 export const bridgeHostObject = (): XllBridgeObject | null =>
   window.chrome?.webview?.hostObjects?.xmux ?? null
 
+let startupFailure: string | null = null
+
+export const bridgeStartupFailure = (): string | null => startupFailure
+
+const handshakeFailure = (payload: string): string => {
+  const failure = record(record(parsed(payload))?.["failure"])
+  const message = failure?.["message"]
+  return typeof message === "string" && message !== ""
+    ? message
+    : `Unreadable XLL handshake response: ${payload.slice(0, 200)}`
+}
+
 /** The file and editor answers from the same object, or null when this is not that host. */
 export const bridgeHostServices = (): HostServices | null => {
   const bridge = bridgeHostObject()
@@ -193,8 +220,10 @@ export const bridgeHostServices = (): HostServices | null => {
 
 /** Reports null outside the XLL WebView2, leaving the pane to explain that refusal. */
 export const startBridgeHost = (onReady: (host: ExcelHost | null) => void): void => {
+  startupFailure = null
   const bridge = bridgeHostObject()
   if (bridge === null) {
+    startupFailure = "The XLL WebView2 host object was not injected."
     onReady(null)
     return
   }
@@ -212,13 +241,20 @@ export const startBridgeHost = (onReady: (host: ExcelHost | null) => void): void
     if (kind !== "selection" && kind !== "click") return
     void deliverBridgeEvent(events, kind, { address, worksheetId })
   })
+
   void bridge.handshake().then(
     (payload) => {
       const handshake = readHandshake(payload)
-      // An unreadable handshake is not a host. Refusing here is what puts the failure on the
-      // screen instead of leaving a pane that renders and then answers nothing.
+      if (handshake === null) startupFailure = handshakeFailure(payload)
       onReady(handshake === null ? null : hostFrom(bridge, handshake, events))
     },
-    () => onReady(null),
+    (error) => {
+      startupFailure = error instanceof Error ? error.message : String(error)
+      onReady(null)
+    },
   )
+}
+
+export const signalBridgeSelectionReady = (): void => {
+  window.chrome?.webview?.postMessage?.("xmux-ready")
 }

@@ -1,3 +1,5 @@
-<DnaLibrary Name="Xmux XLL spike" RuntimeVersion="v4.0">
-  <ExternalLibrary Path="XmuxAddIn.dll" LoadFromBytes="true" />
+<DnaLibrary Name="땡땡엑셀" RuntimeVersion="v4.0" xmlns="http://schemas.excel-dna.net/addin/2020/07/dnalibrary">
+  <ExternalLibrary Path="XmuxAddIn.dll" LoadFromBytes="true" Pack="true" />
+  <Reference Path="Microsoft.Web.WebView2.Core.dll" Pack="true" />
+  <Reference Path="Microsoft.Web.WebView2.WinForms.dll" Pack="true" />
 </DnaLibrary>

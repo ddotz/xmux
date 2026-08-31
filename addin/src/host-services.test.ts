@@ -107,6 +107,24 @@ describe("host-object services", () => {
     await expect(services.readNativeEditorState()).rejects.toBeInstanceOf(CompanionUnavailable)
   })
 
+  it("turns rejected editor host calls into companion unavailability for watcher backoff", async () => {
+    const readNativeEditorState = vi.fn(() => Promise.reject(new Error("host disconnected")))
+    const services = createBridgeHostServices({
+      readExternalWorkbook: async () => ({ values: [["1"]] }),
+      readNativeEditorState,
+    })
+
+    await expect(services.readNativeEditorState()).rejects.toBeInstanceOf(CompanionUnavailable)
+
+    const changes: boolean[] = []
+    const stop = watchCompanion((state) => changes.push(state.editing), services)
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    expect(readNativeEditorState).toHaveBeenCalledTimes(6)
+    expect(changes).toEqual([false])
+    stop()
+  })
+
   it("reports a host that cannot read the file, rather than throwing at the pane", async () => {
     const services = createBridgeHostServices({
       readExternalWorkbook: () => Promise.reject(new Error("file locked")),

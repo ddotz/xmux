@@ -1,7 +1,13 @@
 import { type HostServices, localHostServices } from "../host-services"
 import type { ExcelHost } from "./host"
 import { startOfficeHost } from "./host-office"
-import { bridgeHostObject, bridgeHostServices, startBridgeHost } from "./host-xll"
+import {
+  bridgeHostObject,
+  bridgeHostServices,
+  bridgeStartupFailure,
+  signalBridgeSelectionReady,
+  startBridgeHost,
+} from "./host-xll"
 
 /**
  * Starts the adapter the pane was embedded with, and the only module that knows both exist.
@@ -18,6 +24,12 @@ export const startHost = (onReady: (host: ExcelHost | null) => void): void => {
     return
   }
   startOfficeHost(onReady)
+}
+
+export const hostStartupFailure = (): string | null => bridgeStartupFailure()
+
+export const signalHostSelectionReady = (): void => {
+  signalBridgeSelectionReady()
 }
 
 /**

@@ -1,7 +1,12 @@
 import { formatArea, type GridArea, parseArea } from "../excel/address"
 import { createHistory } from "../excel/history"
 import type { ExcelHost, HostContext, HostRange } from "../excel/host"
-import { hostServices, startHost } from "../excel/host-entry"
+import {
+  hostServices,
+  hostStartupFailure,
+  signalHostSelectionReady,
+  startHost,
+} from "../excel/host-entry"
 import { type Resolved, resolveReference } from "../excel/resolve"
 import { resolveAndSummariseTokens } from "../excel/summaries"
 import { summariseReferences } from "../excel/summarise"
@@ -287,11 +292,12 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
       await context.sync()
       if (!isCurrent()) return null
       const multi = probe.address.includes(",")
+      const probedAddress = probe.address
 
       let snapshot: SelectionSnapshot
       if (!multi) {
-        const selection = context.workbook.getSelectedRange()
-        selection.load("address, cellCount, formulas, text, worksheet/name")
+        const selection = probe
+        selection.load("cellCount, formulas, text, worksheet/name")
         await context.sync()
         if (!isCurrent()) return null
         attachSelection(selection, chatting.updateSelection)
@@ -307,6 +313,7 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
         areas.load("address, worksheet/name, areas/items/cellCount")
         await context.sync()
         if (!isCurrent()) return null
+        if (areas.address !== probedAddress) return null
         chatting.updateSelection(null)
         const count = areas.areas.items.reduce((total, area) => total + area.cellCount, 0)
         snapshot = {
@@ -395,7 +402,13 @@ followEditor({
  */
 const start = async (ready: ExcelHost | null): Promise<void> => {
   if (ready === null) {
-    show({ kind: "error", message: "Excel에서만 동작합니다." }, null)
+    show(
+      {
+        kind: "error",
+        message: hostStartupFailure() ?? "Excel에서만 동작합니다.",
+      },
+      null,
+    )
     return
   }
   host = ready
@@ -408,6 +421,7 @@ const start = async (ready: ExcelHost | null): Promise<void> => {
     selectionEvents.attach(context.workbook.worksheets, ready.isSetSupported("ExcelApi", "1.10"))
     await context.sync()
   })
+  signalHostSelectionReady()
 
   selectionEvents.select("")
 }

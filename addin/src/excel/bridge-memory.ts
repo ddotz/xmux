@@ -65,6 +65,12 @@ type Target =
       readonly uniqueRemaining: number
     }
   | { readonly kind: "tableColumn"; readonly range: RangeTarget }
+  | {
+      readonly kind: "selectedAreas"
+      readonly sheet: MemorySheet | null
+      readonly address: string
+      readonly areas: readonly RangeTarget[]
+    }
   /** What a replacement pass did. Excel answers with the count and nothing else. */
   | { readonly kind: "replaced"; readonly count: number }
   /**
@@ -133,6 +139,16 @@ const compute = (fn: string, source: RangeTarget): unknown => {
       return numbers.length === 0
         ? "#DIV/0!"
         : numbers.reduce((total, value) => total + value, 0) / numbers.length
+    case "MIN":
+      return numbers.length === 0 ? 0 : Math.min(...numbers)
+    case "MAX":
+      return numbers.length === 0 ? 0 : Math.max(...numbers)
+    case "COUNT":
+      return numbers.length
+    case "COUNTBLANK":
+      return textIn(source)
+        .flat()
+        .filter((cell) => cell === "").length
     default:
       throw new Error(`bridge: unknown function ${fn}`)
   }
@@ -257,6 +273,25 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
     return target
   }
 
+  const selectedAreas = (): Extract<Target, { readonly kind: "selectedAreas" }> => {
+    const selected = workbook.selected
+    if (selected === undefined)
+      return { kind: "selectedAreas", sheet: null, address: "", areas: [] }
+    const first = locate(workbook, selected.address)
+    const cut = selected.address.lastIndexOf("!")
+    const prefix = cut < 0 ? "" : selected.address.slice(0, cut + 1)
+    const addresses = selected.address
+      .slice(cut + 1)
+      .split(",")
+      .map((address) => locate(workbook, `${prefix}${address}`))
+    return {
+      kind: "selectedAreas",
+      sheet: first.sheet,
+      address: selected.address,
+      areas: addresses,
+    }
+  }
+
   const copyArea = (source: RangeTarget, destination: RangeTarget, move: boolean): void => {
     if (
       source.sheet === null ||
@@ -342,11 +377,65 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
             : { ...target.area, top: target.area.top + Number(args[0]), height: 1 }
         return { kind: "range", sheet: target.sheet, area }
       }
+      case "getResizedRange": {
+        if (target.kind !== "range" || target.area === null)
+          throw new Error("bridge: getResizedRange needs a range")
+        return {
+          kind: "range",
+          sheet: target.sheet,
+          area: {
+            ...target.area,
+            height: target.area.height + Number(args[0]),
+            width: target.area.width + Number(args[1]),
+          },
+        }
+      }
+      case "getRangeByIndexes":
+        if (target.kind !== "sheet") throw new Error("bridge: getRangeByIndexes needs a worksheet")
+        return {
+          kind: "range",
+          sheet: target.sheet,
+          area: {
+            top: Number(args[0]) + 1,
+            left: Number(args[1]) + 1,
+            height: Number(args[2]),
+            width: Number(args[3]),
+          },
+        }
 
+      case "worksheet":
+        if (target.kind !== "range" || target.sheet === null)
+          throw new Error("bridge: worksheet needs a range")
+        return { kind: "sheet", sheet: target.sheet }
       case "getUsedRange": {
-        if (target.kind !== "sheet") throw new Error("bridge: getUsedRange needs a worksheet")
-        const area = usedArea(target.sheet)
-        return { kind: "range", sheet: area === null ? null : target.sheet, area }
+        if (target.kind === "sheet") {
+          const area = usedArea(target.sheet)
+          return { kind: "range", sheet: area === null ? null : target.sheet, area }
+        }
+        if (target.kind === "range") {
+          const used = target.sheet === null ? null : usedArea(target.sheet)
+          if (used === null || target.area === null)
+            return { kind: "range", sheet: null, area: null }
+          const top = Math.max(used.top, target.area.top)
+          const left = Math.max(used.left, target.area.left)
+          const bottom = Math.min(
+            used.top + used.height - 1,
+            target.area.top + target.area.height - 1,
+          )
+          const right = Math.min(
+            used.left + used.width - 1,
+            target.area.left + target.area.width - 1,
+          )
+          return {
+            kind: "range",
+            sheet: bottom < top || right < left ? null : target.sheet,
+            area:
+              bottom < top || right < left
+                ? null
+                : { top, left, height: bottom - top + 1, width: right - left + 1 },
+          }
+        }
+        throw new Error("bridge: getUsedRange needs a worksheet or range")
       }
       case "getNameRange":
         return locate(workbook, names.get(literal(args[0])))
@@ -357,8 +446,14 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       case "getSelectedRange": {
         const selected = workbook.selected
         if (selected === undefined) return { kind: "range", sheet: null, area: null }
-        return { ...locate(workbook, selected.address), text: selected.text }
+        const range = locate(workbook, selected.address)
+        return range.area?.height === 1 && range.area.width === 1
+          ? { ...range, text: selected.text }
+          : range
       }
+      case "getSelectedRanges":
+        if (target.kind !== "workbook") throw new Error("bridge: getSelectedRanges needs workbook")
+        return selectedAreas()
       case "func":
         return { kind: "func", fn: literal(args[0]), source: asRange(args[1]) }
       case "set": {
@@ -404,6 +499,8 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
           // Writing into a recorded thing is recorded too. Refusing would be wrong — the
           // pane is doing something legitimate that a real host applies.
           calls.push(`${target.label}:${property}`)
+          if (target.label === "data hierarchy" && property === "showAs")
+            rangeProperties.set("pivot:dataHierarchy:showAs", args[1])
           return target
         }
         if (target.kind !== "range") throw new Error("bridge: set needs a range")
@@ -514,6 +611,7 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       case "protection.unprotect":
       case "activate":
       case "application.calculate":
+      case "linkedWorkbooks.refreshAll":
       case "pageLayout.setPrintTitleRows":
       case "freezePanes.freezeRows":
       case "freezePanes.freezeColumns":
@@ -531,6 +629,16 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
         if (target.kind !== "sheet") throw new Error("bridge: pivotTables.add needs a worksheet")
         calls.push(`${target.sheet.name}:pivotTables.add:${literal(args[0])}`)
         return { kind: "opaque", label: "pivot table" }
+      case "hierarchies.getItem":
+      case "rowHierarchies.add":
+      case "columnHierarchies.add":
+      case "dataHierarchies.add":
+        if (target.kind !== "opaque" || target.label !== "pivot table")
+          throw new Error(`bridge: ${member} needs a pivot table`)
+        calls.push(`pivot table:${member}`)
+        return member === "dataHierarchies.add"
+          ? { kind: "opaque", label: "data hierarchy" }
+          : { kind: "opaque", label: "pivot hierarchy" }
       case "names.add":
         if (target.kind !== "workbook") throw new Error("bridge: names.add needs workbook")
         names.set(literal(args[0]), rangeKey(asRange(args[1])))
@@ -641,10 +749,28 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
             return textIn(target)
           case "formulas":
             return textIn(target)
+          case "values":
+            return textIn(target)
+          case "valueTypes":
+            return textIn(target).map((row) =>
+              row.map((cell) =>
+                cell === ""
+                  ? "Empty"
+                  : cell.startsWith("=")
+                    ? "Formula"
+                    : Number.isFinite(Number(cell))
+                      ? "Double"
+                      : "String",
+              ),
+            )
           case "rowCount":
             return target.area?.height ?? 0
           case "columnCount":
             return target.area?.width ?? 0
+          case "rowIndex":
+            return (target.area?.top ?? 1) - 1
+          case "columnIndex":
+            return (target.area?.left ?? 1) - 1
           case "numberFormat":
             return rangeProperties.get(rangeKey(target)) ?? []
           case "format/columnWidth":
@@ -653,6 +779,8 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
             return rangeProperties.get(`${rangeKey(target)}:format.rowHeight`) ?? 15
           case "cellCount":
             return (target.area?.height ?? 0) * (target.area?.width ?? 0)
+          case "worksheet/name":
+            return target.sheet?.name ?? ""
           default:
             throw new Error(`bridge: a range has no "${path}"`)
         }
@@ -660,6 +788,8 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
         switch (path) {
           case "name":
             return target.sheet.name
+          case "id":
+            return `sheet-${workbook.sheets.indexOf(target.sheet) + 1}`
           case "visibility":
             return target.sheet.hidden === true ? "Hidden" : "Visible"
           case "isNullObject":
@@ -689,12 +819,30 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
         if (path === "value") return target.count
         throw new Error(`bridge: a replacement result has no "${path}"`)
       case "opaque":
+        if (target.label === "data hierarchy" && path === "showAs")
+          return (
+            rangeProperties.get("pivot:dataHierarchy:showAs") ?? {
+              calculation: "None",
+              baseField: null,
+              baseItem: null,
+            }
+          )
         throw new Error(`bridge: a ${target.label} is recorded, not modelled — it has no "${path}"`)
+      case "selectedAreas":
+        switch (path) {
+          case "address":
+            return target.address
+          case "worksheet/name":
+            return target.sheet?.name ?? ""
+          default:
+            throw new Error(`bridge: selected areas has no "${path}"`)
+        }
       case "worksheets":
         throw new Error(`bridge: the collection is loaded through items/${path}`)
       case "workbook":
         if (path === "application/calculationMode")
           return rangeProperties.get("application.calculationMode") ?? "Automatic"
+        if (path === "linkedWorkbooks/items") return []
         throw new Error(`bridge: the workbook has no "${path}"`)
     }
   }
@@ -710,6 +858,60 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       return values
     }),
   })
+
+  const areaCollection = (
+    target: Extract<Target, { readonly kind: "selectedAreas" }>,
+    paths: readonly string[],
+  ): BridgeValues => ({
+    "areas/items": target.areas.map((area) => {
+      const id = nextChild--
+      handles.set(id, area)
+      const values: Record<string, unknown> = { id }
+      for (const path of paths)
+        if (path.startsWith("areas/items/"))
+          values[path.slice("areas/items/".length)] = property(
+            area,
+            path.slice("areas/items/".length),
+          )
+      return values
+    }),
+  })
+
+  const sheetCollections = (
+    target: Extract<Target, { readonly kind: "sheet" }>,
+    paths: readonly string[],
+  ): BridgeValues => {
+    if (!paths.some((path) => path.startsWith("tables/"))) return {}
+    return {
+      "tables/items": [...tables.entries()].flatMap(([name, address]) => {
+        const tableRange = locate(workbook, address)
+        if (tableRange.sheet !== target.sheet) return []
+        const id = nextChild--
+        handles.set(id, { kind: "table", name, range: tableRange })
+        const item: Record<string, unknown> = { id }
+        for (const path of paths) {
+          if (path === "tables/items/name") item["name"] = name
+          else if (path === "tables/items/showHeaders") item["showHeaders"] = true
+        }
+        return [item]
+      }),
+    }
+  }
+
+  const workbookCollections = (paths: readonly string[]): BridgeValues => {
+    const loaded: Record<string, unknown> = {}
+    if (paths.some((path) => path.startsWith("linkedWorkbooks/")))
+      loaded["linkedWorkbooks/items"] = []
+    if (paths.some((path) => path.startsWith("names/"))) {
+      loaded["names/items"] = [...names.entries()].map(([name, formula]) => ({
+        id: nextChild--,
+        name,
+        formula,
+        scope: "Workbook",
+      }))
+    }
+    return loaded
+  }
 
   const send = async (ops: readonly BridgeOp[]): Promise<BridgeResponse> => {
     const response: Record<number, Record<string, unknown>> = {}
@@ -731,13 +933,31 @@ export const createMemoryBridge = (workbook: MemoryWorkbook): MemoryBridge => {
       const target = resolve(op.on)
       const values = response[op.on] ?? {}
       if (target.kind === "worksheets") Object.assign(values, collection(op.properties))
-      else for (const path of op.properties) values[path] = property(target, path)
+      else if (target.kind === "selectedAreas") {
+        Object.assign(values, areaCollection(target, op.properties))
+        for (const path of op.properties)
+          if (!path.startsWith("areas/items/")) values[path] = property(target, path)
+      } else if (target.kind === "workbook") {
+        Object.assign(values, workbookCollections(op.properties))
+        for (const path of op.properties)
+          if (!path.startsWith("linkedWorkbooks/") && !path.startsWith("names/"))
+            values[path] = property(target, path)
+      } else if (target.kind === "sheet") {
+        Object.assign(values, sheetCollections(target, op.properties))
+        for (const path of op.properties)
+          if (!path.startsWith("tables/")) values[path] = property(target, path)
+      } else for (const path of op.properties) values[path] = property(target, path)
       response[op.on] = values
     }
     return { values: response }
   }
 
   return Object.assign(send, {
+    close: (): void => {
+      handles.clear()
+      handles.set(0, { kind: "workbook" })
+      nextChild = -1
+    },
     recorded: (): readonly string[] => [...calls],
     failNext: (code: string, message: string): void => {
       nextFailure = { code, message }

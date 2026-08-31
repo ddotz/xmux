@@ -127,7 +127,13 @@ export const createBridgeHostServices = (bridge: HostServicesBridge): HostServic
     }
   },
   readNativeEditorState: async (): Promise<NativeEditorState> => {
-    const parsed = editorStateSchema.safeParse(await bridge.readNativeEditorState())
+    let response: unknown
+    try {
+      response = await bridge.readNativeEditorState()
+    } catch {
+      throw new CompanionUnavailable("host call failed")
+    }
+    const parsed = editorStateSchema.safeParse(response)
     // Same contract as the HTTP adapter: unreadable editor state is not an error, it is the
     // absence of a companion, and the watcher backs off on exactly this.
     if (!parsed.success) throw new CompanionUnavailable("unexpected payload")

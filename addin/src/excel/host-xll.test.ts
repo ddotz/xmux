@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest"
 import { createMemoryBridge, type MemoryBridge } from "./bridge-memory"
 import type { ExcelHost } from "./host"
-import { startBridgeHost } from "./host-xll"
+import { bridgeStartupFailure, startBridgeHost } from "./host-xll"
 
 /** Collects the page-side listener, which is how a WebView2 host pushes to the pane. */
 let pushToPane: ((message: { readonly data: unknown }) => void) | null = null
@@ -61,6 +61,7 @@ const asHostObject = (bridge: MemoryBridge, handshake: unknown) => ({
       })
     }
   },
+  close: async (): Promise<void> => {},
   readExternalWorkbook: async (): Promise<string> => JSON.stringify({ values: [["1"]] }),
   readNativeEditorState: async (): Promise<string> => JSON.stringify({ editing: false }),
 })
@@ -71,7 +72,10 @@ afterEach(() => {
 
 describe("the XLL host", () => {
   it("caches its handshake and runs batches through the bridge", async () => {
-    const bridge = createMemoryBridge({ sheets: [{ name: "Data", cells: [["1"]] }] })
+    const bridge = createMemoryBridge({
+      sheets: [{ name: "Data", cells: [["1", "context"]] }],
+      selected: { address: "Data!A1:B1", text: "1" },
+    })
     const host = await readyHost(
       asHostObject(bridge, {
         workbookUrl: "https://example.test/book.xlsx",
@@ -92,6 +96,24 @@ describe("the XLL host", () => {
       return range
     })
     expect(() => escaped.address).toThrow(/do not outlive/)
+
+    const chatContext = await host.run(async (context) => {
+      const selection = context.workbook.getSelectedRange()
+      selection.load("address,text,values,worksheet/name")
+      await context.sync()
+      return {
+        address: selection.address,
+        text: selection.text,
+        values: selection.values,
+        worksheet: selection.worksheet.name,
+      }
+    })
+    expect(chatContext).toEqual({
+      address: "Data!$A$1:$B$1",
+      text: [["1", "context"]],
+      values: [["1", "context"]],
+      worksheet: "Data",
+    })
   })
 
   it("classifies host failures and delivers pushed selections", async () => {
@@ -159,5 +181,52 @@ describe("the XLL host", () => {
   it("reports null when WebView2 did not provide its host object", async () => {
     install(undefined)
     await expect(new Promise((resolve) => startBridgeHost(resolve))).resolves.toBeNull()
+  })
+
+  it("keeps the XLL handshake failure available to the pane", async () => {
+    const bridge = createMemoryBridge({ sheets: [{ name: "Data", cells: [[]] }] })
+    await expect(
+      readyHost(asHostObject(bridge, { failure: { message: "macro timeout" } })),
+    ).resolves.toBeNull()
+    expect(bridgeStartupFailure()).toBe("macro timeout")
+  })
+
+  it("serializes whole runs so handle tables cannot overlap", async () => {
+    const bridge = createMemoryBridge({ sheets: [{ name: "Data", cells: [["one", "two"]] }] })
+    const host = await readyHost(asHostObject(bridge, { workbookUrl: "", capabilities: [] }))
+    if (host === null) throw new Error("missing XLL host")
+
+    let releaseFirst = (): void => {}
+    let markFirstReady = (): void => {}
+    const firstHold = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const firstReady = new Promise<void>((resolve) => {
+      markFirstReady = resolve
+    })
+    const first = host.run(async (context) => {
+      const range = context.workbook.worksheets.getItem("Data").getRange("A1")
+      range.load("values")
+      await context.sync()
+      markFirstReady()
+      await firstHold
+      return range.values
+    })
+    await firstReady
+
+    let secondStarted = false
+    const second = host.run(async (context) => {
+      secondStarted = true
+      const range = context.workbook.worksheets.getItem("Data").getRange("B1")
+      range.load("values")
+      await context.sync()
+      return range.values
+    })
+    await Promise.resolve()
+    expect(secondStarted).toBe(false)
+
+    releaseFirst()
+    await expect(first).resolves.toEqual([["one"]])
+    await expect(second).resolves.toEqual([["two"]])
   })
 })

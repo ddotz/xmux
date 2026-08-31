@@ -1,8 +1,8 @@
-# Xmux Excel-DNA XLL spike
+# Xmux Excel-DNA XLL
 
-This is a Windows-only spike for the three gates in `WEF-ACQUISITION.md`: an in-process Excel-DNA XLL creates a Custom Task Pane (CTP), hosts the existing pane through WebView2, and can read one real Excel range through the pane bridge.
+This is the Windows in-process host for the existing pane. Excel-DNA creates one Custom Task Pane (CTP) per Excel window, WebView2 serves the built pane assets, and the JSON bridge maps the pane's complete workbook contract onto Excel COM.
 
-It was written on macOS and has **never been built or run**. Excel-DNA packing, Excel COM, and the target Windows configuration cannot be exercised here.
+The XLL and deployment package build successfully on macOS, but they have **not been loaded or run in Windows Excel**. Excel COM behavior, unsigned-XLL policy, and the target Windows configuration still require the live checks below.
 
 ## Build on Windows
 
@@ -13,39 +13,41 @@ pnpm --dir addin build
 powershell -ExecutionPolicy Bypass -File .\xll\build.ps1
 ```
 
-The script restores the pinned NuGet packages (`ExcelDna.AddIn` 1.9.0 and `Microsoft.Web.WebView2` 1.0.3240.44), packs 32- and 64-bit XLLs, and puts every produced `.xll` plus `dist\` beside it in `xll\out\`. Keep `dist` next to the selected XLL; the control maps that directory to `https://xmux.local/` and does not use a development path, port, certificate, or local HTTP server.
+The script restores the pinned NuGet packages (`ExcelDna.AddIn` 1.9.0 and `Microsoft.Web.WebView2` 1.0.3240.44), packs 32- and 64-bit XLLs into `xll\out\`, and creates a versioned deployment ZIP under `xll\release\`. The ZIP version comes from `addin/package.json`.
 
-## Load the XLL
+## Install or update
 
-Close Excel before changing its add-in list. In Excel, use **File → Options → Add-ins → Manage: Excel Add-ins → Go… → Browse…** and select the XLL matching Office bitness from `xll\out`.
+1. Extract the entire versioned ZIP on the Windows PC. Do not run it inside the ZIP viewer.
+2. Close every Excel window.
+3. Double-click **install-xll.bat**.
 
-For repeatable loading, add an `OPEN` string value under `HKCU\Software\Microsoft\Office\16.0\Excel\Options`, choosing an unused numbered value such as `OPEN1`:
+The installer detects the installed Office bitness, copies the matching packed XLL, its WebView2 managed/native loader dependencies, and the complete `dist\` tree into `%LOCALAPPDATA%\DdotExcelXll`, and owns one previously unused `OPEN` value under `HKCU\Software\Microsoft\Office\16.0\Excel\Options`. It never needs administrator rights and does not modify another add-in's `OPEN` value.
 
-```powershell
-New-ItemProperty -Path HKCU:\Software\Microsoft\Office\16.0\Excel\Options `
-  -Name OPEN1 -PropertyType String -Value '"C:\full\path\to\xll\out\XmuxAddIn-packed64.xll"'
-```
+Running the batch from a newer deployment ZIP updates the managed directory in place. The installed version and ownership data live under `HKCU\Software\DdotExcel\Xll`; downgrades are rejected unless the installer is run from PowerShell with `-AllowDowngrade`. Re-running the same version repairs its files. Excel must remain closed during every install, update, or removal. The batch waits five seconds for Excel to exit; if only a windowless `EXCEL.EXE` remains in the current desktop session, it shows the PID and accepts `YES` in any letter case before terminating it. A process with a visible Excel window is never terminated.
 
-Use the actual filename emitted by the build. Remove that `OPEN` value to undo registry loading. The Add-ins dialog is preferable while testing because it makes the selected binary explicit.
+The WebView2 profile, including pane settings, is kept separately under `%LOCALAPPDATA%\DdotExcelXllData` so an update cannot erase it. The ownership marker ties that directory to the installation, and uninstall removes it.
+
+Double-click **uninstall-xll.bat** from either the extracted package or `%LOCALAPPDATA%\DdotExcelXll` to remove only the registry value and files owned by this installation.
+
+For manual gate testing without installation, use **File → Options → Add-ins → Manage: Excel Add-ins → Go… → Browse…** and select `XmuxAddIn64-packed.xll` for 64-bit Office or `XmuxAddIn-packed.xll` for 32-bit Office from `xll\out`. Keep `dist\` beside the selected XLL.
 
 ## Gate 1: CTP + WebView2 + pane assets
 
 1. Put `addin\dist` beside the XLL by using the build script, load the XLL, and open a workbook.
-2. Pass: an **Xmux** task pane appears and renders the existing pane at the `xmux.local` origin.
+2. Pass: a **땡땡엑셀** task pane appears and renders the existing pane at the `xmux.local` internal origin.
 3. Fail: the pane prints `WebView2 initialization failed:` followed by the exception, or no CTP appears. Capture that text, Office bitness/version, WebView2 Runtime version, and whether Excel has a visible workbook.
 
 The control deliberately waits until it both has a WinForms handle and is visible before starting WebView2. It never waits on `EnsureCoreWebView2Async`; its continuation returns through `SynchronizationContext.Post`. This is the avoidance for the known CTP STA/message-pump reentrancy failure. If a CTP still cannot host WebView2, retreat to a WinForms form owned by the Excel window rather than extending the bridge.
 
-## Gate 2: one pane-to-COM round trip
+## Gate 2: pane-to-COM round trip
 
 1. In a workbook, enter a distinctive value in `Sheet1!A1`.
 2. After Gate 1 passes, open WebView2 DevTools and run this expression in the pane console.
 
-   The bridge publishes each method under **both** `Handshake`/`Execute` and
-   `handshake`/`execute`, because nothing on a Mac can establish whether WebView2's
-   host-object proxy resolves a COM member case-insensitively — and being wrong about it
-   makes every call reject, which the pane reports as "Excel에서만 동작합니다" while sitting
-   inside Excel. **Please note which spelling works**; the other one gets deleted:
+   The pane calls the host-object methods `handshake`, `execute`, `close`,
+   `readExternalWorkbook`, and `readNativeEditorState` through
+   `chrome.webview.hostObjects.xmux`. `close` releases every COM-backed handle at the end of
+   each pane run.
 
 ```js
 await chrome.webview.hostObjects.xmux.execute(JSON.stringify([
@@ -57,27 +59,30 @@ await chrome.webview.hostObjects.xmux.execute(JSON.stringify([
 ```
 
 3. Pass: the JSON response has `values["3"]` with the range address, displayed text, and formula(s), including the distinctive cell value. The macro queue is the only place the bridge touches Excel COM.
-4. Fail: a response containing `failure`, a 30-second macro-context timeout, or an unresponsive pane. Record the response and Excel state. Unsupported calls intentionally return `{"values":{…},"failure":{"code":"dispatch","message":"no dispatch for \"member\""}}`.
+4. Fail: a response containing `failure`, a two-second macro-context timeout, or an unresponsive pane. Record the response and Excel state. Unknown calls return `{"values":{…},"failure":{"code":"dispatch","message":"no dispatch for \"member\""}}` rather than reporting false success.
 
-### What the pane itself will do, and what it will not
+### What the pane itself does
 
-Once Gate 1 passes the pane renders and follows the selection: the host polls Excel's
-selection every 200 ms from the macro context and pushes `{kind, address, worksheetId}` with
-`PostWebMessageAsJson`, which is what `chrome.webview.addEventListener("message")` on the
-pane side is waiting for. Selection is the pane's only trigger, so without that it renders
-once and never moves again — which looks exactly like a WebView2 that failed to start. The
-*pane* still never polls; this is the host doing it, and a real implementation subscribes to
-`SheetSelectionChange` instead of polling once the interop reference is worth adding.
+Once loaded, each Excel window owns its own CTP, bridge, workbook context, and selection feed. The host observes that window's selection every 200 ms from the macro context and pushes `{kind, address, worksheetId}` with `PostWebMessageAsJson`. It starts only after the pane has registered its selection handlers and completed the matching `context.sync()`, so the initial selection is not lost.
 
-The host object does **not** yet implement `readExternalWorkbook` or `readNativeEditorState`.
-That is deliberate and safe: the pane treats a missing editor source as "no companion" and
-backs off, and an external-reference click reports that the file could not be read. Neither
-throws and neither blocks the gates.
+The dispatch table covers the pane's read and write surface: worksheets, ranges, names, tables, charts, pivots, filters, validation, conditional formats, page layout, protection, calculation, formatting, sorting, insertion/deletion, copy/move/fill, duplicate removal, replacement counts, collection loads, and verification reads. Mutations execute in issue order and unknown operations fail explicitly.
 
-Implemented dispatch is only `worksheets`, `getItem`, `getRange`, and range loads of `address`, `text`, and `formulas`. It preserves operation order, so a later load sees an earlier mutation once mutations are added. The complete bridge dispatch table, host services, events, writes, handle lifecycle, and error classification are non-goals of this spike.
+`readExternalWorkbook` opens the saved source file in a separate hidden Excel instance with macros, events, link updates, prompts, and MRU writes disabled; it returns the exact requested display-text matrix and always closes the workbook and automation instance. `readNativeEditorState` reads Excel's focused process-local formula editor window, including its live formula, caret, selected reference, and lexical reference spans. An Excel-thread keyboard hook intercepts an unmodified Tab only after bounded native messages select and verify a real reference; every other Tab reaches Excel unchanged.
 
 ## Gate 3: unsigned loading
 
 1. Use the Add-ins dialog or `OPEN` value above on the target LTSC PC; do not sign the XLL.
 2. Pass: Excel loads it without a trust, publisher, or policy refusal and Gate 1 can run.
 3. Fail: Excel disables, blocks, or refuses the XLL before the CTP is created. Record the exact Office security/policy message and the Trust Center/add-in policy configuration. This is a deployment gate, not a defect the XLL can work around.
+
+## Windows-only validation checklist
+
+The build and offline contract tests cannot settle these host-specific risks. Before promoting the XLL branch, run all of them on the target Windows/Office fleet:
+
+- Load the extracted, unsigned ZIP after clearing and retaining Mark-of-the-Web in separate runs; record Trust Center or policy blocks.
+- Install and launch on both 32-bit and 64-bit Office, confirming the matching XLL and WebView2 loader architecture.
+- Confirm the pane renders the current selection immediately, follows each reference selected by Tab in the F2/formula-bar editor, and refreshes after leaving edit mode.
+- Open two workbook windows, including two windows of one workbook, and verify each pane reads and writes only its owning window.
+- Exercise reads plus representative writes: formulas/values, resize undo, two-axis freeze, names, tables, filters, replacements, charts, and a multi-field pivot.
+- Read a saved external workbook containing dirty formulas, errors, links, macros, and password protection; verify no recalc, prompt, macro, MRU entry, orphaned `EXCEL.EXE`, or change to the user's workbook.
+- Update over a running installation and uninstall with visible and hidden Excel processes; verify explicit retry behavior, preserved foreign `OPEN*` values, registry compaction, and deletion only of owned install/profile directories.

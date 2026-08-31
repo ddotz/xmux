@@ -157,6 +157,107 @@ describe("the load/sync protocol, enforced by the wire", () => {
     })
     expect(() => escaped.address).toThrow(/used after its batch closed/)
   })
+
+  it("preserves both workbook and handle-cleanup failures", async () => {
+    const workFailure = new Error("work failed")
+    const closeFailure = new Error("close failed")
+    const send = Object.assign(async () => ({ values: {} }), {
+      close: async () => {
+        throw closeFailure
+      },
+    })
+
+    await expect(
+      runBridgeBatch(send, async () => {
+        throw workFailure
+      }),
+    ).rejects.toMatchObject({ errors: [workFailure, closeFailure] })
+  })
+
+  it("reads a selected range's loaded worksheet name before another sync", async () => {
+    const bridge = buildBridgeContext(createMemoryBridge(workbook))
+    const selection = bridge.context.workbook.getSelectedRange()
+    selection.load("address, worksheet/name")
+    await bridge.context.sync()
+
+    expect(selection.address).toBe("Main!$B$2")
+    expect(selection.worksheet.name).toBe("Main")
+  })
+
+  it("loads selected areas and all range identity/value shapes", async () => {
+    const bridge = buildBridgeContext(
+      createMemoryBridge({
+        sheets: [
+          {
+            name: "Data",
+            cells: [
+              ["1", "word"],
+              ["", "=A1"],
+            ],
+          },
+        ],
+        selected: { address: "Data!A1,B2", text: "1" },
+      }),
+    )
+    const sheet = bridge.context.workbook.worksheets.getItem("Data")
+    const range = sheet.getRangeByIndexes(0, 0, 1, 2).getResizedRange(1, 0)
+    const selected = bridge.context.workbook.getSelectedRanges()
+    sheet.load("name,id")
+    range.load(
+      "values,valueTypes,rowCount,columnCount,cellCount,rowIndex,columnIndex,worksheet/name,format/columnWidth,format/rowHeight",
+    )
+    selected.load("address,worksheet/name,areas/items/cellCount")
+    await bridge.context.sync()
+
+    expect(sheet).toMatchObject({ name: "Data", id: "sheet-1" })
+    expect(range.values).toEqual([
+      ["1", "word"],
+      ["", "=A1"],
+    ])
+    expect(range.valueTypes).toEqual([
+      ["Double", "String"],
+      ["Empty", "Formula"],
+    ])
+    expect({
+      rows: range.rowCount,
+      columns: range.columnCount,
+      cells: range.cellCount,
+      row: range.rowIndex,
+      column: range.columnIndex,
+      sheet: range.worksheet.name,
+    }).toEqual({ rows: 2, columns: 2, cells: 4, row: 0, column: 0, sheet: "Data" })
+    expect(range.format.columnWidth).toBe(8)
+    expect(range.format.rowHeight).toBe(15)
+    expect(selected.address).toBe("Data!A1,B2")
+    expect(selected.worksheet.name).toBe("Data")
+    expect(selected.areas.items).toEqual([{ cellCount: 1 }, { cellCount: 1 }])
+  })
+
+  it("hydrates defined names and linked-workbook lists", async () => {
+    const bridge = buildBridgeContext(createMemoryBridge(workbook))
+    bridge.context.workbook.names.load("items/name,items/formula,items/scope")
+    bridge.context.workbook.linkedWorkbooks.load("items/id")
+    await bridge.context.sync()
+
+    expect(bridge.context.workbook.names.items).toEqual([
+      { name: "Revenue", formula: "Data!B2:D3", scope: "Workbook" },
+    ])
+    expect(bridge.context.workbook.linkedWorkbooks.items).toEqual([])
+  })
+
+  it("hydrates worksheet table children and their range handles", async () => {
+    const bridge = buildBridgeContext(createMemoryBridge(workbook))
+    const sheet = bridge.context.workbook.worksheets.getItem("Data")
+    sheet.tables.load("items/name,items/showHeaders")
+    await bridge.context.sync()
+
+    const [table] = sheet.tables.items
+    expect(table).toMatchObject({ name: "Orders", showHeaders: true })
+    const range = table?.getRange()
+    range?.load("address")
+    await bridge.context.sync()
+    expect(range?.address).toBe("Data!$B$2:$D$3")
+  })
 })
 
 describe("the pane's read consumers over the bridge", () => {
@@ -252,5 +353,102 @@ describe("the pane's read consumers over the bridge", () => {
       ["", "10", "20", "30"],
       ["", "40", "50", "60"],
     ])
+  })
+
+  it("executes every aggregate over a handle argument", async () => {
+    const values = await runBridgeBatch(createMemoryBridge(workbook), async (context) => {
+      const range = context.workbook.worksheets.getItem("Data").getRange("A1:D3")
+      const results = [
+        context.workbook.functions.countA(range),
+        context.workbook.functions.sum(range),
+        context.workbook.functions.average(range),
+        context.workbook.functions.min(range),
+        context.workbook.functions.max(range),
+        context.workbook.functions.count(range),
+        context.workbook.functions.countBlank(range),
+      ]
+      for (const result of results) result.load("value")
+      await context.sync()
+      return results.map((result) => result.value)
+    })
+    expect(values).toEqual([6, 210, 35, 10, 60, 6, 6])
+  })
+
+  it("commits writes before verification loads and records opaque workbook operations", async () => {
+    const fixture: MemoryWorkbook = {
+      sheets: [
+        {
+          name: "Data",
+          cells: [
+            ["1", "2"],
+            ["3", "4"],
+          ],
+        },
+      ],
+    }
+    const memory = createMemoryBridge(fixture)
+    await runBridgeBatch(memory, async (context) => {
+      const sheet = context.workbook.worksheets.getItem("Data")
+      const source = sheet.getRange("A1:B2")
+      const destination = sheet.getRange("C1:C2")
+      source.formulas = [
+        ["9", "8"],
+        ["7", "6"],
+      ]
+      source.format.fill.color = "#123456"
+      source.format.font.bold = true
+      source.format.borders.getItem("EdgeBottom").style = "Continuous"
+      source.dataValidation.rule = { type: "WholeNumber" }
+      source.copyFrom(source)
+      source.autoFill(destination, "FillDefault")
+      sheet.autoFilter.apply(source, 0, { filterOn: "Values", values: ["9"] })
+      sheet.protection.protect()
+      sheet.freezePanes.freezeRows(1)
+      sheet.pageLayout.orientation = "Landscape"
+      sheet.pageLayout.zoom = { horizontalFitToPages: 1, verticalFitToPages: 2 }
+      sheet.pageLayout.setPrintTitleRows("1:1")
+      const chart = sheet.charts.add("ColumnClustered", source, "Columns")
+      chart.title.text = "Sales"
+      const conditional = source.conditionalFormats.add("CellValue")
+      conditional.cellValue.rule = { operator: "GreaterThan", formula1: "0" }
+      conditional.colorScale.criteria = { minimum: {} }
+      const pivot = sheet.pivotTables.add("Summary", source, destination)
+      const hierarchy = pivot.hierarchies.getItem("Amount")
+      pivot.rowHierarchies.add(hierarchy)
+      pivot.columnHierarchies.add(hierarchy)
+      const data = pivot.dataHierarchies.add(hierarchy)
+      data.summarizeBy = "Sum"
+      data.showAs = { calculation: "PercentOfGrandTotal", baseField: null, baseItem: null }
+      source.load("values")
+      destination.load("values")
+      await context.sync()
+      expect(source.values).toEqual([
+        ["9", "8"],
+        ["7", "6"],
+      ])
+      expect(destination.values).toEqual([["9"], ["9"]])
+    })
+    expect(fixture.sheets[0]?.cells).toEqual([
+      ["9", "8", "9"],
+      ["7", "6", "9"],
+    ])
+    expect(memory.recorded()).toEqual(
+      expect.arrayContaining([
+        "autoFilter.apply",
+        "protection.protect",
+        "freezePanes.freezeRows",
+        "pageLayout.setPrintTitleRows",
+        "Data:pageLayout.zoom.horizontalFitToPages",
+        "Data:pageLayout.zoom.verticalFitToPages",
+        "chart:title.text",
+        "conditional format:cellValue.rule",
+        "pivot table:hierarchies.getItem",
+        "pivot table:rowHierarchies.add",
+        "pivot table:columnHierarchies.add",
+        "pivot table:dataHierarchies.add",
+        "data hierarchy:summarizeBy",
+        "data hierarchy:showAs",
+      ]),
+    )
   })
 })

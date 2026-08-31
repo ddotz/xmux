@@ -60,7 +60,7 @@ export type OperateRange = {
     fill: { color: string }
     font: { bold: boolean; italic: boolean; color: string }
     horizontalAlignment: HorizontalAlignment
-    columnWidth: number
+    columnWidth: number | null
     rowHeight: number
     wrapText: boolean
     autofitColumns: () => void
