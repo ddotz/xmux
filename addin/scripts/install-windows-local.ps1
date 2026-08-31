@@ -77,11 +77,31 @@ $portOwner = Get-NetTCPConnection `
 if ($null -ne $portOwner -and $portOwner.OwningProcess -ne $ownedProcessId) {
     throw "TCP port 3927 is already used by process $($portOwner.OwningProcess)."
 }
+function Remove-InstalledDeveloperRegistration {
+    if (-not (Test-Path -LiteralPath $DeveloperRegistryPath -ErrorAction Stop)) { return }
+    $values = Get-ItemProperty -LiteralPath $DeveloperRegistryPath -ErrorAction Stop
+    $property = $values.PSObject.Properties[$ManifestId]
+    if ($null -eq $property) { return }
+    $installedManifestPath = Join-Path $InstallRoot "app\manifest.xml"
+    if ([string]$property.Value -ne $installedManifestPath) { return }
+    Remove-ItemProperty `
+        -LiteralPath $DeveloperRegistryPath `
+        -Name $ManifestId `
+        -Force `
+        -ErrorAction Stop
+    $remaining = Get-ItemProperty -LiteralPath $DeveloperRegistryPath -ErrorAction Stop
+    if ($null -ne $remaining.PSObject.Properties[$ManifestId]) {
+        throw "Office registration $ManifestId could not be removed before update."
+    }
+}
+
 $installedController = Join-Path $InstallRoot "manage.ps1"
+Remove-InstalledDeveloperRegistration
 if (Test-Path -LiteralPath $installedController -PathType Leaf) {
     & $installedController stop -InstallRoot $InstallRoot
 }
-
+# The old service may have repaired the value between the first deletion and its shutdown.
+Remove-InstalledDeveloperRegistration
 if (Test-Path -LiteralPath $InstallRoot) {
     Remove-Item -LiteralPath $InstallRoot -Recurse -Force
 }
@@ -241,19 +261,15 @@ Export-PfxCertificate `
 )
 
 $manifestPath = Join-Path $appRoot "manifest.xml"
+# The Node service owns the GUID value. Creating it here, before either loopback listener is
+# ready, lets a running or auto-restored Excel instance hit a dead endpoint and discard it.
+# Only remove the legacy path-named value; manage.ps1/server add the GUID after health readiness.
 New-Item -Path $DeveloperRegistryPath -Force | Out-Null
 Remove-ItemProperty `
     -LiteralPath $DeveloperRegistryPath `
     -Name $manifestPath `
     -Force `
     -ErrorAction SilentlyContinue
-New-ItemProperty `
-    -Path $DeveloperRegistryPath `
-    -Name $ManifestId `
-    -Value $manifestPath `
-    -PropertyType String `
-    -Force |
-    Out-Null
 Remove-Item `
     -LiteralPath $LegacyCatalogRegistryPath `
     -Recurse `
@@ -283,7 +299,7 @@ if ($scriptHostDisabled) {
     Write-Warning ("Windows Script Host is disabled by policy; " +
         "the service will start through PowerShell at logon instead.")
     $autoStartCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass" +
-        " -WindowStyle Hidden -File `"$managePath`" start"
+        " -WindowStyle Hidden -File `"$managePath`" logon"
 }
 New-Item -Path $AutoStartRegistryPath -Force | Out-Null
 New-ItemProperty `

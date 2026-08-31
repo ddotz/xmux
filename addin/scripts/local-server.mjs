@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFile } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import {
   appendFileSync,
   existsSync,
@@ -18,6 +18,7 @@ const valueFlags = new Set([
   "--cert",
   "--host",
   "--key",
+  "--instance-token",
   "--log-file",
   "--passphrase-file",
   "--pfx",
@@ -27,6 +28,7 @@ const valueFlags = new Set([
   "--root",
   "--wef-guid",
   "--wef-manifest",
+  "--token-file",
 ])
 
 const options = new Map()
@@ -71,6 +73,14 @@ if ((wefGuid === undefined) !== (wefManifest === undefined)) {
 const guidShape = /^[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}$/
 if (wefGuid !== undefined && !guidShape.test(wefGuid)) {
   throw new Error(`Invalid Office developer registration GUID: ${wefGuid}`)
+}
+const instanceToken = options.get("--instance-token")
+const tokenFile = options.get("--token-file")
+if ((instanceToken === undefined) !== (tokenFile === undefined)) {
+  throw new Error("--instance-token and --token-file must be provided together")
+}
+if (instanceToken !== undefined && !/^[A-Za-z0-9.-]{1,80}$/.test(instanceToken)) {
+  throw new Error("Invalid service instance token")
 }
 
 const pfxPath = options.get("--pfx")
@@ -122,6 +132,7 @@ const contentTypes = new Map([
   [".webp", "image/webp"],
 ])
 
+let serviceReady = false
 const send = (response, status, contentType, body, method) => {
   response.writeHead(status, {
     "Cache-Control": "no-store",
@@ -148,9 +159,11 @@ const handleRequest = (request, response) => {
   if (pathname === "/health") {
     send(
       response,
-      200,
+      serviceReady ? 200 : 503,
       "application/json; charset=utf-8",
-      '{"service":"ddot-excel","status":"running"}',
+      serviceReady
+        ? '{"service":"ddot-excel","status":"running"}'
+        : '{"service":"ddot-excel","status":"starting"}',
       method,
     )
     return
@@ -198,88 +211,165 @@ const server = createServer(tls, handleRequest)
 // IPv4, and Excel reaches whichever family answers.
 const secondaryServer = hostOption === undefined ? createServer(tls, handleRequest) : undefined
 
-// Excel deletes the current-user developer registration when an add-in fails to load at
-// startup — exactly what happens when Excel opens before this service is listening. While
-// the service is up it keeps re-asserting the registration, so recovering from a lost
-// logon race is "restart Excel", never "reinstall".
-const developerRegistryKey = "HKCU\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef\\Developer"
+// The developer value is a lease owned by this process: it exists only after every HTTPS
+// listener is ready, and is removed before an orderly stop. A stale value lets Excel race a
+// dead endpoint at logon; Office then reports a load error and deletes the value itself.
+const developerRegistryPath = "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef\\Developer"
+const powershell = join(
+  process.env.SystemRoot ?? "C:\\Windows",
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+)
+const powershellLiteral = (value) => value.replaceAll("'", "''")
+const runOfficeRegistration = (action) => {
+  if (wefGuid === undefined || wefManifest === undefined || process.platform !== "win32") return
+  const path = powershellLiteral(developerRegistryPath)
+  const guid = powershellLiteral(wefGuid)
+  const manifest = powershellLiteral(wefManifest)
+  const common = `$ErrorActionPreference = 'Stop'; $path = '${path}'; $name = '${guid}'; $manifest = '${manifest}'; `
+  const read =
+    "$value = $null; if (Test-Path -LiteralPath $path -ErrorAction Stop) { " +
+    "$values = Get-ItemProperty -LiteralPath $path -ErrorAction Stop; " +
+    "$property = $values.PSObject.Properties[$name]; " +
+    "if ($null -ne $property) { $value = [string]$property.Value } }; "
+  const acquire =
+    "if ($null -ne $value -and $value -ne $manifest) { throw 'Registration points elsewhere.' }; " +
+    "New-Item -Path $path -Force -ErrorAction Stop | Out-Null; " +
+    "New-ItemProperty -Path $path -Name $name -Value $manifest -PropertyType String " +
+    "-Force -ErrorAction Stop | Out-Null; " +
+    "$written = Get-ItemPropertyValue -LiteralPath $path -Name $name -ErrorAction Stop; " +
+    "if ([string]$written -ne $manifest) { throw 'Registration write verification failed.' }"
+  const release =
+    "if ($value -eq $manifest) { " +
+    "Remove-ItemProperty -LiteralPath $path -Name $name -Force -ErrorAction Stop; " +
+    "$remaining = Get-ItemProperty -LiteralPath $path -ErrorAction Stop; " +
+    "if ($null -ne $remaining.PSObject.Properties[$name]) { " +
+    "throw 'Registration delete verification failed.' } }"
+  const command = common + read + (action === "acquire" ? acquire : release)
+  const encoded = Buffer.from(command, "utf16le").toString("base64")
+  execFileSync(
+    powershell,
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+    { timeout: 10_000, windowsHide: true },
+  )
+}
 const assertOfficeRegistration = () => {
   if (wefGuid === undefined || wefManifest === undefined || process.platform !== "win32") return
   if (!existsSync(wefManifest)) {
-    console.error(`Office registration skipped: manifest missing at ${wefManifest}`)
-    return
+    throw new Error(`Office registration manifest is missing: ${wefManifest}`)
   }
-  const regTool = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "reg.exe")
-  // Reading before writing turns the re-assert into evidence: a registration that was
-  // present needed no repair, and one that was missing means Excel deleted it since the
-  // last pass — which is the failure this whole logon chain exists to survive.
-  execFile(
-    regTool,
-    ["query", developerRegistryKey, "/v", wefGuid],
-    { windowsHide: true },
-    (queryError, stdout) => {
-      const present = queryError === null && stdout.includes(wefManifest)
-      execFile(
-        regTool,
-        ["add", developerRegistryKey, "/v", wefGuid, "/t", "REG_SZ", "/d", wefManifest, "/f"],
-        { windowsHide: true },
-        (error) => {
-          if (error !== null) {
-            console.error(`Office registration re-assert failed: ${error.message}`)
-            log(`registration repair FAILED: ${error.message}`)
-            return
-          }
-          if (!present) log("registration was MISSING - Excel dropped it; restored")
-        },
-      )
-    },
-  )
+  runOfficeRegistration("acquire")
+  log("registration verified after HTTPS became ready")
+}
+const removeOfficeRegistration = () => {
+  runOfficeRegistration("release")
+  log("registration released before service stop")
+}
+const repairOfficeRegistration = () => {
+  try {
+    assertOfficeRegistration()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`Office registration repair failed: ${message}`)
+    log(`registration repair FAILED: ${message}`)
+  }
 }
 
 const readyFile = options.get("--ready-file")
 // The service is started both by the controller and, at logon, by a launcher that cannot
 // wait around to learn the process id. Writing it here means one owner of that fact.
 const pidFile = options.get("--pid-file")
+const removeInstanceToken = () => {
+  if (instanceToken === undefined || tokenFile === undefined || !existsSync(tokenFile)) return
+  if (readFileSync(tokenFile, "utf8").trim() === instanceToken) rmSync(tokenFile, { force: true })
+}
+let registrationTimer
 const close = () => {
+  serviceReady = false
+  try {
+    removeOfficeRegistration()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    console.error(`Office registration cleanup failed: ${message}`)
+    log(`registration cleanup FAILED: ${message}`)
+    return
+  }
+  if (registrationTimer !== undefined) clearInterval(registrationTimer)
   if (secondaryServer !== undefined && secondaryServer.listening) secondaryServer.close()
   server.close(() => {
     if (readyFile !== undefined) rmSync(readyFile, { force: true })
     if (pidFile !== undefined) rmSync(pidFile, { force: true })
+    removeInstanceToken()
     process.exit(0)
   })
 }
 
 server.once("error", (error) => {
   console.error(error)
+  log(`primary listener FAILED: ${error.message}`)
   process.exitCode = 1
 })
 server.listen(port, host, () => {
   const address = server.address()
   if (address === null || typeof address === "string") throw new Error("TCP address is unavailable")
-  if (pidFile !== undefined) writeFileSync(pidFile, String(process.pid), { mode: 0o600 })
-  if (readyFile !== undefined) writeFileSync(readyFile, String(address.port), { mode: 0o600 })
-  assertOfficeRegistration()
-  setInterval(assertOfficeRegistration, 300_000).unref()
-  // The readiness line prints only after the second family settles, so a caller that
-  // saw LISTENING can rely on every listener this process will ever have.
-  if (secondaryServer === undefined) {
+  let completed = false
+  const completeStartup = () => {
+    if (completed) return
+    completed = true
+    try {
+      if (instanceToken !== undefined && tokenFile !== undefined) {
+        writeFileSync(tokenFile, instanceToken, { mode: 0o600 })
+      }
+      assertOfficeRegistration()
+      if (pidFile !== undefined) writeFileSync(pidFile, String(process.pid), { mode: 0o600 })
+      if (readyFile !== undefined) writeFileSync(readyFile, String(address.port), { mode: 0o600 })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`Local service startup failed: ${message}`)
+      log(`startup FAILED: ${message}`)
+      try {
+        removeOfficeRegistration()
+      } catch (cleanupError) {
+        const cleanupMessage = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+        console.error(`Office registration rollback failed: ${cleanupMessage}`)
+        log(`registration rollback FAILED: ${cleanupMessage}`)
+        return
+      }
+      if (readyFile !== undefined) rmSync(readyFile, { force: true })
+      if (pidFile !== undefined) rmSync(pidFile, { force: true })
+      removeInstanceToken()
+      if (secondaryServer !== undefined && secondaryServer.listening) secondaryServer.close()
+      server.close()
+      process.exitCode = 1
+      return
+    }
+    registrationTimer = setInterval(repairOfficeRegistration, 30_000)
+    registrationTimer.unref()
+    serviceReady = true
     console.log(`LISTENING ${address.port}`)
+  }
+  if (secondaryServer === undefined) {
+    completeStartup()
     return
   }
-  let announced = false
-  const announce = () => {
-    if (announced) return
-    announced = true
-    console.log(`LISTENING ${address.port}`)
-  }
   secondaryServer.on("error", (error) => {
-    console.error(`IPv6 loopback listener unavailable: ${error.message}`)
-    log(`listening on 127.0.0.1:${address.port} only (::1 unavailable: ${error.message})`)
-    announce()
+    const unavailable = new Set(["EAFNOSUPPORT", "EADDRNOTAVAIL", "ENODEV"])
+    if (unavailable.has(error.code)) {
+      console.error(`IPv6 loopback unavailable: ${error.message}`)
+      log(`listening on 127.0.0.1:${address.port} only (::1 unavailable: ${error.message})`)
+      completeStartup()
+      return
+    }
+    console.error(`IPv6 loopback startup failed: ${error.message}`)
+    log(`startup FAILED: IPv6 loopback ${error.code ?? "unknown"}: ${error.message}`)
+    server.close()
+    process.exitCode = 1
   })
   secondaryServer.listen(address.port, "::1", () => {
     log(`listening on 127.0.0.1 and ::1 port ${address.port}`)
-    announce()
+    completeStartup()
   })
 })
 

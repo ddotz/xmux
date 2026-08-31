@@ -280,17 +280,22 @@ describe("Windows local deployment lifecycle", () => {
     }
   })
 
-  it("registers the manifest in Office's current-user developer registry", () => {
+  it("leases the Office registration only while HTTPS is ready", () => {
     const developerKey = "HKCU:\\SOFTWARE\\Microsoft\\Office\\16.0\\Wef\\Developer"
-    const manifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
-    for (const script of [installScript, uninstallScript]) {
-      expect(script).toContain(developerKey)
-      expect(script).toContain(manifestId)
-      expect(script).toContain("$manifestPath")
-      expect(script).toContain("-Name $manifestPath")
-    }
-    expect(installScript).toContain("New-ItemProperty")
+    expect(manageScript).toContain(developerKey)
+    expect(manageScript).toContain(manifestId)
+    expect(manageScript).toContain("Set-DeveloperRegistration")
+    expect(manageScript).toContain("Remove-OwnedDeveloperRegistration")
+    expect(installScript).not.toContain("-Name $ManifestId `\n    -Value $manifestPath")
+    expect(uninstallScript).toContain(developerKey)
+    expect(uninstallScript).toContain(manifestId)
     expect(uninstallScript).toContain("$registeredManifestPath -eq $manifestPath")
+    const controller = installScript.indexOf("$installedController =")
+    const firstCleanup = installScript.indexOf("Remove-InstalledDeveloperRegistration", controller)
+    const stop = installScript.indexOf("& $installedController stop", firstCleanup)
+    const secondCleanup = installScript.indexOf("Remove-InstalledDeveloperRegistration", stop)
+    expect(firstCleanup).toBeLessThan(stop)
+    expect(secondCleanup).toBeGreaterThan(stop)
   })
 
   it("starts the local service through current-user startup registration", () => {
@@ -314,6 +319,27 @@ describe("Windows local deployment lifecycle", () => {
     expect(installScript).toContain("start-hidden.vbs")
   })
 
+  it("clears a stale registration before the logon launcher starts Node", () => {
+    const staleRegistrationRemoval = launcherScript.indexOf("shell.RegDelete registration")
+    expect(staleRegistrationRemoval).toBeGreaterThanOrEqual(0)
+    expect(staleRegistrationRemoval).toBeLessThan(launcherScript.indexOf("processClass.Create"))
+    expect(launcherScript).toContain("ServiceHealthy()")
+    expect(launcherScript).toContain("processClass.Create(command, root, startup, processId)")
+    expect(launcherScript).toContain("RemoveOwnedRegistration")
+    expect(launcherScript).toContain("DeleteMarker readyFile")
+    expect(launcherScript).toContain("--instance-token")
+    expect(launcherScript).toContain("If OwnsToken() Then")
+    expect(launcherScript).toContain('"""service"":""ddot-excel"""')
+    expect(launcherScript).toContain("AcquireLaunchLock")
+    expect(launcherScript).toContain("ReleaseLaunchLock")
+    expect(launcherScript).toContain("ParentProcessId = ")
+    expect(manageScript).toContain("Enter-PowerShellLaunchLock")
+    expect(launcherScript).toContain("Name = 'powershell.exe'")
+    expect(launcherScript).toContain("nodeCreatedAt")
+    expect(manageScript).toContain("Request-LaunchCancellation")
+    expect(manageScript).toContain("Get-CimInstance")
+  })
+
   it("still starts at logon when policy disables Windows Script Host", () => {
     // Given: managed PCs where wscript.exe is blocked outright, so the wscript Run entry
     // silently never executes and Excel deregisters the add-in at every logon.
@@ -321,7 +347,9 @@ describe("Windows local deployment lifecycle", () => {
     // Then: it detects the policy in both hives and swaps in a PowerShell launcher.
     expect(installScript).toContain("Windows Script Host\\Settings")
     expect(installScript).toContain(".Enabled -eq 0")
-    expect(installScript).toContain('-WindowStyle Hidden -File `"$managePath`" start')
+    expect(installScript).toContain('-WindowStyle Hidden -File `"$managePath`" logon')
+    expect(manageScript).toContain('"logon" {')
+    expect(manageScript).toContain('"supervise" {')
   })
 
   it("clears a persisted startup-disable verdict on reinstall", () => {
@@ -335,19 +363,40 @@ describe("Windows local deployment lifecycle", () => {
     }
   })
 
-  it("re-asserts the Office registration whenever the service is up", () => {
-    // Given: Excel deletes the developer registration when a startup load fails, which
-    // otherwise turns one lost logon race into a permanent-looking uninstall.
-    // When: both start paths and the server are inspected.
-    // Then: every start hands the registration identity to the server, which rewrites it.
-    expect(launcherScript).toContain(`--wef-guid ""${manifestId}""`)
-    expect(launcherScript).toContain("--wef-manifest")
-    expect(manageScript).toContain('"--wef-guid `"$ManifestId`""')
-    expect(manageScript).toContain('"--wef-manifest `"$ManifestPath`""')
-    expect(serverScript).toContain(
-      "HKCU\\\\SOFTWARE\\\\Microsoft\\\\Office\\\\16.0\\\\Wef\\\\Developer",
+  it("registers only after complete HTTPS readiness and repairs later deletion", () => {
+    const startup = serverScript.slice(
+      serverScript.indexOf("server.listen(port, host"),
+      serverScript.indexOf('process.once("SIGINT"'),
     )
-    expect(serverScript).toContain('"reg.exe"')
+    const registration = startup.indexOf("assertOfficeRegistration()")
+    const pidFile = startup.indexOf("writeFileSync(pidFile")
+    const readyFile = startup.indexOf("writeFileSync(readyFile")
+    expect(registration).toBeGreaterThanOrEqual(0)
+    expect(pidFile).toBeGreaterThan(registration)
+    expect(readyFile).toBeGreaterThan(pidFile)
+    expect(startup).toContain('secondaryServer.listen(address.port, "::1"')
+    expect(startup).toContain("completeStartup()")
+    expect(serverScript).toContain("setInterval(repairOfficeRegistration, 30_000)")
+    expect(serverScript).toContain("removeOfficeRegistration()")
+    expect(serverScript).toContain("registration verified after HTTPS became ready")
+    expect(serverScript).toContain("serviceReady ? 200 : 503")
+    expect(serverScript).toContain("Registration points elsewhere")
+    expect(serverScript).toContain('Buffer.from(command, "utf16le")')
+    expect(serverScript).not.toContain('encoding: "utf8"')
+    expect(manageScript).toContain("points elsewhere")
+    expect(launcherScript).toContain(`--wef-guid ""${manifestId}""`)
+    expect(manageScript).toContain('"--wef-guid `"$ManifestId`""')
+  })
+
+  it("removes the owned registration before stopping the endpoint", () => {
+    const stop = manageScript.slice(
+      manageScript.indexOf("function Stop-LocalService"),
+      manageScript.indexOf("switch ($Action)"),
+    )
+    const processTreeStop = stop.indexOf("Stop-ServiceProcessTree")
+    expect(stop.indexOf("Remove-OwnedDeveloperRegistration")).toBeLessThan(processTreeStop)
+    expect(stop.lastIndexOf("Remove-OwnedDeveloperRegistration")).toBeGreaterThan(processTreeStop)
+    expect(manageScript).toContain('ArgumentList @("/PID", [string]$Process.Id, "/T", "/F")')
   })
 
   it("answers Excel's startup fetch on the IPv6 loopback as well", () => {
@@ -356,7 +405,8 @@ describe("Windows local deployment lifecycle", () => {
     // When: the shipped server's binding contract is inspected.
     // Then: the default binds both loopbacks and tolerates a machine without IPv6.
     expect(serverScript).toContain('secondaryServer.listen(address.port, "::1"')
-    expect(serverScript).toContain("IPv6 loopback listener unavailable")
+    expect(serverScript).toContain("IPv6 loopback unavailable")
+    expect(serverScript).toContain('new Set(["EAFNOSUPPORT", "EADDRNOTAVAIL", "ENODEV"])')
   })
 
   it("reports every link of the logon chain in status", () => {
@@ -580,12 +630,14 @@ describe("Windows local deployment lifecycle", () => {
     )
   })
 
-  it("stops the process when its HTTPS health check fails", () => {
+  it("stops the process tree and lease when HTTPS health fails", () => {
     const failure = manageScript.indexOf("if (-not (Test-ServiceHealth))")
-    const cleanup = manageScript.indexOf("Stop-LocalService", failure)
+    const processCleanup = manageScript.indexOf("Stop-ServiceProcessTree", failure)
+    const leaseCleanup = manageScript.indexOf("Remove-OwnedDeveloperRegistration", failure)
     const error = manageScript.indexOf("throw", failure)
     expect(failure).toBeGreaterThanOrEqual(0)
-    expect(cleanup).toBeLessThan(error)
+    expect(processCleanup).toBeLessThan(error)
+    expect(leaseCleanup).toBeLessThan(error)
   })
 })
 
@@ -789,6 +841,9 @@ describe("Office LTSC first-acquisition mitigation", () => {
     expect(restore).toBeGreaterThan(restoreFinally)
     expect(initializeScript).toContain("-Name $ManifestId")
     expect(initializeScript).toContain("-Value $RegisteredPath")
+    expect(initializeScript.match(/& \$ManagePath start -InstallRoot \$InstallRoot/g)).toHaveLength(
+      2,
+    )
   })
 
   it("runs the proven error-view warmup and verifies a fresh SourceLocation request", () => {

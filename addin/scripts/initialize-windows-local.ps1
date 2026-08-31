@@ -17,6 +17,7 @@ $ProvidersRegistryPath = "HKCU:\SOFTWARE\Microsoft\Office\16.0\Wef\Providers"
 $OwnershipRegistryPath = "HKCU:\Software\DdotExcel"
 $ManifestPath = Join-Path $InstallRoot "app\manifest.xml"
 $ServiceLogPath = Join-Path $InstallRoot "service.log"
+$ManagePath = Join-Path $InstallRoot "manage.ps1"
 $OfficeProcesses = @("EXCEL", "WINWORD", "POWERPNT", "OUTLOOK", "MSACCESS", "ONENOTE", "WINPROJ")
 $InitializationValueNames = @(
     "WefInitialized",
@@ -31,6 +32,10 @@ if ($env:OS -ne "Windows_NT") {
 if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
     throw "설치된 매니페스트가 없습니다: $ManifestPath"
 }
+if (-not (Test-Path -LiteralPath $ManagePath -PathType Leaf)) {
+    throw "설치된 서비스 관리자가 없습니다: $ManagePath"
+}
+& $ManagePath start -InstallRoot $InstallRoot
 
 function Wait-OfficeClosed {
     while ($true) {
@@ -178,6 +183,7 @@ try {
     try {
         Wait-OfficeClosed
     } finally {
+        & $ManagePath start -InstallRoot $InstallRoot
         Restore-DeveloperRegistration $registeredPath
     }
 }

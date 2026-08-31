@@ -35,12 +35,13 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
   on any leftover `{{…}}`.
 - `scripts/local-server.mjs` is the shipped counterpart of the dev server: static HTTPS for
   `dist/` plus `/health`, `/xmux/state`, optional `--ready-file`. With `--wef-guid` +
-  `--wef-manifest` it re-asserts the Office developer registration (win32 only) at listen
-  and every 5 minutes, because Excel deletes that registration whenever a startup load fails.
-  Without `--host` it binds **both** loopback families on the same port: Windows resolves the
-  manifest's `localhost` to `::1` first, and an IPv4-only listener fails Excel's startup fetch
-  (so the ribbon button disappears every restart) while interactive re-adds still work. The
-  `::1` listener is best-effort; `LISTENING <port>` prints only once both have settled.
+  `--wef-manifest` it owns the Office developer registration as a service lease: the value is
+  created only after both loopback listeners are settled, checked every 30 seconds, and removed
+  before an orderly stop. The launchers remove a stale owned value before starting Node, so Excel
+  never sees a registered manifest while the endpoint is between processes. Without `--host` it
+  binds both loopback families on the same port: Windows resolves the manifest's `localhost` to
+  `::1` first, and an IPv4-only listener fails Excel's startup fetch. The `::1` listener is
+  best-effort; readiness is emitted only after it succeeds or definitively fails.
 
 ## SCRIPTS
 

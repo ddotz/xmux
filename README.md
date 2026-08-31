@@ -178,9 +178,10 @@ extract it, open a normal Windows PowerShell window, and run:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-The installer creates a current-user trusted `localhost` certificate, registers the
-manifest in Office's current-user developer registry, adds a current-user login startup
-entry, and starts the HTTPS service on loopback only. It then opens a one-time Office
+The installer creates a current-user trusted `localhost` certificate and login startup entry,
+then starts the HTTPS service on loopback. The service creates the Office developer registration
+only after both loopback listeners are ready, repairs later Office deletion, and removes its value
+before stopping so Excel never loads a manifest against a dead endpoint. It then opens a one-time Office
 initializer. On the measured LTSC 2024 cold profile, the first Developer Add stopped before
 `SourceLocation`; opening and closing Office's error view and adding the same manifest again
 made the pane load. The initializer guides that sequence, restores the Developer registration
