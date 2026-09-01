@@ -76,4 +76,40 @@ describe("reference summaries", () => {
     expect(result.resolved[0]).toMatchObject({ kind: "range", sheet: "Sales" })
     expect(syncCount).toBe(2)
   })
+
+  it("omits an Excel error average for a text-only range", async () => {
+    const context = {
+      workbook: {
+        names: {
+          getItemOrNullObject: (_name: string) => ({
+            getRangeOrNullObject: () => addressRange("Sales!$A$1:$A$2"),
+          }),
+        },
+        tables: {
+          getItemOrNullObject: (_table: string) => ({ getRange: () => addressRange(null) }),
+        },
+        worksheets: {
+          getItem: (_sheet: string) => ({
+            getUsedRangeOrNullObject: (_valuesOnly: boolean) => addressRange(null),
+            getRange: (_address: string) => ({
+              ...addressRange("Sales!$A$1:$A$2"),
+              text: [["alpha"], ["beta"]],
+            }),
+          }),
+        },
+        functions: {
+          countA: (_range: unknown) => functionResult(2),
+          sum: (_range: unknown) => functionResult(0),
+          average: (_range: unknown) => functionResult("#DIV/0!"),
+        },
+      },
+      sync: async () => {},
+    }
+
+    const result = await resolveAndSummariseTokens(context, [namedToken("Labels", 0)], "Main")
+
+    expect(result.summaries).toEqual([
+      { label: "Sales!A1:A2", cells: 2, sum: 0, average: null, value: null },
+    ])
+  })
 })

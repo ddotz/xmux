@@ -17,6 +17,7 @@ const project = xll("XmuxAddIn/XmuxAddIn.csproj")
 const editorObserver = xll("XmuxAddIn/NativeEditorObserver.cs")
 const editorHook = xll("XmuxAddIn/NativeEditorKeyboardHook.cs")
 const formulaScanner = xll("XmuxAddIn/FormulaReferenceScanner.cs")
+const bridgeTest = xll("test-bridge.ps1")
 const hostBridge = readFileSync(new URL("./excel/host-bridge.ts", import.meta.url), "utf8")
 const taskpaneMain = readFileSync(new URL("./taskpane/main.ts", import.meta.url), "utf8")
 
@@ -87,6 +88,14 @@ describe("XLL Windows deployment", () => {
     for (const source of [build, install, uninstall]) {
       expect([...source].every((character) => character.charCodeAt(0) <= 0x7f)).toBe(true)
     }
+  })
+
+  it("ships a compiled bridge regression for Excel HRESULT values", () => {
+    expect(bridgeTest).toContain("[Reflection.Assembly]::LoadFrom($resolvedAssembly)")
+    expect(bridgeTest).toContain('GetMethod("TryComExcelError", $flags)')
+    expect(bridgeTest).toContain("[int] -2146826281")
+    expect(bridgeTest).toContain("$errorArguments[1] -ne 2007")
+    expect(bridgeTest).toContain("[int] 42")
   })
 })
 
@@ -166,6 +175,50 @@ describe("XLL bridge parity", () => {
       ),
     ).not.toContain("cell.Text")
     expect(bridge).toContain("DisplayTextAndRelease(worksheetFunction, cell)")
+  })
+
+  it("normalizes COM HRESULT aggregate errors before JSON serialization", () => {
+    const aggregate = bridge.slice(
+      bridge.indexOf("private static object FunctionValue"),
+      bridge.indexOf("private static string ExcelError"),
+    )
+    expect(aggregate).toContain("TryComExcelError(value, out errorCode)")
+    expect(aggregate).toContain('app.Evaluate("ISERROR(" + expression + ")")')
+    expect(aggregate).toContain("(raw & 0xFFFF0000u) != 0x800A0000u")
+    expect(aggregate).toContain("code = (int)(raw & 0x0000FFFFu)")
+  })
+
+  it("uses bulk values and uniform formats before cell COM fallbacks", () => {
+    const display = bridge.slice(
+      bridge.indexOf("private static object DisplayTextMatrix"),
+      bridge.indexOf("private static void ValidateExternalRequest"),
+    )
+    const formats = bridge.slice(
+      bridge.indexOf("private static object NumberFormatMatrix"),
+      bridge.indexOf("private static object FormulaMatrix"),
+    )
+    const rangeLoad = bridge.slice(
+      bridge.indexOf("private Dictionary<string, object> LoadRange"),
+      bridge.indexOf("private Dictionary<string, object> LoadWorksheet"),
+    )
+    expect(display.indexOf("range.NumberFormatLocal as string")).toBeLessThan(
+      display.indexOf("range.Cells[row, column]"),
+    )
+    expect(display).toContain("NormalizeMatrix(")
+    expect(formats.indexOf("range.NumberFormat as string")).toBeLessThan(
+      formats.indexOf("range.Cells[row, column]"),
+    )
+    expect(rangeLoad.match(/range\.Value2/g)).toHaveLength(1)
+    expect(rangeLoad).toContain("TextMatrix(range, rawValues)")
+    expect(rangeLoad).toContain("ValueMatrix(range, rawValues)")
+    expect(rangeLoad).toContain("ValueTypes(range, rawValues)")
+    const matrixConsumers = bridge.slice(
+      bridge.indexOf("private static object TextMatrix"),
+      bridge.indexOf("private static object NormalizeMatrix"),
+    )
+    expect(matrixConsumers).not.toContain("range.Value2")
+    expect(display).toContain("height,")
+    expect(display).toContain("width,")
   })
 
   it("preserves Office formatting and conditional-format semantics", () => {

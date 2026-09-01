@@ -6,12 +6,17 @@ The XLL and deployment package build successfully on macOS, but they have **not 
 
 ## Build on Windows
 
-Prerequisites: Windows Excel, the WebView2 Evergreen Runtime, Visual Studio Build Tools (or Visual Studio) with MSBuild and the .NET Framework 4.8 targeting pack, and a current Node/pnpm installation. Build the pane first, then run this one command from the repository root:
+Prerequisites: Windows Excel, the WebView2 Evergreen Runtime, Visual Studio Build Tools (or Visual Studio) with MSBuild and the .NET Framework 4.8 targeting pack, and a current Node/pnpm installation. Run these commands from the repository root:
 
 ```powershell
 pnpm --dir addin build
 powershell -ExecutionPolicy Bypass -File .\xll\build.ps1
+powershell -ExecutionPolicy Bypass -File .\xll\test-bridge.ps1
 ```
+
+The final command loads the compiled bridge and verifies that Excel's text-only `AVERAGE`
+HRESULT (`-2146826281`) is normalized to `#DIV/0!` instead of crossing the JSON boundary as
+a number.
 
 The script restores the pinned NuGet packages (`ExcelDna.AddIn` 1.9.0 and `Microsoft.Web.WebView2` 1.0.3240.44), packs 32- and 64-bit XLLs into `xll\out\`, and creates a versioned deployment ZIP under `xll\release\`. The ZIP version comes from `addin/package.json`.
 

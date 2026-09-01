@@ -135,7 +135,11 @@ namespace XmuxAddIn
                 cells = worksheet.Cells;
                 firstCell = cells[request.Area.Top, request.Area.Left];
                 range = firstCell.Resize[request.Area.Height, request.Area.Width];
-                values = DisplayTextMatrix(range, request.Area.Height, request.Area.Width);
+                values = DisplayTextMatrix(
+                    range,
+                    request.Area.Height,
+                    request.Area.Width,
+                    range.Value2);
             }
             catch (Exception exception)
             {
@@ -370,15 +374,26 @@ namespace XmuxAddIn
         {
             dynamic range = target.Range;
             var loaded = new Dictionary<string, object>();
+            object rawValues = null;
+            var needsRawValues = false;
+            foreach (var property in properties)
+            {
+                if (property == "text" || property == "values" || property == "valueTypes")
+                {
+                    needsRawValues = true;
+                    break;
+                }
+            }
+            if (range != null && needsRawValues) rawValues = range.Value2;
             foreach (var property in properties)
             {
                 if (range == null) { loaded[property] = NullRangeValue(property); continue; }
                 if (property == "address") loaded[property] = QualifiedAddress(range);
                 else if (property == "isNullObject") loaded[property] = false;
-                else if (property == "text") loaded[property] = TextMatrix(range);
+                else if (property == "text") loaded[property] = TextMatrix(range, rawValues);
                 else if (property == "formulas") loaded[property] = FormulaMatrix(range);
-                else if (property == "values") loaded[property] = ValueMatrix(range);
-                else if (property == "valueTypes") loaded[property] = ValueTypes(range);
+                else if (property == "values") loaded[property] = ValueMatrix(range, rawValues);
+                else if (property == "valueTypes") loaded[property] = ValueTypes(range, rawValues);
                 else if (property == "numberFormat") loaded[property] = NumberFormatMatrix(range);
                 else if (property == "cellCount") loaded[property] = Convert.ToDouble(range.CountLarge);
                 else if (property == "format/columnWidth") loaded[property] = ColumnPointWidth(range);
@@ -464,9 +479,26 @@ namespace XmuxAddIn
                 operation != "COUNTBLANK") throw NoDispatch("func " + name);
             dynamic app = ExcelDnaUtil.Application;
             var source = Convert.ToString(range.Address[true, true, 1, true], CultureInfo.InvariantCulture);
-            object value = app.Evaluate(operation + "(" + source + ")");
+            var expression = operation + "(" + source + ")";
+            object value = app.Evaluate(expression);
             var error = value as ErrorWrapper;
-            return error == null ? JsonValue(value) : ExcelError(error.ErrorCode);
+            if (error != null) return ExcelError(error.ErrorCode);
+
+            int errorCode;
+            if (TryComExcelError(value, out errorCode) &&
+                Convert.ToBoolean(app.Evaluate("ISERROR(" + expression + ")"), CultureInfo.InvariantCulture))
+                return ExcelError(errorCode);
+            return JsonValue(value);
+        }
+
+        private static bool TryComExcelError(object value, out int code)
+        {
+            code = 0;
+            if (!(value is int)) return false;
+            var raw = unchecked((uint)(int)value);
+            if ((raw & 0xFFFF0000u) != 0x800A0000u) return false;
+            code = (int)(raw & 0x0000FFFFu);
+            return true;
         }
 
         private static string ExcelError(int code)
@@ -636,7 +668,7 @@ namespace XmuxAddIn
         }
 
         private static object NullRangeValue(string property) { if (property == "isNullObject") return true; if (property == "address" || property == "worksheet/name") return ""; if (property == "rowCount" || property == "columnCount" || property == "cellCount" || property == "rowIndex" || property == "columnIndex") return 0; if (property == "rowHidden" || property == "columnHidden") return false; return new object[0]; }
-        private static object DisplayTextMatrix(dynamic range, int height, int width)
+        private static object DisplayTextMatrix(dynamic range, int height, int width, object values)
         {
             dynamic application = null;
             dynamic worksheetFunction = null;
@@ -646,18 +678,33 @@ namespace XmuxAddIn
             {
                 application = range.Application;
                 worksheetFunction = application.WorksheetFunction;
-                var rows = new List<object>();
-                for (var row = 1; row <= height; row++)
+                var uniformFormat = range.NumberFormatLocal as string;
+                if (uniformFormat != null)
                 {
-                    var cells = new List<object>();
-                    for (var column = 1; column <= width; column++)
-                    {
-                        dynamic cell = range.Cells[row, column];
-                        cells.Add(DisplayTextAndRelease(worksheetFunction, cell));
-                    }
-                    rows.Add(cells);
+                    result = NormalizeMatrix(
+                        values,
+                        height,
+                        width,
+                        delegate(object value)
+                        {
+                            return DisplayTextValue(worksheetFunction, value, uniformFormat);
+                        });
                 }
-                result = rows;
+                else
+                {
+                    var rows = new List<object>();
+                    for (var row = 1; row <= height; row++)
+                    {
+                        var cells = new List<object>();
+                        for (var column = 1; column <= width; column++)
+                        {
+                            dynamic cell = range.Cells[row, column];
+                            cells.Add(DisplayTextAndRelease(worksheetFunction, cell));
+                        }
+                        rows.Add(cells);
+                    }
+                    result = rows;
+                }
             }
             catch (Exception exception) { primaryFailure = exception; }
             Exception releaseFailure = null;
@@ -690,13 +737,19 @@ namespace XmuxAddIn
 
         private static string DisplayText(dynamic worksheetFunction, dynamic cell)
         {
-            object value = cell.Value2;
+            return DisplayTextValue(
+                worksheetFunction,
+                cell.Value2,
+                Convert.ToString(cell.NumberFormatLocal, CultureInfo.CurrentCulture));
+        }
+
+        private static string DisplayTextValue(dynamic worksheetFunction, object value, string format)
+        {
             if (value == null || value is DBNull) return string.Empty;
             var error = value as ErrorWrapper;
             if (error != null) return ExcelError(error.ErrorCode);
             if (value is string) return (string)value;
             if (value is bool) return (bool)value ? "TRUE" : "FALSE";
-            var format = Convert.ToString(cell.NumberFormatLocal, CultureInfo.CurrentCulture);
             if (string.IsNullOrEmpty(format)) format = "General";
             return Convert.ToString(
                 worksheetFunction.Text(value, format),
@@ -742,21 +795,27 @@ namespace XmuxAddIn
             foreach (var exception in aggregate.Flatten().InnerExceptions) messages.Add(exception.Message);
             return string.Join(" | ", messages);
         }
-        private static object TextMatrix(dynamic range)
+        private static object TextMatrix(dynamic range, object values)
         {
             return DisplayTextMatrix(
                 range,
                 Convert.ToInt32(range.Rows.Count),
-                Convert.ToInt32(range.Columns.Count));
+                Convert.ToInt32(range.Columns.Count),
+                values);
         }
 
         private static object NumberFormatMatrix(dynamic range)
         {
+            var height = Convert.ToInt32(range.Rows.Count);
+            var width = Convert.ToInt32(range.Columns.Count);
+            var uniformFormat = range.NumberFormat as string;
+            if (uniformFormat != null) return RepeatedMatrix(uniformFormat, height, width);
+
             var rows = new List<object>();
-            for (var row = 1; row <= Convert.ToInt32(range.Rows.Count); row++)
+            for (var row = 1; row <= height; row++)
             {
                 var cells = new List<object>();
-                for (var column = 1; column <= Convert.ToInt32(range.Columns.Count); column++)
+                for (var column = 1; column <= width; column++)
                 {
                     dynamic cell = range.Cells[row, column];
                     try
@@ -767,6 +826,18 @@ namespace XmuxAddIn
                     }
                     finally { ReleaseCom(cell); }
                 }
+                rows.Add(cells);
+            }
+            return rows;
+        }
+
+        private static object RepeatedMatrix(object value, int height, int width)
+        {
+            var rows = new List<object>();
+            for (var row = 0; row < height; row++)
+            {
+                var cells = new List<object>();
+                for (var column = 0; column < width; column++) cells.Add(value);
                 rows.Add(cells);
             }
             return rows;
@@ -868,19 +939,17 @@ namespace XmuxAddIn
             finally { ReleaseCom(columns); }
         }
 
-        private static object ValueMatrix(dynamic range)
+        private static object ValueMatrix(dynamic range, object values)
         {
             int height = Convert.ToInt32(range.Rows.Count);
             int width = Convert.ToInt32(range.Columns.Count);
-            object values = range.Value2;
             return NormalizeMatrix(values, height, width, FormulaOrValue);
         }
 
-        private static object ValueTypes(dynamic range)
+        private static object ValueTypes(dynamic range, object values)
         {
             int height = Convert.ToInt32(range.Rows.Count);
             int width = Convert.ToInt32(range.Columns.Count);
-            object values = range.Value2;
             return NormalizeMatrix(values, height, width, ValueType);
         }
 
