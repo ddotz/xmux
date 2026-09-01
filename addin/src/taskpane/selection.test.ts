@@ -16,7 +16,10 @@ describe("mirrorSelection", () => {
     const mirrored = mirrorSelection(selected)
 
     // Then: the pane and viewport target preserve the selected range
-    expect(mirrored.pane).toMatchObject({ kind: "multiCell", summary: null })
+    expect(mirrored.pane).toMatchObject({
+      kind: "multiCell",
+      summary: { cells: 12, sum: null, average: null },
+    })
     expect(mirrored.target).toEqual({
       sheet: "Data",
       area: { top: 2, left: 2, height: 4, width: 3 },
@@ -42,6 +45,7 @@ describe("mirrorSelection", () => {
       kind: "multiCell",
       address: "Data!$B$2:$D$5,Data!$F$8:$G$9",
     })
+    expect(mirrored.pane).toMatchObject({ summary: { cells: 14, sum: null, average: null } })
     expect(mirrored.target).toEqual({
       sheet: "Data",
       area: { top: 2, left: 2, height: 4, width: 3 },

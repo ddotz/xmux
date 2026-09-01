@@ -44,7 +44,17 @@ export const mirrorSelection = (selection: SelectionSnapshot): SelectionMirror =
     const [first] = splitAreas(selection.address)
     const area = first === undefined ? null : localArea(first)
     return {
-      pane: { kind: "multiCell", address: selection.address, summary: null },
+      pane: {
+        kind: "multiCell",
+        address: selection.address,
+        summary: {
+          label: selection.address,
+          cells: selection.cellCount,
+          sum: null,
+          average: null,
+          value: null,
+        },
+      },
       key: selection.address,
       target: area === null ? null : { sheet: selection.sheet, area },
     }
