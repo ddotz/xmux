@@ -76,6 +76,7 @@ describe("jumpToSelection", () => {
       onRefresh: async () => {},
       onSelectionExpected: (selection) => {
         order.push(`expect:${selection.worksheetId}:${selection.address}`)
+        return () => {}
       },
       history: createHistory(),
     })
@@ -121,7 +122,7 @@ describe("jumpToSelection", () => {
       run: async (work) => work(context),
       onPane: () => {},
       onRefresh: async () => {},
-      onSelectionExpected: () => {},
+      onSelectionExpected: () => () => {},
       history: createHistory(),
     })
 
@@ -133,6 +134,43 @@ describe("jumpToSelection", () => {
     })
 
     expect(selected).toEqual(["activate:백만단위정리", "select:E2:G900"])
+  })
+
+  it("cancels suppression when the programmatic selection sync fails", async () => {
+    let cancelled = false
+    let syncs = 0
+    const commands = createCommands({
+      pane: () => pane,
+      viewport: () => viewport,
+      run: async (work) =>
+        work({
+          workbook: {
+            worksheets: {
+              getItem: () => ({
+                id: "sheet-data",
+                load: () => {},
+                activate: () => {},
+                getRange: () => ({ formulas: [[]], load: () => {}, select: () => {} }),
+              }),
+            },
+          },
+          sync: async () => {
+            syncs += 1
+            if (syncs === 2) throw new Error("selection failed")
+          },
+        }),
+      onPane: () => {},
+      onRefresh: async () => {},
+      onSelectionExpected: () => () => {
+        cancelled = true
+      },
+      history: createHistory(),
+    })
+
+    await expect(
+      commands.jumpToArea("Data", { top: 1, left: 1, height: 1, width: 1 }),
+    ).rejects.toThrow("selection failed")
+    expect(cancelled).toBe(true)
   })
 })
 
@@ -148,7 +186,7 @@ describe("appendReference", () => {
       },
       onPane: () => {},
       onRefresh: async () => {},
-      onSelectionExpected: () => {},
+      onSelectionExpected: () => () => {},
       history: createHistory(),
     })
 
@@ -218,7 +256,7 @@ describe("deleteReference", () => {
         notices.push({ message, expiresAfterMs })
       },
       onRefresh,
-      onSelectionExpected: () => {},
+      onSelectionExpected: () => () => {},
       history,
     })
 

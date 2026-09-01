@@ -31,11 +31,24 @@ export const MAX_ROW = 1048576
  * which rectangle it means instead of slicing after the last "!" (which silently keeps
  * only the last one).
  */
-export const splitAreas = (address: string): readonly string[] =>
-  address
-    .split(",")
-    .map((part) => part.trim())
-    .filter((part) => part !== "")
+export const splitAreas = (address: string): readonly string[] => {
+  const areas: string[] = []
+  let start = 0
+  let quoted = false
+  for (let index = 0; index < address.length; index += 1) {
+    if (address[index] === "'") {
+      if (quoted && address[index + 1] === "'") index += 1
+      else quoted = !quoted
+    } else if (address[index] === "," && !quoted) {
+      const area = address.slice(start, index).trim()
+      if (area !== "") areas.push(area)
+      start = index + 1
+    }
+  }
+  const area = address.slice(start).trim()
+  if (area !== "") areas.push(area)
+  return areas
+}
 
 const CELL = /^\$?([A-Za-z]{1,3})\$?([0-9]{1,7})$/
 

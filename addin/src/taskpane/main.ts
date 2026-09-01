@@ -1,4 +1,4 @@
-import { formatArea, type GridArea, parseArea } from "../excel/address"
+import { formatArea, type GridArea, parseArea, splitAreas } from "../excel/address"
 import { createHistory } from "../excel/history"
 import type { ExcelHost, HostContext, HostRange } from "../excel/host"
 import {
@@ -59,7 +59,13 @@ let pane: PaneState = { kind: "idle" }
 let badge: string | null = null
 let externalPreview: ExternalPreview | null = null
 let lastKey = ""
+let referenceGeneration = 0
 const sheetTabScroll = { left: 0 }
+
+const nextReferenceGeneration = (): number => {
+  referenceGeneration += 1
+  return referenceGeneration
+}
 
 const draw = (): void => {
   tabs.paint()
@@ -121,10 +127,14 @@ const show = createStatusPresenter<PaneState>((next, nextBadge) => {
  * detect the state. Keep the last good render — it is exactly what the user is consulting
  * while they type — and wait for the next selection event.
  */
-const guarded = async (work: () => Promise<void>): Promise<void> => {
+const guarded = async (
+  work: () => Promise<void>,
+  isCurrent: () => boolean = () => true,
+): Promise<void> => {
   try {
     await work()
   } catch (error) {
+    if (!isCurrent()) return
     const failure = host?.classify(error) ?? null
     if (failure === null) throw error
     if (failure.kind === "cellEditMode") {
@@ -160,7 +170,7 @@ const viewport = createViewport({
 })
 
 const selectionEvents = createSelectionEvents({
-  refresh: (request) => guarded(() => refresh(request.isCurrent)),
+  refresh: (request) => guarded(() => refresh(request.isCurrent), request.isCurrent),
   onError: (error) =>
     show({ kind: "error", message: error instanceof Error ? error.message : String(error) }, null),
   pinned: () => pane.kind === "formula" && pane.pinned,
@@ -211,9 +221,20 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
   const opened = pane
   const token = opened.tokens[index]
   if (token === undefined) return
+  const generation = nextReferenceGeneration()
+  const currentFormula = (): Extract<PaneState, { kind: "formula" }> | null => {
+    const current = pane
+    return referenceGeneration === generation &&
+      current.kind === "formula" &&
+      current.address === opened.address &&
+      current.tokens[index] === token
+      ? current
+      : null
+  }
+  const isCurrent = (): boolean => currentFormula() !== null
   externalPreview = null
   if (token.target.kind === "external") {
-    void openExternalReference(opened, index, token)
+    void openExternalReference(opened, index, token, currentFormula)
     return
   }
   const { sheet } = splitAddress(opened.address)
@@ -230,8 +251,9 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
         target: await lookupTarget(context, opened, index, sheet, range),
       }
     })
-    if (pane.kind !== "formula" || pane.address !== opened.address) return
-    if (resolved.kind === "unavailable") show({ ...pane, activeIndex: index }, resolved.reason)
+    const current = currentFormula()
+    if (current === null) return
+    if (resolved.kind === "unavailable") show({ ...current, activeIndex: index }, resolved.reason)
     else if (intent === "chat") {
       chatting.updateSelection({
         sheet: resolved.sheet,
@@ -241,9 +263,10 @@ function interactWithReference(index: number, intent: "open" | "jump" | "chat"):
       tabs.select("chat")
     } else {
       if (intent === "jump") await commands.jumpToArea(resolved.sheet, resolved.area)
+      if (!isCurrent()) return
       viewport.show(resolved.sheet, resolved.area, target)
     }
-  })
+  }, isCurrent)
 }
 
 /**
@@ -255,33 +278,42 @@ async function openExternalReference(
   opened: Extract<PaneState, { kind: "formula" }>,
   index: number,
   token: RefToken,
+  currentFormula: () => Extract<PaneState, { kind: "formula" }> | null,
 ): Promise<void> {
   const target = token.target
   if (target.kind !== "external") return
   show({ ...opened, activeIndex: index }, "외부 파일 읽는 중…")
   const read = await fetchExternalWindow(target, host?.workbookUrl() ?? "", hostServices())
-  if (pane.kind !== "formula" || pane.address !== opened.address) return
+  const current = currentFormula()
+  if (current === null) return
   if (read.kind === "window") {
     externalPreview = { label: token.text, source: read.source, window: read.window }
-    show(pane, null)
+    show(current, null)
     return
   }
-  await guarded(async () => {
-    const { sheet } = splitAddress(opened.address)
-    const resolved = await run(async (context) => resolveReference(context, token, sheet))
-    if (pane.kind !== "formula" || pane.address !== opened.address) return
-    show(
-      pane,
-      resolved.kind === "unavailable" ? `${resolved.reason} · ${read.reason}` : read.reason,
-    )
-  })
+  await guarded(
+    async () => {
+      const { sheet } = splitAddress(opened.address)
+      const resolved = await run(async (context) => resolveReference(context, token, sheet))
+      const currentAfterResolve = currentFormula()
+      if (currentAfterResolve === null) return
+      show(
+        currentAfterResolve,
+        resolved.kind === "unavailable" ? `${resolved.reason} · ${read.reason}` : read.reason,
+      )
+    },
+    () => currentFormula() !== null,
+  )
 }
 
 async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
   if (pane.kind === "formula" && pane.pinned) return
+  const generation = nextReferenceGeneration()
+  const current = (): boolean => isCurrent() && referenceGeneration === generation
 
-  const nextTarget: { readonly sheet: string; readonly area: GridArea } | null = await run(
-    async (context) => {
+  let nextTarget: { readonly sheet: string; readonly area: GridArea } | null
+  try {
+    nextTarget = await run(async (context) => {
       // Load only selection metadata first. A large contiguous range needs native aggregates,
       // not a raw formula/text matrix; reading that matrix made refresh time scale with the
       // workbook selection. Only one cell needs its formula and displayed text. Ctrl+click
@@ -289,8 +321,8 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
       const probe = context.workbook.getSelectedRange()
       probe.load("address, cellCount, worksheet/name")
       await context.sync()
-      if (!isCurrent()) return null
-      const multi = probe.address.includes(",")
+      if (!current()) return null
+      const multi = splitAreas(probe.address).length > 1
       const probedAddress = probe.address
 
       let snapshot: SelectionSnapshot
@@ -299,7 +331,7 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
         if (selection.cellCount === 1) {
           selection.load("formulas, text")
           await context.sync()
-          if (!isCurrent()) return null
+          if (!current()) return null
         }
         attachSelection(selection, chatting.updateSelection)
         snapshot = {
@@ -313,7 +345,7 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
         const areas = context.workbook.getSelectedRanges()
         areas.load("address, worksheet/name, areas/items/cellCount")
         await context.sync()
-        if (!isCurrent()) return null
+        if (!current()) return null
         if (areas.address !== probedAddress) return null
         chatting.updateSelection(null)
         const count = areas.areas.items.reduce((total, area) => total + area.cellCount, 0)
@@ -343,24 +375,27 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
         const summary = multi
           ? null
           : ((await summariseReferences<HostRange>(context, [target]))[0] ?? null)
-        if (!isCurrent() || pane.kind !== "multiCell") return null
+        if (!current() || pane.kind !== "multiCell") return null
         show({ ...pane, summary }, badge)
         return target
       }
       if (mirrored.pane.kind !== "formula" || mirrored.pane.tokens.length === 0) return null
 
       show({ ...mirrored.pane, activeIndex: 0 }, null)
-      const resolved = await explain(context, mirrored.pane, isCurrent)
-      if (!isCurrent() || resolved === null) return null
+      const resolved = await explain(context, mirrored.pane, current)
+      if (!current() || resolved === null) return null
       if (resolved.kind === "unavailable") {
         show(pane, resolved.reason)
         return null
       }
       return { sheet: resolved.sheet, area: resolved.area }
-    },
-  )
+    })
+  } catch (error) {
+    if (current()) throw error
+    return
+  }
 
-  if (nextTarget !== null && isCurrent()) viewport.show(nextTarget.sheet, nextTarget.area)
+  if (nextTarget !== null && current()) viewport.show(nextTarget.sheet, nextTarget.area)
 }
 
 /** Summarise and return the already-resolved first reference for the live grid. */

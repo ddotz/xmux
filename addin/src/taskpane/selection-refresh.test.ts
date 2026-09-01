@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import {
   attachSelection,
   attachSelectionListeners,
@@ -15,6 +15,11 @@ type Deferred = {
   readonly resolve: () => void
 }
 
+type DeferredRejection = {
+  readonly promise: Promise<void>
+  readonly reject: (error: Error) => void
+}
+
 const deferred = (): Deferred => {
   let resolve = (): void => {}
   const promise = new Promise<void>((done) => {
@@ -23,8 +28,16 @@ const deferred = (): Deferred => {
   return { promise, resolve }
 }
 
+const deferredRejection = (): DeferredRejection => {
+  let reject = (_error: Error): void => {}
+  const promise = new Promise<void>((_resolve, fail) => {
+    reject = fail
+  })
+  return { promise, reject }
+}
+
 describe("programmatic selection suppression", () => {
-  it("suppresses only the expected target and clears a missed expectation on mismatch", () => {
+  it("retires a no-event expectation after an unmatched authoritative selection", () => {
     const suppression = createExpectedSelectionSuppression()
     const expected = { address: "B2", worksheetId: "sheet-data" }
 
@@ -45,6 +58,76 @@ describe("programmatic selection suppression", () => {
       unpin: true,
     })
     expect(suppression.consume(expected)).toBe(false)
+  })
+
+  it("consumes a delayed older jump without clearing the newer expectation", () => {
+    const suppression = createExpectedSelectionSuppression()
+    const first = { address: "B2", worksheetId: "sheet-data" }
+    const second = { address: "D4", worksheetId: "sheet-data" }
+
+    suppression.expect(first)
+    suppression.expect(second)
+
+    expect(suppression.consume(first)).toBe(true)
+    expect(suppression.consume(second)).toBe(true)
+  })
+
+  it("also preserves an older expectation when the newer jump arrives first", () => {
+    const suppression = createExpectedSelectionSuppression()
+    const first = { address: "B2", worksheetId: "sheet-data" }
+    const second = { address: "D4", worksheetId: "sheet-data" }
+
+    suppression.expect(first)
+    suppression.expect(second)
+
+    expect(suppression.consume(second)).toBe(true)
+    expect(suppression.consume(first)).toBe(true)
+  })
+
+  it("expires repeated same-target expectations that never raise an event", () => {
+    vi.useFakeTimers()
+    const suppression = createExpectedSelectionSuppression()
+    const expected = { address: "B2", worksheetId: "sheet-data" }
+
+    suppression.expect(expected)
+    suppression.expect(expected)
+    vi.advanceTimersByTime(1_000)
+
+    expect(suppression.consume(expected)).toBe(false)
+    vi.useRealTimers()
+  })
+
+  it("cancels an expectation when its programmatic selection fails", () => {
+    const suppression = createExpectedSelectionSuppression()
+    const expected = { address: "B2", worksheetId: "sheet-data" }
+    const cancel = suppression.expect(expected)
+
+    cancel()
+
+    expect(suppression.consume(expected)).toBe(false)
+  })
+
+  it("cancels only the older of overlapping same-target expectations", () => {
+    const suppression = createExpectedSelectionSuppression()
+    const expected = { address: "B2", worksheetId: "sheet-data" }
+    const cancelOlder = suppression.expect(expected)
+    suppression.expect(expected)
+
+    cancelOlder()
+
+    expect(suppression.consume(expected)).toBe(true)
+    expect(suppression.consume(expected)).toBe(false)
+  })
+
+  it("does not suppress a genuine A after no-event A and genuine B", () => {
+    const suppression = createExpectedSelectionSuppression()
+    const first = { address: "A1", worksheetId: "sheet-data" }
+    const genuineB = { address: "B1", worksheetId: "sheet-data" }
+
+    suppression.expect(first)
+
+    expect(suppression.consume(genuineB)).toBe(false)
+    expect(suppression.consume(first)).toBe(false)
   })
 })
 
@@ -214,6 +297,28 @@ describe("selection refresh scheduling", () => {
     second.resolve()
   })
 
+  it("does not render a deferred stale refresh rejection", async () => {
+    const first = deferredRejection()
+    const secondStarted = deferred()
+    const errors: unknown[] = []
+    let calls = 0
+    const scheduler = createSelectionRefresh({
+      refresh: async () => {
+        calls += 1
+        if (calls === 1) await first.promise
+        else secondStarted.resolve()
+      },
+      onError: (error) => errors.push(error),
+    })
+
+    scheduler.select("B2")
+    scheduler.select("B3")
+    first.reject(new Error("stale refresh"))
+    await secondStarted.promise
+
+    expect(errors).toEqual([])
+  })
+
   it("sends only an authoritative current selection to the attachment sink", async () => {
     const first = deferred()
     const latestAttached = deferred()
@@ -288,6 +393,25 @@ describe("selection refresh scheduling", () => {
 
     // Then: no attachment is made — the last rectangle alone would misstate the selection
     expect(attached).toEqual([])
+  })
+
+  it("attaches a single selection on a comma-containing quoted sheet name", () => {
+    const attached: {
+      readonly sheet: string
+      readonly address: string
+      readonly cellCount: number
+    }[] = []
+
+    attachSelection(
+      {
+        address: "'North, West'!B3",
+        cellCount: 1,
+        worksheet: { name: "North, West" },
+      },
+      (selection) => attached.push(selection),
+    )
+
+    expect(attached).toEqual([{ sheet: "North, West", address: "B3", cellCount: 1 }])
   })
 
   it("previews the event address and loading state synchronously", () => {

@@ -53,36 +53,71 @@ describe("XLL Windows deployment", () => {
     expect(uninstall).toContain('Read-Host "Type YES to terminate those processes and continue"')
     expect(install).toContain('$confirmation -ine "YES"')
     expect(uninstall).toContain('$confirmation -ine "YES"')
-    expect(install).toContain("$excelProcesses | Stop-Process -Force -ErrorAction Stop")
+    expect(install).toContain("$hiddenCurrentSession | Stop-Process -Force -ErrorAction Stop")
   })
 
   it("keeps removal retryable and preserves contiguous OPEN registrations", () => {
     expect(uninstallBatch).toContain('cd /d "%TEMP%"')
-    expect(uninstall).toContain("function Remove-ExcelOpenValue")
-    expect(uninstall.indexOf("Remove-Item -LiteralPath $installRootPath")).toBeLessThan(
-      uninstall.indexOf("Remove-Item -LiteralPath $OwnershipRegistryPath"),
-    )
-    expect(uninstall).toContain("$dataRootOwned")
+    expect(uninstall).toContain("function Remove-OwnedOpenValue")
+    expect(
+      uninstall.indexOf("Move-Item -LiteralPath $installRootPath -Destination $quarantineRoot"),
+    ).toBeLessThan(uninstall.indexOf("Remove-Item -LiteralPath $OwnershipRegistryPath"))
+    expect(uninstall).toContain("function Restore-OpenSnapshot")
+    expect(uninstall).toContain("DataRoot is durable per-user WebView state")
   })
 
-  it("preserves unowned WebView data with exact, serialized rollback", () => {
-    expect(install).not.toContain("The WebView2 data directory is not owned by this installation")
-    expect(install).toContain('New-Object Threading.Mutex($false, "Local\\DdotExcelXllInstaller")')
-    expect(install).toContain("$installerMutex.WaitOne(0, $false)")
-    expect(install).toContain('$dataRootQuarantinePath = "$dataRootPath.unowned-')
-    expect(install).toContain("The WebView2 data directory became a reparse point")
-    expect(install).toContain("A WebView2 data directory appeared during installation")
-    expect(install).toContain("The WebView2 restore destination is not empty")
-    expect(install).toContain("The installer-created WebView2 directory is no longer empty")
-    expect(install).toContain('$rollbackFailures += "install root:')
-    expect(install).toContain('$rollbackFailures += "WebView2 data:')
+  it("serializes complete deployment transactions and preserves durable WebView data", () => {
+    for (const source of [install, uninstall]) {
+      expect(source).toContain(
+        '$TransactionLockPath = Join-Path $env:LOCALAPPDATA "DdotExcelXll.transaction.lock"',
+      )
+      expect(source).toContain("[IO.FileShare]::None")
+      expect(source).toContain("$transactionLock = Enter-TransactionLock")
+      expect(source).toContain("$transactionLock.Dispose()")
+    }
+    expect(install).toContain("$DataOwnershipRegistryPath")
+    expect(install).toContain("DataRootPath")
+    expect(install).not.toContain("$dataRootQuarantinePath")
     expect(install).not.toContain("Remove-Item -LiteralPath $dataRootPath -Recurse")
-    const quarantine = install.indexOf("$dataRootQuarantined = $true")
-    const create = install.indexOf("$dataRootCreated = $true", quarantine)
-    const restore = install.indexOf("-LiteralPath $dataRootQuarantinePath", create)
-    expect(quarantine).toBeGreaterThanOrEqual(0)
-    expect(create).toBeGreaterThan(quarantine)
-    expect(restore).toBeGreaterThan(create)
+    expect(install).toContain('$rollbackFailures += "install root:')
+    expect(install).toContain('$rollbackFailures += "ownership registry:')
+    expect(install).toContain("The replacement install tree is no longer verified owned")
+    expect(install).toContain("The install backup is not the verified previously owned tree")
+    expect(install).toContain("function Assert-NoDescendantReparsePoints")
+    expect(uninstall).toContain("function Assert-NoDescendantReparsePoints")
+    expect(install).toContain("function Get-CurrentUserExcelProcesses")
+    expect(uninstall).toContain("function Get-CurrentUserExcelProcesses")
+    expect(install).toContain("GetOwnerSid")
+    expect(uninstall).toContain("GetOwnerSid")
+    expect(install).toContain("$previousInstallId")
+    expect(install).toContain('"transaction-marker.txt"')
+    expect(install).toContain("The selected Excel OPEN slot is no longer free")
+    expect(install).toContain("Could not verify the Excel OPEN registration")
+    expect(install).toContain("$openMutationApplied = $true")
+    expect(install).toContain("foreign value was preserved")
+    expect(install).toContain('"PendingInstallOriginalRoot"')
+    expect(install).toContain("Pending install rollback could not be verified")
+    expect(install).toContain(
+      "Pending install registry state does not match either journaled generation",
+    )
+    expect(install).toContain(
+      "Pending install old ownership metadata no longer matches its journal",
+    )
+    expect(install).toContain("Preserved unverified staging directory after marker failure")
+    expect(install).toContain("function Restore-JournalledOldOwnership")
+    expect(install).toContain("Recovered completed pending install rollback")
+    expect(install).toContain("Pending install OPEN restoration could not be verified")
+    expect(uninstall).toContain("InstallRoot must exactly match the canonical owned install root")
+    expect(uninstall).toContain("$requestedInstallRoot")
+    expect(uninstall).toContain('"PendingOriginalRoot"')
+    expect(uninstall).toContain("Pending uninstall cleanup could not be verified")
+    expect(uninstall).toContain("The quarantined install directory could not be verified")
+    expect(uninstall).toContain("The quarantined install tree changed after registry commit")
+    expect(uninstall).toContain("function Assert-OpenSnapshotUnchanged")
+    expect(uninstall).toContain("Excel OPEN first absent tail changed before mutation")
+    expect(uninstall).toContain("Could not verify Excel OPEN compaction")
+    expect(uninstall).toContain("Could not verify Excel OPEN first absent tail")
+    expect(uninstall).toContain('"PendingUninstallRoot"')
   })
 
   it("packs managed assemblies and initializes WebView2 from owned paths", () => {
@@ -109,6 +144,34 @@ describe("XLL Windows deployment", () => {
     expect(addIn).not.toContain('CreateCustomTaskPane(control, "Xmux", window)')
   })
 
+  it("reconciles panes from retryable Excel window lifecycle events without polling", () => {
+    expect(addIn).toContain('new Guid("00024413-0000-0000-C000-000000000046")')
+    expect(addIn).toContain("WindowActivateDispId = 0x614")
+    expect(addIn).toContain("WindowDeactivateDispId = 0x615")
+    expect(addIn).toContain("ComEventsHelper.Combine")
+    expect(addIn).toContain("ComEventsHelper.Remove")
+    expect(addIn).toContain("ExcelAsyncUtil.QueueAsMacro")
+    expect(addIn).toContain("Interlocked.Increment(ref dirtyGeneration)")
+    expect(addIn).toContain("Interlocked.CompareExchange(ref reconciliationInFlight, 1, 0)")
+    expect(addIn).toContain(
+      "Volatile.Read(ref reconciledGeneration) < Volatile.Read(ref dirtyGeneration)",
+    )
+    expect(addIn).toContain("MaxReconciliationRetries = 3")
+    expect(addIn).toContain("RetryReconciliation();")
+    expect(addIn).toContain("ReportLifecycleFailure")
+    expect(addIn).toContain("catch (Exception setupFailure)")
+    expect(addIn).toContain("catch (Exception cleanupFailure)")
+    expect(addIn).toContain("Marshal.GetIUnknownForObject(ownerWindow)")
+    expect(addIn).toContain("Marshal.Release(windowIdentity)")
+    expect(addIn).toContain("Marshal.Release(ownerIdentity)")
+    expect(addIn).not.toContain("ReleaseComObject")
+    expect(addIn).not.toContain("ReleaseCom(")
+    expect(addIn).not.toContain("reconciliationQueued")
+    expect(addIn).not.toContain("System.Windows.Forms.Timer")
+    expect(addIn).not.toContain("windowTimer")
+    expect(addIn).not.toContain("Interval = 500")
+  })
+
   it("keeps PowerShell 5.1 deployment sources ASCII-decodable", () => {
     for (const source of [build, install, uninstall]) {
       expect([...source].every((character) => character.charCodeAt(0) <= 0x7f)).toBe(true)
@@ -127,6 +190,10 @@ describe("XLL Windows deployment", () => {
     expect(bridgeTest).toContain('$rows[0][1] -ne "beta"')
     expect(bridgeTest).toContain('$rows[1][0] -ne "gamma"')
     expect(bridgeTest).toContain("$rows[1].Count -ne 2")
+    expect(bridgeTest).toContain("FormulaReferenceScanner")
+    expect(bridgeTest).toContain("$scannerVectors = @(")
+    expect(bridgeTest).toContain('Formula = "=RC+A1"')
+    expect(bridgeTest).toContain("Formula = \"='Sheet 1':'Sheet 3'!A1+B2\"")
   })
 })
 
@@ -224,7 +291,8 @@ describe("XLL bridge parity", () => {
     expect(editorObserver).toContain('"EXCEL<"')
     expect(editorObserver).toContain("selectionStart == span.Start")
     expect(editorHook).toContain("NativeEditorObserver.TryCycleReference")
-    expect(editorHook).toContain("if (unhookFailure == null) hook = IntPtr.Zero")
+    expect(editorHook).toContain("TryRemoveHook(ref hook)")
+    expect(editorHook).toContain("TryRemoveHook(ref messageHook)")
     expect(editorHook).toContain("if (disposed || disposing) return false")
     expect(editorHook).toContain("if (!workerStopped)")
     expect(addIn.indexOf("foreach (var handle in removed) panes.Remove(handle)")).toBeLessThan(
@@ -237,6 +305,101 @@ describe("XLL bridge parity", () => {
     expect(formulaScanner).toContain("internal static List<ReferenceSpan> Scan")
     expect(bridge).toContain("NativeEditorKeyboardHook.ReadState(excelWindowHandle)")
     expect(bridge).not.toContain("NotSupportedException")
+  })
+
+  it("chains Tab for IME composition and only publishes stable editor snapshots", () => {
+    expect(editorObserver).toContain('[DllImport("imm32.dll", CharSet = CharSet.Unicode')
+    expect(editorObserver).toContain("ImmGetCompositionString")
+    expect(editorObserver).toContain("CompositionString = 0x0008")
+    expect(editorObserver).toContain(
+      "IsFocusedEditor(excelProcessId, editor) || IsImeComposing(editor)",
+    )
+    expect(editorObserver).toContain("SnapshotAttempts = 3")
+    expect(editorObserver).toContain("MaximumFormulaLength = 32767")
+    expect(editorObserver).toContain("copied.ToInt64() != textLength")
+    expect(editorObserver).toContain("verifiedLength.ToInt64() != textLength")
+    expect(editorObserver).toContain(
+      "string.Equals(firstText, verifiedText.ToString(), StringComparison.Ordinal)",
+    )
+    expect(editorObserver).toContain("selectionStart != verifiedSelectionStart")
+    expect(editorObserver).toContain(
+      "string.Equals(actualFormula, expectedFormula, StringComparison.Ordinal)",
+    )
+    expect(editorHook).toContain("catch")
+    expect(editorHook).toContain("return CallNextHookEx(hook, code, word, data)")
+    expect(editorHook).toContain("CallWindowProcedureHook = 4")
+    expect(editorHook).toContain("ObserveImeMessage")
+    expect(editorHook).toContain("callbackFailure")
+    expect(editorHook).toContain("TryRemoveHook(ref hook)")
+    expect(editorHook).toContain("TryRemoveHook(ref messageHook)")
+    expect(editorHook).toContain("incompleteRollbacks.Add(this)")
+    expect(editorHook).toContain("return CallNextHookEx(messageHook, code, word, data)")
+    expect(editorHook).toContain("private struct CwpStruct")
+    expect(editorHook).toContain("internal IntPtr LParam")
+    expect(editorHook).toContain("internal IntPtr WParam")
+    expect(editorHook).toContain("internal uint Message")
+    expect(editorHook).toContain("internal IntPtr Window")
+    expect(editorHook).toContain("CwpMessageOffset")
+    expect(editorHook).toContain("CwpWindowOffset")
+    expect(editorHook).toContain("RetryIncompleteRollbacks()")
+    expect(editorHook).toContain("RollbackRetriesPerEntry = 3")
+    expect(editorHook).toContain("if (hook != IntPtr.Zero || messageHook != IntPtr.Zero) continue")
+    expect(editorObserver).toContain("ImeStartComposition = 0x010D")
+    expect(editorObserver).toContain("ImeEndComposition = 0x010E")
+    expect(editorObserver).toContain("length < 0")
+    expect(editorObserver).toContain("Volatile.Read(ref imeState) != 2")
+    expect(editorObserver).toContain("RestoreNativeSelection")
+    expect(editorObserver).toContain("CycleResult.RestoreFailed")
+  })
+
+  it("does not create partial cycle targets for unsupported formula grammar", () => {
+    const exactSpanVectors = [
+      {
+        formula: "=SUM(A1,$B$2,Sheet1!C3)",
+        spans: [
+          [5, 7],
+          [8, 12],
+          [13, 22],
+        ],
+      },
+      { formula: "='First Sheet:Last Sheet'!A1+B2", spans: [] },
+      { formula: "=R[-1]C[2]+A1", spans: [] },
+      { formula: "=LET(local,A1,local+B2)", spans: [] },
+      { formula: "=LAMBDA(value,value+A1)(B2)", spans: [] },
+    ]
+    expect(exactSpanVectors).toEqual([
+      {
+        formula: "=SUM(A1,$B$2,Sheet1!C3)",
+        spans: [
+          [5, 7],
+          [8, 12],
+          [13, 22],
+        ],
+      },
+      { formula: "='First Sheet:Last Sheet'!A1+B2", spans: [] },
+      { formula: "=R[-1]C[2]+A1", spans: [] },
+      { formula: "=LET(local,A1,local+B2)", spans: [] },
+      { formula: "=LAMBDA(value,value+A1)(B2)", spans: [] },
+    ])
+    expect(formulaScanner).toContain("HasUnsupportedGrammar(formula)")
+    expect(formulaScanner).toContain("if (HasUnsupportedGrammar(formula)) return spans")
+    expect(formulaScanner).toContain("ReadR1C1Reference")
+    expect(formulaScanner).toContain("IsR1C1Reference")
+    expect(formulaScanner).toContain('string.Equals(name, "LET"')
+    expect(formulaScanner).toContain('string.Equals(name, "LAMBDA"')
+    expect(formulaScanner).toContain("if (quoted && name.IndexOf(':') >= 0) return")
+    expect(formulaScanner).toContain("formula[position] == ':'")
+    expect(formulaScanner).toContain("IsQuotedThreeDReference")
+    expect(formulaScanner).toContain("ReadR1C1Axis(formula, ref position)")
+  })
+
+  it("retains supported A1 cycle targets", () => {
+    const supportedA1 = "=SUM(A1,$B$2,Sheet1!C3)"
+    expect(supportedA1).toContain("A1")
+    expect(formulaScanner).toContain("ReadBodyAfterBang")
+    expect(formulaScanner).toContain("spans.Add(new ReferenceSpan(start, Position))")
+    expect(formulaScanner).toContain("MaxColumn = 16384")
+    expect(formulaScanner).toContain("MaxRow = 1048576")
   })
 
   it("preserves modern formulas and width-independent display numbers", () => {
@@ -281,7 +444,7 @@ describe("XLL bridge parity", () => {
       display.indexOf("range.Cells[row, column]"),
     )
     expect(display).toContain("NormalizeMatrix(")
-    expect(formats.indexOf("range.NumberFormat as string")).toBeLessThan(
+    expect(formats.indexOf("object bulkFormats = range.NumberFormat")).toBeLessThan(
       formats.indexOf("range.Cells[row, column]"),
     )
     expect(rangeLoad.match(/range\.Value2/g)).toHaveLength(1)
@@ -299,7 +462,7 @@ describe("XLL bridge parity", () => {
 
   it("preserves Office formatting and conditional-format semantics", () => {
     expect(bridge).toContain("range.NumberFormat = matrix.GetValue(0, 0)")
-    expect(bridge).toContain("Number-format matrix must be one cell or match the target range")
+    expect(bridge).toContain('ValidateMatrixDimensions(range, matrix, "Number-format")')
     expect(bridge).toContain("var current = Convert.ToDouble(column.Width")
     expect(bridge).toContain("SetColumnPointWidth")
     expect(bridge).toContain("var cardinality = hasMiddle ? 3 : 2")
@@ -359,8 +522,71 @@ describe("XLL bridge parity", () => {
     expect(taskpaneMain).toContain("if (areas.address !== probedAddress) return null")
   })
 
+  it("rejects stale reference work and delegates quoted-area tokenization", () => {
+    expect(taskpaneMain).toContain("let referenceGeneration = 0")
+    expect(taskpaneMain).toContain("const generation = nextReferenceGeneration()")
+    expect(taskpaneMain).toContain("referenceGeneration === generation")
+    expect(taskpaneMain).toContain("if (!isCurrent()) return")
+    expect(taskpaneMain).toContain("if (!current()) return null")
+    expect(taskpaneMain).toContain("const multi = splitAreas(probe.address).length > 1")
+    expect(taskpaneMain).not.toContain('probe.address.includes(",")')
+    expect(taskpaneMain).toContain("if (current()) throw error")
+  })
+
   it("declares the linked-workbook capability implemented by COM", () => {
     expect(bridge).toContain('{ "name", "ExcelApiOnline" }')
     expect(bridge).toContain('{ "version", "1.1" }')
+  })
+
+  it("keeps native bridge mutations exact and transient COM handles unretained", () => {
+    const sort = bridge.slice(
+      bridge.indexOf("private static void Sort"),
+      bridge.indexOf("private static object AutoFillType"),
+    )
+    const selectedAreas = bridge.slice(
+      bridge.indexOf("private Dictionary<string, object> LoadSelectedAreas"),
+      bridge.indexOf("private static Dictionary<string, object> LoadFunction"),
+    )
+    const usedRange = bridge.slice(
+      bridge.indexOf("private static RangeHandle UsedRange"),
+      bridge.indexOf("private static bool IsPristineA1"),
+    )
+    const call = bridge.slice(
+      bridge.indexOf("private object Call"),
+      bridge.indexOf("private Dictionary<string, object> Load"),
+    )
+    const workbookLoad = bridge.slice(
+      bridge.indexOf("private Dictionary<string, object> LoadWorkbook"),
+      bridge.indexOf("private Dictionary<string, object> LoadRange"),
+    )
+    expect(sort).toContain("Sort fields must be a non-empty array.")
+    expect(sort).toContain("Each sort field must specify a key.")
+    expect(sort).toContain("Sort field key must be an integer.")
+    expect(sort).toContain("Sort field ascending must be a boolean.")
+    expect(sort.indexOf("ParseSortFields(fields, columnCount)")).toBeLessThan(
+      sort.indexOf("comSortFields.Clear()"),
+    )
+    expect(sort).toContain("sortFields.Add(new SortField(key, ascending))")
+    expect(sort).toContain("comSortFields.Add(column, 0, field.Ascending ? 1 : 2)")
+    expect(sort).toContain("sort.Apply()")
+    expect(sort).not.toContain("object first")
+    expect(bridge).toContain('ValidateMatrixDimensions(range, (Array)values, "Formula")')
+    expect(bridge).toContain('ValidateMatrixDimensions(range, matrix, "Number-format")')
+    expect(usedRange).toContain("if (IsWholeWorksheetRange(source, worksheet))")
+    expect(usedRange).toContain(
+      "Range-scoped getUsedRange(false) cannot exactly preserve format-only cells.",
+    )
+    expect(selectedAreas).not.toContain("handles[id] = new RangeHandle(area)")
+    expect(selectedAreas).toContain("handles[id] = AreaCellCountHandle.Instance")
+    expect(selectedAreas).toContain("var id = nextHostHandle--")
+    expect(selectedAreas).toContain('{ "id", id }')
+    expect(selectedAreas).toContain("finally { ReleaseCom(area); }")
+    expect(selectedAreas).toContain("finally { ReleaseCom(areas); }")
+    expect(call).not.toContain("dynamic workbook = CurrentWorkbook();")
+    expect(call).toContain('if (member != "getSelectedRange"')
+    expect(workbookLoad).toContain("if (calculationRequested)")
+    expect(workbookLoad).toContain("if (nameProperties.Count != 0 || linkProperties.Count != 0)")
+    expect(workbookLoad).toContain("ReleaseCom(workbook)")
+    expect(workbookLoad).not.toContain("ReleaseCom(application)")
   })
 })

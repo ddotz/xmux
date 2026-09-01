@@ -93,7 +93,12 @@ export type BridgeChild = { readonly id: number } & BridgeValues
 /** A protocol violation on the pane's side: it read what it never loaded, or used a dead
  * handle. It belongs to the caller, so `classify` must let it through rather than dress it
  * up as something Excel did. */
-class BridgeError extends Error {}
+class BridgeError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "BridgeError"
+  }
+}
 
 /**
  * A refusal from the host, carried as data rather than as prose.
@@ -114,12 +119,35 @@ export class BridgeHostError extends Error {
   }
 }
 
-const isChildList = (value: unknown): value is readonly BridgeChild[] =>
-  Array.isArray(value) &&
-  value.every(
-    (entry) =>
-      typeof entry === "object" && entry !== null && typeof Reflect.get(entry, "id") === "number",
-  )
+const isRecord = (value: unknown): value is BridgeValues =>
+  typeof value === "object" && value !== null && !Array.isArray(value)
+
+const bridgeShapeError = (id: number, label: string, property: string, expected: string): never => {
+  throw new BridgeError(`${label} (handle ${id}): "${property}" expected ${expected}`)
+}
+
+const childList = (
+  id: number,
+  label: string,
+  property: string,
+  value: unknown,
+): readonly BridgeChild[] => {
+  if (!Array.isArray(value))
+    return bridgeShapeError(id, label, property, "an array of native child objects")
+  const children: BridgeChild[] = []
+  for (const entry of value) {
+    if (!isRecord(entry))
+      return bridgeShapeError(id, label, property, "an array of native child objects")
+    const childId = Reflect.get(entry, "id")
+    if (typeof childId !== "number" || !Number.isSafeInteger(childId) || childId >= 0)
+      return bridgeShapeError(id, label, property, "native child ids that are negative integers")
+    children.push({ ...entry, id: childId })
+  }
+  return children
+}
+
+const isNativeChildCollection = (property: string): boolean =>
+  property === "items" || (property.endsWith("/items") && property !== "linkedWorkbooks/items")
 
 /**
  * A context over the wire. `send` is the only thing that differs between the in-memory
@@ -159,6 +187,7 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
   let closed = false
   const requested = new Map<number, Set<string>>()
   const loaded = new Map<number, Map<string, unknown>>()
+  const nativeChildOwners = new Map<number, string>()
   /** Every batch this context sent, in order — the transcript a bridge has to satisfy. */
   const transcript: (readonly BridgeOp[])[] = []
   const selectionHandlers = events.selection
@@ -225,92 +254,335 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
     return values.get(property)
   }
 
-  const absorb = (id: number, values: BridgeValues): void => {
-    const held = loaded.get(id) ?? new Map<string, unknown>()
-    for (const [property, value] of Object.entries(values)) {
-      held.set(property, value)
-      // A collection hands back its children with ids; register them so calls on a child
-      // and reads of what `items/...` asked for both work without another round trip.
-      if (!isChildList(value)) continue
-      for (const child of value) {
-        const childValues = new Map<string, unknown>()
-        const childRequested = requested.get(id) ?? new Set<string>()
-        for (const [childProperty, childValue] of Object.entries(child)) {
-          if (childProperty === "id") continue
-          childValues.set(childProperty, childValue)
-        }
-        loaded.set(child.id, childValues)
-        requested.set(
-          child.id,
-          new Set(
-            [...childRequested]
-              .filter((path) => path.startsWith(`${property}/`))
-              .map((path) => path.slice(property.length + 1)),
-          ),
-        )
+  const string = (on: number, label: string, property: string): string => {
+    const value = read(on, label, property)
+    return typeof value === "string" ? value : bridgeShapeError(on, label, property, "a string")
+  }
+
+  const boolean = (on: number, label: string, property: string): boolean => {
+    const value = read(on, label, property)
+    return typeof value === "boolean" ? value : bridgeShapeError(on, label, property, "a boolean")
+  }
+
+  const finiteNumber = (on: number, label: string, property: string): number => {
+    const value = read(on, label, property)
+    return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : bridgeShapeError(on, label, property, "a finite number")
+  }
+
+  const finiteNumberOrNull = (on: number, label: string, property: string): number | null => {
+    const value = read(on, label, property)
+    if (value === null) return null
+    return typeof value === "number" && Number.isFinite(value)
+      ? value
+      : bridgeShapeError(on, label, property, "a finite number or null")
+  }
+
+  const nonnegativeInteger = (on: number, label: string, property: string): number => {
+    const value = finiteNumber(on, label, property)
+    return Number.isInteger(value) && value >= 0
+      ? value
+      : bridgeShapeError(on, label, property, "a non-negative finite integer")
+  }
+
+  const anyCell = (_value: unknown): _value is unknown => true
+
+  const matrix = <Cell>(
+    on: number,
+    label: string,
+    property: string,
+    cell: (value: unknown) => value is Cell,
+    expected = "a matrix",
+  ): Cell[][] => {
+    const value = read(on, label, property)
+    if (!Array.isArray(value)) return bridgeShapeError(on, label, property, expected)
+    const decoded: Cell[][] = []
+    let width: number | undefined
+    for (const row of value) {
+      if (!Array.isArray(row)) return bridgeShapeError(on, label, property, expected)
+      if (width === undefined) width = row.length
+      else if (row.length !== width)
+        return bridgeShapeError(on, label, property, `${expected} with rectangular rows`)
+      const decodedRow: Cell[] = []
+      for (const value of row) {
+        if (!cell(value)) return bridgeShapeError(on, label, property, expected)
+        decodedRow.push(value)
       }
+      decoded.push(decodedRow)
     }
-    loaded.set(id, held)
+    return decoded
+  }
+
+  const children = (on: number, label: string, property: string): readonly BridgeChild[] =>
+    childList(on, label, property, read(on, label, property))
+
+  const collectionPath = (path: string): string | null => {
+    if (path === "items" || path.startsWith("items/")) return "items"
+    const marker = "/items"
+    const index = path.indexOf(marker)
+    if (index === -1 || path === "linkedWorkbooks/items") return null
+    return path.slice(0, index + marker.length)
+  }
+
+  const expectedResponse = (ops: readonly BridgeOp[]): Map<number, Map<string, Set<string>>> => {
+    const expected = new Map<number, Map<string, Set<string>>>()
+    for (const op of ops) {
+      if (op.op !== "load") continue
+      const properties = expected.get(op.on) ?? new Map<string, Set<string>>()
+      for (const path of op.properties) {
+        const collection = collectionPath(path)
+        const property = collection ?? path
+        const children = properties.get(property) ?? new Set<string>()
+        if (collection !== null && path.length > collection.length + 1)
+          children.add(path.slice(collection.length + 1))
+        properties.set(property, children)
+      }
+      expected.set(op.on, properties)
+    }
+    return expected
+  }
+
+  const assertExactProperties = (
+    id: number,
+    label: string,
+    actual: readonly string[],
+    expected: ReadonlySet<string>,
+  ): void => {
+    for (const property of expected)
+      if (!actual.includes(property))
+        bridgeShapeError(id, label, property, "a response value requested by this sync")
+    for (const property of actual)
+      if (!expected.has(property))
+        bridgeShapeError(id, label, property, "no unsolicited or stale response value")
+  }
+
+  const validateValueShape = (id: number, property: string, value: unknown): void => {
+    const label = `response handle ${id}`
+    if (
+      property === "address" ||
+      property === "name" ||
+      property === "id" ||
+      property === "worksheet/name" ||
+      property === "scope"
+    ) {
+      if (typeof value !== "string") bridgeShapeError(id, label, property, "a string")
+      return
+    }
+    if (
+      property === "isNullObject" ||
+      property === "rowHidden" ||
+      property === "columnHidden" ||
+      property === "showHeaders"
+    ) {
+      if (typeof value !== "boolean") bridgeShapeError(id, label, property, "a boolean")
+      return
+    }
+    if (
+      property === "rowCount" ||
+      property === "columnCount" ||
+      property === "cellCount" ||
+      property === "rowIndex" ||
+      property === "columnIndex" ||
+      property === "removed" ||
+      property === "uniqueRemaining"
+    ) {
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+        bridgeShapeError(id, label, property, "a non-negative finite integer")
+      return
+    }
+    if (property === "format/columnWidth") {
+      if (value !== null && (typeof value !== "number" || !Number.isFinite(value)))
+        bridgeShapeError(id, label, property, "a finite number or null")
+      return
+    }
+    if (property === "format/rowHeight") {
+      if (typeof value !== "number" || !Number.isFinite(value))
+        bridgeShapeError(id, label, property, "a finite number")
+      return
+    }
+    if (property === "visibility") {
+      if (value !== "Visible" && value !== "Hidden" && value !== "VeryHidden")
+        bridgeShapeError(id, label, property, '"Visible", "Hidden", or "VeryHidden"')
+      return
+    }
+    if (property === "application/calculationMode") {
+      if (value !== "Automatic" && value !== "Manual" && value !== "AutomaticExceptTables")
+        bridgeShapeError(id, label, property, '"Automatic", "Manual", or "AutomaticExceptTables"')
+      return
+    }
+    if (property === "linkedWorkbooks/items") {
+      if (
+        !Array.isArray(value) ||
+        !value.every((entry) => isRecord(entry) && typeof Reflect.get(entry, "id") === "string")
+      )
+        bridgeShapeError(id, label, property, "an array of objects with string ids")
+      return
+    }
+    const matrixCells =
+      property === "text" || property === "valueTypes" || property === "numberFormat"
+        ? (cell: unknown): cell is string => typeof cell === "string"
+        : property === "values" || property === "formulas"
+          ? anyCell
+          : null
+    if (matrixCells !== null) {
+      const decoded = (() => {
+        if (!Array.isArray(value)) return false
+        let width: number | undefined
+        for (const row of value) {
+          if (!Array.isArray(row)) return false
+          if (width === undefined) width = row.length
+          else if (row.length !== width) return false
+          if (!row.every(matrixCells)) return false
+        }
+        return true
+      })()
+      if (!decoded) bridgeShapeError(id, label, property, "a rectangular matrix")
+    }
+  }
+
+  const stageResponse = (
+    ops: readonly BridgeOp[],
+    values: Readonly<Record<number, BridgeValues>>,
+  ): {
+    readonly loaded: Map<number, Map<string, unknown>>
+    readonly requested: Map<number, Set<string>>
+    readonly owners: Map<number, string>
+  } => {
+    const expected = expectedResponse(ops)
+    const rawValues = isRecord(values)
+      ? values
+      : bridgeShapeError(WORKBOOK, "response", "values", "an object")
+    assertExactProperties(
+      WORKBOOK,
+      "response",
+      Object.keys(rawValues),
+      new Set([...expected.keys()].map(String)),
+    )
+    const stagedLoaded = new Map([...loaded].map(([id, values]) => [id, new Map(values)]))
+    const stagedRequested = new Map([...requested].map(([id, paths]) => [id, new Set(paths)]))
+    const stagedOwners = new Map(nativeChildOwners)
+    for (const [rawId, value] of Object.entries(rawValues)) {
+      const id = Number(rawId)
+      const properties = expected.get(id)
+      if (!Number.isSafeInteger(id) || properties === undefined || !isRecord(value))
+        throw new BridgeError(
+          `response handle "${rawId}": expected a numeric handle and property object`,
+        )
+      assertExactProperties(
+        id,
+        `response handle ${id}`,
+        Object.keys(value),
+        new Set(properties.keys()),
+      )
+      const held = stagedLoaded.get(id) ?? new Map<string, unknown>()
+      for (const [property, propertyValue] of Object.entries(value)) {
+        const childProperties = properties.get(property)
+        if (childProperties === undefined) throw new BridgeError("unreachable response property")
+        if (!isNativeChildCollection(property)) {
+          validateValueShape(id, property, propertyValue)
+          held.set(property, propertyValue)
+          continue
+        }
+        const list = childList(id, `response handle ${id}`, property, propertyValue)
+        const owner = `${id}:${property}`
+        const batchIds = new Set<number>()
+        for (const child of list) {
+          if (batchIds.has(child.id))
+            bridgeShapeError(id, `response handle ${id}`, property, "unique native child ids")
+          batchIds.add(child.id)
+          const priorOwner = stagedOwners.get(child.id)
+          if (priorOwner !== undefined && priorOwner !== owner)
+            bridgeShapeError(
+              id,
+              `response handle ${id}`,
+              property,
+              "native child ids unique to one collection",
+            )
+          stagedOwners.set(child.id, owner)
+          assertExactProperties(
+            child.id,
+            `response handle ${id} ${property} child`,
+            Object.keys(child).filter((key) => key !== "id"),
+            childProperties,
+          )
+          const childValues = stagedLoaded.get(child.id) ?? new Map<string, unknown>()
+          for (const childProperty of childProperties) {
+            const childValue = Reflect.get(child, childProperty)
+            validateValueShape(child.id, childProperty, childValue)
+            childValues.set(childProperty, childValue)
+          }
+          stagedLoaded.set(child.id, childValues)
+          stagedRequested.set(child.id, new Set(childProperties))
+        }
+        held.set(property, propertyValue)
+      }
+      stagedLoaded.set(id, held)
+    }
+    return { loaded: stagedLoaded, requested: stagedRequested, owners: stagedOwners }
   }
 
   const range = (id: number, label: string) => ({
     load: (properties: string) => request(id, properties),
     get address(): string {
-      const value = read(id, label, "address")
-      return typeof value === "string" ? value : ""
+      return string(id, label, "address")
     },
     get isNullObject(): boolean {
-      return read(id, label, "isNullObject") === true
+      return boolean(id, label, "isNullObject")
     },
     get text(): readonly (readonly string[])[] {
-      const value = read(id, label, "text")
-      return Array.isArray(value) ? value : []
+      return matrix(
+        id,
+        label,
+        "text",
+        (cell): cell is string => typeof cell === "string",
+        "a string matrix",
+      )
     },
     get formulas(): unknown[][] {
-      const value = read(id, label, "formulas")
-      return Array.isArray(value) ? value : []
+      return matrix(id, label, "formulas", anyCell)
     },
     get values(): unknown[][] {
-      const value = read(id, label, "values")
-      return Array.isArray(value) ? value : []
+      return matrix(id, label, "values", anyCell)
     },
     get valueTypes(): string[][] {
-      const value = read(id, label, "valueTypes")
-      return Array.isArray(value) ? value : []
+      return matrix(
+        id,
+        label,
+        "valueTypes",
+        (cell): cell is string => typeof cell === "string",
+        "a string matrix",
+      )
     },
     set formulas(value: unknown[][]) {
       set(id, "formulas", value)
     },
     get numberFormat(): string[][] {
-      const value = read(id, label, "numberFormat")
-      return Array.isArray(value)
-        ? value.map((row) =>
-            Array.isArray(row) ? row.map((cell) => (typeof cell === "string" ? cell : "")) : [],
-          )
-        : []
+      return matrix(
+        id,
+        label,
+        "numberFormat",
+        (cell): cell is string => typeof cell === "string",
+        "a string matrix",
+      )
     },
     set numberFormat(value: string[][]) {
       set(id, "numberFormat", value)
     },
     get rowCount(): number {
-      const value = read(id, label, "rowCount")
-      return typeof value === "number" ? value : 0
+      return nonnegativeInteger(id, label, "rowCount")
     },
     get columnCount(): number {
-      const value = read(id, label, "columnCount")
-      return typeof value === "number" ? value : 0
+      return nonnegativeInteger(id, label, "columnCount")
     },
     get cellCount(): number {
-      const value = read(id, label, "cellCount")
-      return typeof value === "number" ? value : 0
+      return nonnegativeInteger(id, label, "cellCount")
     },
     get rowIndex(): number {
-      const value = read(id, label, "rowIndex")
-      return typeof value === "number" ? value : 0
+      return nonnegativeInteger(id, label, "rowIndex")
     },
     get columnIndex(): number {
-      const value = read(id, label, "columnIndex")
-      return typeof value === "number" ? value : 0
+      return nonnegativeInteger(id, label, "columnIndex")
     },
     get worksheet() {
       const parent = loaded.get(id)
@@ -318,17 +590,21 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       return sheet(
         call(id, "worksheet", []),
         `${label} worksheet`,
-        typeof knownName === "string" ? knownName : null,
+        parent?.has("worksheet/name") === true
+          ? typeof knownName === "string"
+            ? knownName
+            : bridgeShapeError(id, label, "worksheet/name", "a string")
+          : null,
       )
     },
     get rowHidden(): boolean {
-      return read(id, label, "rowHidden") === true
+      return boolean(id, label, "rowHidden")
     },
     set rowHidden(value: boolean) {
       set(id, "rowHidden", value)
     },
     get columnHidden(): boolean {
-      return read(id, label, "columnHidden") === true
+      return boolean(id, label, "columnHidden")
     },
     set columnHidden(value: boolean) {
       set(id, "columnHidden", value)
@@ -354,15 +630,13 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
         set(id, "format.horizontalAlignment", value)
       },
       get columnWidth(): number | null {
-        const value = read(id, label, "format/columnWidth")
-        return typeof value === "number" ? value : null
+        return finiteNumberOrNull(id, label, "format/columnWidth")
       },
       set columnWidth(value: number) {
         set(id, "format.columnWidth", value)
       },
       get rowHeight(): number {
-        const value = read(id, label, "format/rowHeight")
-        return typeof value === "number" ? value : 0
+        return finiteNumber(id, label, "format/rowHeight")
       },
       set rowHeight(value: number) {
         set(id, "format.rowHeight", value)
@@ -422,12 +696,10 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       return {
         load: (properties: string) => request(duplicates, properties),
         get removed(): number {
-          const value = read(duplicates, "removeDuplicates", "removed")
-          return typeof value === "number" ? value : 0
+          return nonnegativeInteger(duplicates, "removeDuplicates", "removed")
         },
         get uniqueRemaining(): number {
-          const value = read(duplicates, "removeDuplicates", "uniqueRemaining")
-          return typeof value === "number" ? value : 0
+          return nonnegativeInteger(duplicates, "removeDuplicates", "uniqueRemaining")
         },
       }
     },
@@ -476,8 +748,7 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       request(replacementCount, "value")
       return {
         get value(): number {
-          const value = read(replacementCount, "replaceAll", "value")
-          return typeof value === "number" ? value : 0
+          return nonnegativeInteger(replacementCount, "replaceAll", "value")
         },
       }
     },
@@ -489,23 +760,22 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
     load: (properties: string) => request(id, properties),
     get name(): string {
       if (knownName !== null) return knownName
-      const value = read(id, label, "name")
-      return typeof value === "string" ? value : ""
+      return string(id, label, "name")
     },
     // Renaming is how a copied sheet gets its name; a getter alone throws on assignment.
     set name(value: string) {
       set(id, "name", value)
     },
     get id(): string {
-      const value = read(id, label, "id")
-      return typeof value === "string" ? value : ""
+      return string(id, label, "id")
     },
     get visibility(): SheetVisibility {
       const value = read(id, label, "visibility")
-      return value === "Hidden" || value === "VeryHidden" ? value : "Visible"
+      if (value === "Visible" || value === "Hidden" || value === "VeryHidden") return value
+      return bridgeShapeError(id, label, "visibility", '"Visible", "Hidden", or "VeryHidden"')
     },
     get isNullObject(): boolean {
-      return read(id, label, "isNullObject") === true
+      return boolean(id, label, "isNullObject")
     },
     getRange: (address: string) => range(call(id, "getRange", [address]), `${label}!${address}`),
     getCell: (row: number, column: number) =>
@@ -550,20 +820,18 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
         readonly showHeaders: boolean
         readonly getRange: () => BridgeRange
       }[] {
-        const value = read(id, `${label} tables`, "tables/items")
-        if (!isChildList(value)) return []
-        return value.flatMap((child) => {
+        return children(id, `${label} tables`, "tables/items").map((child) => {
           const name = Reflect.get(child, "name")
           const showHeaders = Reflect.get(child, "showHeaders")
-          return typeof name === "string" && typeof showHeaders === "boolean"
-            ? [
-                {
-                  name,
-                  showHeaders,
-                  getRange: () => range(call(child.id, "getRange", []), `table ${name}`),
-                },
-              ]
-            : []
+          if (typeof name !== "string")
+            return bridgeShapeError(child.id, `${label} tables`, "name", "a string")
+          if (typeof showHeaders !== "boolean")
+            return bridgeShapeError(child.id, `${label} tables`, "showHeaders", "a boolean")
+          return {
+            name,
+            showHeaders,
+            getRange: () => range(call(child.id, "getRange", []), `table ${name}`),
+          }
         })
       },
       add: (address: string, hasHeaders: boolean) => {
@@ -603,13 +871,27 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
                 },
                 get showAs(): { calculation: string; baseField: unknown; baseItem: unknown } {
                   const value = read(dataHierarchy, "dataHierarchy", "showAs")
-                  if (typeof value !== "object" || value === null || Array.isArray(value))
-                    throw new BridgeError("dataHierarchy: showAs response is invalid")
+                  if (!isRecord(value))
+                    return bridgeShapeError(
+                      dataHierarchy,
+                      "dataHierarchy",
+                      "showAs",
+                      "an object with calculation, baseField, and baseItem",
+                    )
                   const calculation = Reflect.get(value, "calculation")
                   const baseField = Reflect.get(value, "baseField")
                   const baseItem = Reflect.get(value, "baseItem")
-                  if (typeof calculation !== "string")
-                    throw new BridgeError("dataHierarchy: showAs response is invalid")
+                  if (
+                    typeof calculation !== "string" ||
+                    !Object.hasOwn(value, "baseField") ||
+                    !Object.hasOwn(value, "baseItem")
+                  )
+                    return bridgeShapeError(
+                      dataHierarchy,
+                      "dataHierarchy",
+                      "showAs",
+                      "an object with calculation, baseField, and baseItem",
+                    )
                   return { calculation, baseField, baseItem }
                 },
                 set showAs(value: { calculation: string; baseField: unknown; baseItem: unknown }) {
@@ -690,10 +972,14 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
     return {
       load: (properties: string) => request(id, properties),
       get items(): readonly ReturnType<typeof sheet>[] {
-        const value = read(id, "worksheets", "items")
-        return isChildList(value)
-          ? value.map((child) => sheet(child.id, `sheet ${String(child["name"] ?? child.id)}`))
-          : []
+        return children(id, "worksheets", "items").map((child) => {
+          const name = Reflect.get(child, "name")
+          return sheet(
+            child.id,
+            `sheet ${typeof name === "string" ? name : child.id}`,
+            typeof name === "string" ? name : null,
+          )
+        })
       },
       getItem: (name: string) => sheet(call(id, "getItem", [name]), `sheet ${name}`),
       getItemOrNullObject: (name: string) =>
@@ -726,14 +1012,23 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
           request(WORKBOOK, scopedProperties("linkedWorkbooks", properties)),
         get items(): readonly { readonly id: string }[] {
           const value = read(WORKBOOK, "linkedWorkbooks", "linkedWorkbooks/items")
-          if (!Array.isArray(value)) return []
-          const items: { id: string }[] = []
-          for (const entry of value) {
-            if (typeof entry !== "object" || entry === null || Array.isArray(entry)) continue
-            const id = Reflect.get(entry, "id")
-            if (typeof id === "string") items.push({ id })
-          }
-          return items
+          if (!Array.isArray(value))
+            return bridgeShapeError(
+              WORKBOOK,
+              "linkedWorkbooks",
+              "linkedWorkbooks/items",
+              "an array of objects with string ids",
+            )
+          return value.map((entry) => {
+            if (!isRecord(entry) || typeof Reflect.get(entry, "id") !== "string")
+              return bridgeShapeError(
+                WORKBOOK,
+                "linkedWorkbooks",
+                "linkedWorkbooks/items",
+                "an array of objects with string ids",
+              )
+            return { id: Reflect.get(entry, "id") as string }
+          })
         },
         refreshAll: () => call(WORKBOOK, "linkedWorkbooks.refreshAll", []),
       },
@@ -747,15 +1042,17 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
           readonly formula: unknown
           readonly scope: string
         }[] {
-          const value = read(WORKBOOK, "names", "names/items")
-          if (!isChildList(value)) return []
-          return value.flatMap((child) => {
+          return children(WORKBOOK, "names", "names/items").map((child) => {
             const name = Reflect.get(child, "name")
             const formula = Reflect.get(child, "formula")
             const scope = Reflect.get(child, "scope")
-            return typeof name === "string" && typeof scope === "string"
-              ? [{ name, formula, scope }]
-              : []
+            if (typeof name !== "string")
+              return bridgeShapeError(child.id, "names", "name", "a string")
+            if (!Object.hasOwn(child, "formula"))
+              return bridgeShapeError(child.id, "names", "formula", "a loaded value")
+            if (typeof scope !== "string")
+              return bridgeShapeError(child.id, "names", "scope", "a string")
+            return { name, formula, scope }
           })
         },
         getItemOrNullObject: (name: string) => ({
@@ -773,11 +1070,10 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
           const table = call(WORKBOOK, "getTable", [name])
           return {
             get isNullObject(): boolean {
-              return read(table, `table ${name}`, "isNullObject") === true
+              return boolean(table, `table ${name}`, "isNullObject")
             },
             get name(): string {
-              const value = read(table, `table ${name}`, "name")
-              return typeof value === "string" ? value : ""
+              return string(table, `table ${name}`, "name")
             },
             load: (properties: string) => request(table, properties),
             getRange: () => range(call(table, "getRange", []), `table ${name}`),
@@ -810,7 +1106,14 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
         // needs a getter that goes through the gate like every other read.
         get calculationMode(): CalculationMode {
           const value = read(WORKBOOK, "application", "application/calculationMode")
-          return value === "Manual" || value === "AutomaticExceptTables" ? value : "Automatic"
+          if (value === "Automatic" || value === "Manual" || value === "AutomaticExceptTables")
+            return value
+          return bridgeShapeError(
+            WORKBOOK,
+            "application",
+            "application/calculationMode",
+            '"Automatic", "Manual", or "AutomaticExceptTables"',
+          )
         },
         set calculationMode(value: CalculationMode) {
           set(WORKBOOK, "application.calculationMode", value)
@@ -825,20 +1128,27 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
         return {
           load: (properties: string) => request(selected, properties),
           get address(): string {
-            const value = read(selected, "selected areas", "address")
-            return typeof value === "string" ? value : ""
+            return string(selected, "selected areas", "address")
           },
           get worksheet(): { readonly name: string } {
-            const value = read(selected, "selected areas", "worksheet/name")
-            return { name: typeof value === "string" ? value : "" }
+            return { name: string(selected, "selected areas", "worksheet/name") }
           },
           get areas(): { readonly items: readonly { readonly cellCount: number }[] } {
-            const value = read(selected, "selected areas", "areas/items")
-            if (!isChildList(value)) return { items: [] }
             return {
-              items: value.map((child) => {
+              items: children(selected, "selected areas", "areas/items").map((child) => {
                 const cellCount = Reflect.get(child, "cellCount")
-                return { cellCount: typeof cellCount === "number" ? cellCount : 0 }
+                if (
+                  typeof cellCount !== "number" ||
+                  !Number.isSafeInteger(cellCount) ||
+                  cellCount < 0
+                )
+                  return bridgeShapeError(
+                    child.id,
+                    "selected areas",
+                    "cellCount",
+                    "a non-negative finite integer",
+                  )
+                return { cellCount }
               }),
             }
           },
@@ -853,7 +1163,13 @@ export const buildBridgeContext = (send: BridgeSend, events = createBridgeEvents
       transcript.push(ops)
       const response = await send(ops)
       if (response.failure !== undefined) throw new BridgeHostError(response.failure)
-      for (const [id, values] of Object.entries(response.values)) absorb(Number(id), values)
+      const staged = stageResponse(ops, response.values)
+      loaded.clear()
+      for (const [id, values] of staged.loaded) loaded.set(id, values)
+      requested.clear()
+      for (const [id, paths] of staged.requested) requested.set(id, paths)
+      nativeChildOwners.clear()
+      for (const [id, owner] of staged.owners) nativeChildOwners.set(id, owner)
     },
   }
 

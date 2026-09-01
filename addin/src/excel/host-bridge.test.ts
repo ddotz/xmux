@@ -260,6 +260,124 @@ describe("the load/sync protocol, enforced by the wire", () => {
   })
 })
 
+describe("malformed bridge responses", () => {
+  it("rejects malformed required scalars and matrices instead of inventing empty values", async () => {
+    const scalar = buildBridgeContext(async () => ({ values: { 1: { address: 42 } } }))
+    const selected = scalar.context.workbook.getSelectedRange()
+    selected.load("address")
+    await expect(scalar.context.sync()).rejects.toThrow(
+      /response handle 1 \(handle 1\): "address" expected a string/,
+    )
+
+    const matrix = buildBridgeContext(async () => ({ values: { 1: { text: [["A", 2]] } } }))
+    const range = matrix.context.workbook.getSelectedRange()
+    range.load("text")
+    await expect(matrix.context.sync()).rejects.toThrow(
+      /response handle 1 \(handle 1\): "text" expected a rectangular matrix/,
+    )
+  })
+
+  it("rejects malformed child collections before absorbing any response values", async () => {
+    const malformed = buildBridgeContext(async () => ({ values: { 1: { items: {} } } }))
+    malformed.context.workbook.worksheets.load("items/name")
+    await expect(malformed.context.sync()).rejects.toThrow(
+      /"items" expected an array of native child objects/,
+    )
+
+    const bridge = buildBridgeContext(async () => ({
+      values: {
+        1: {
+          address: "Data!$A$1",
+          "areas/items": [
+            { id: -1, cellCount: 1 },
+            { id: -1, cellCount: 1 },
+          ],
+        },
+      },
+    }))
+    const selected = bridge.context.workbook.getSelectedRanges()
+    selected.load("address,areas/items/cellCount")
+
+    await expect(bridge.context.sync()).rejects.toThrow(
+      /response handle 1 \(handle 1\): "areas\/items" expected unique native child ids/,
+    )
+    expect(() => selected.address).toThrow(/before the sync that fetches it/)
+  })
+
+  it("rejects zero, positive, non-integer, and conflicting child ids", async () => {
+    for (const id of [0, 1, -1.5]) {
+      const wrongSign = buildBridgeContext(async () => ({ values: { 1: { items: [{ id }] } } }))
+      wrongSign.context.workbook.worksheets.load("items/name")
+      await expect(wrongSign.context.sync()).rejects.toThrow(
+        /"items" expected native child ids that are negative integers/,
+      )
+    }
+
+    const conflicting = buildBridgeContext(async () => ({
+      values: { 1: { items: [{ id: -1 }], "areas/items": [{ id: -1 }] } },
+    }))
+    conflicting.context.workbook.worksheets.load("items/name")
+    await expect(conflicting.context.sync()).rejects.toThrow(
+      /"areas\/items" expected no unsolicited or stale response value/,
+    )
+  })
+
+  it("requires exactly the current sync's loaded handle properties", async () => {
+    const missing = buildBridgeContext(async () => ({ values: {} }))
+    missing.context.workbook.getSelectedRange().load("address")
+    await expect(missing.context.sync()).rejects.toThrow(
+      /response \(handle 0\): "1" expected a response value requested by this sync/,
+    )
+
+    const extra = buildBridgeContext(async () => ({
+      values: { 1: { address: "Data!$A$1", text: [["A"]] }, 2: {} },
+    }))
+    extra.context.workbook.getSelectedRange().load("address")
+    await expect(extra.context.sync()).rejects.toThrow(
+      /"2" expected no unsolicited or stale response value/,
+    )
+  })
+
+  it("rejects stale reload injection without changing already loaded state", async () => {
+    let round = 0
+    const bridge = buildBridgeContext(async () => {
+      round += 1
+      return round === 1
+        ? { values: { 1: { address: "Data!$A$1" } } }
+        : { values: { 1: { address: "Data!$A$2", text: [["B"]] } } }
+    })
+    const range = bridge.context.workbook.getSelectedRange()
+    range.load("address")
+    await bridge.context.sync()
+    expect(range.address).toBe("Data!$A$1")
+    range.load("text")
+    await expect(bridge.context.sync()).rejects.toThrow(
+      /"address" expected no unsolicited or stale response value/,
+    )
+    expect(range.address).toBe("Data!$A$1")
+  })
+
+  it("rejects ragged and mixed-validity matrices without partial absorption", async () => {
+    const bridge = buildBridgeContext(async () => ({
+      values: { 1: { address: "Data!$A$1", text: [["A"], ["B", "C"]] } },
+    }))
+    const range = bridge.context.workbook.getSelectedRange()
+    range.load("address,text")
+    await expect(bridge.context.sync()).rejects.toThrow(/"text" expected a rectangular matrix/)
+    expect(() => range.address).toThrow(/before the sync that fetches it/)
+  })
+
+  it("accepts a null loaded column width", async () => {
+    const bridge = buildBridgeContext(async () => ({
+      values: { 1: { "format/columnWidth": null } },
+    }))
+    const range = bridge.context.workbook.getSelectedRange()
+    range.load("format/columnWidth")
+    await bridge.context.sync()
+    expect(range.format.columnWidth).toBeNull()
+  })
+})
+
 describe("the pane's read consumers over the bridge", () => {
   it("resolves every reference kind", async () => {
     const resolved = await runBridgeBatch(createMemoryBridge(workbook), async (context) =>

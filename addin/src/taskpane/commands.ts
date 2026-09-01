@@ -50,7 +50,7 @@ export type CommandDeps = {
   readonly onSelectionExpected: (selection: {
     readonly address: string
     readonly worksheetId: string
-  }) => void
+  }) => () => void
   readonly history: History
 }
 
@@ -79,14 +79,20 @@ export const createCommands = (deps: CommandDeps) => {
   ): Promise<void> =>
     run(async (context) => {
       const worksheet = context.workbook.worksheets.getItem(sheet)
+      let cancelExpected: (() => void) | null = null
       if (suppressEvent) {
         worksheet.load("id")
         await context.sync()
-        deps.onSelectionExpected({ address, worksheetId: worksheet.id })
+        cancelExpected = deps.onSelectionExpected({ address, worksheetId: worksheet.id })
       }
-      worksheet.activate()
-      worksheet.getRange(address).select()
-      await context.sync()
+      try {
+        worksheet.activate()
+        worksheet.getRange(address).select()
+        await context.sync()
+      } catch (error) {
+        cancelExpected?.()
+        throw error
+      }
     })
 
   const writeFormula = (pane: Extract<PaneState, { kind: "formula" }>, formula: string): void => {

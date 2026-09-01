@@ -48,6 +48,36 @@ describe("mirrorSelection", () => {
     })
   })
 
+  it("keeps a comma-containing quoted sheet name as one local rectangle", () => {
+    const mirrored = mirrorSelection({
+      address: "'North, West'!$B$2:$D$5",
+      cellCount: 12,
+      formulas: [],
+      text: [],
+      sheet: "North, West",
+    })
+
+    expect(mirrored.target).toEqual({
+      sheet: "North, West",
+      area: { top: 2, left: 2, height: 4, width: 3 },
+    })
+  })
+
+  it("uses the first area when quoted sheet names contain commas and escaped apostrophes", () => {
+    const mirrored = mirrorSelection({
+      address: "'O''Brien, Inc.'!$B$2:$D$5,'O''Brien, Inc.'!$F$8:$G$9",
+      cellCount: 14,
+      formulas: [],
+      text: [],
+      sheet: "O'Brien, Inc.",
+    })
+
+    expect(mirrored.target).toEqual({
+      sheet: "O'Brien, Inc.",
+      area: { top: 2, left: 2, height: 4, width: 3 },
+    })
+  })
+
   it("keeps formula explanation state exclusive to one selected cell", () => {
     // Given: one selected formula cell
     const selected = {

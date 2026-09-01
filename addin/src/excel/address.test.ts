@@ -164,4 +164,12 @@ describe("splitAreas", () => {
     expect(splitAreas("Sheet1!A1:B2, Sheet1!D5:E6")).toEqual(["Sheet1!A1:B2", "Sheet1!D5:E6"])
     expect(splitAreas(",Sheet1!A1")).toEqual(["Sheet1!A1"])
   })
+
+  it("does not split commas in quoted sheet names, including escaped apostrophes", () => {
+    expect(splitAreas("'North, West'!A1")).toEqual(["'North, West'!A1"])
+    expect(splitAreas("'O''Brien, Inc.'!A1,'O''Brien, Inc.'!C3")).toEqual([
+      "'O''Brien, Inc.'!A1",
+      "'O''Brien, Inc.'!C3",
+    ])
+  })
 })

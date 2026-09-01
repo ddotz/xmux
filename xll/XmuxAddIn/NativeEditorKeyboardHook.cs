@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -9,6 +10,7 @@ namespace XmuxAddIn
     internal sealed class NativeEditorKeyboardHook : IDisposable
     {
         private const int KeyboardHook = 2;
+        private const int CallWindowProcedureHook = 4;
         private const int VirtualKeyTab = 9;
         private const int VirtualKeyShift = 0x10;
         private const int VirtualKeyControl = 0x11;
@@ -17,6 +19,18 @@ namespace XmuxAddIn
         private const uint RootAncestor = 2;
         private const string IdleState = "{\"editing\":false}";
         private const string UnavailableState = "{\"error\":\"native editor observation failed\"}";
+        private const int RollbackRetriesPerEntry = 3;
+        private static readonly int CwpMessageOffset = Marshal.OffsetOf(typeof(CwpStruct), "Message").ToInt32();
+        private static readonly int CwpWindowOffset = Marshal.OffsetOf(typeof(CwpStruct), "Window").ToInt32();
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CwpStruct
+        {
+            internal IntPtr LParam;
+            internal IntPtr WParam;
+            internal uint Message;
+            internal IntPtr Window;
+        }
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern IntPtr SetWindowsHookEx(
@@ -60,13 +74,19 @@ namespace XmuxAddIn
         }
 
         private static PublishedState latest = new PublishedState(0, UnavailableState);
+        private static readonly List<NativeEditorKeyboardHook> incompleteRollbacks =
+            new List<NativeEditorKeyboardHook>();
+        private static readonly object incompleteRollbackGate = new object();
         private readonly HookCallback callback;
+        private readonly HookCallback messageCallback;
         private readonly int excelProcessId;
         private readonly ManualResetEvent started = new ManualResetEvent(false);
         private readonly ManualResetEvent stop = new ManualResetEvent(false);
         private readonly object stateGate = new object();
         private readonly Thread worker;
         private IntPtr hook;
+        private IntPtr messageHook;
+        private int callbackFailure;
         private volatile bool disposing;
         private volatile bool workerStopped;
         private bool waitHandlesClosed;
@@ -74,8 +94,10 @@ namespace XmuxAddIn
 
         internal NativeEditorKeyboardHook(int processId)
         {
+            RetryIncompleteRollbacks();
             excelProcessId = processId;
             callback = HandleKeyboard;
+            messageCallback = HandleWindowMessage;
             worker = new Thread(PollEditor) { IsBackground = true, Name = "DdotExcel native editor" };
             var workerStarted = false;
             try
@@ -86,8 +108,10 @@ namespace XmuxAddIn
                 if (!started.WaitOne(TimeSpan.FromSeconds(5)))
                     throw new TimeoutException("The Excel editor observer did not start within five seconds.");
 
-                hook = SetWindowsHookEx(KeyboardHook, callback, IntPtr.Zero, GetCurrentThreadId());
-                if (hook != IntPtr.Zero) return;
+                var threadId = GetCurrentThreadId();
+                messageHook = SetWindowsHookEx(CallWindowProcedureHook, messageCallback, IntPtr.Zero, threadId);
+                hook = SetWindowsHookEx(KeyboardHook, callback, IntPtr.Zero, threadId);
+                if (hook != IntPtr.Zero && messageHook != IntPtr.Zero) return;
 
                 throw new Win32Exception(
                     Marshal.GetLastWin32Error(),
@@ -95,16 +119,27 @@ namespace XmuxAddIn
             }
             catch
             {
+                var keyboardRemoved = TryRemoveHook(ref hook);
+                var messageRemoved = TryRemoveHook(ref messageHook);
                 BeginShutdown();
-                if (workerStarted) StopWorker();
-                else CloseWaitHandles();
+                if (keyboardRemoved && messageRemoved)
+                {
+                    if (workerStarted) StopWorker();
+                    else CloseWaitHandles();
+                }
+                else
+                {
+                    lock (incompleteRollbackGate) incompleteRollbacks.Add(this);
+                }
                 GC.KeepAlive(callback);
+                GC.KeepAlive(messageCallback);
                 throw;
             }
         }
 
         internal static string ReadState(int windowHandle)
         {
+            RetryIncompleteRollbacks();
             var snapshot = Volatile.Read(ref latest);
             if (snapshot.Json == IdleState || snapshot.Json == UnavailableState) return snapshot.Json;
             var expected = GetAncestor(new IntPtr(windowHandle), RootAncestor);
@@ -118,11 +153,12 @@ namespace XmuxAddIn
             Exception unhookFailure = null;
             try
             {
-                if (hook != IntPtr.Zero && !UnhookWindowsHookEx(hook))
+                if (!TryRemoveHook(ref hook))
                     unhookFailure = new Win32Exception(
-                        Marshal.GetLastWin32Error(),
-                        "Could not remove the Excel editor keyboard hook.");
-                if (unhookFailure == null) hook = IntPtr.Zero;
+                        Marshal.GetLastWin32Error(), "Could not remove the Excel editor keyboard hook.");
+                if (!TryRemoveHook(ref messageHook) && unhookFailure == null)
+                    unhookFailure = new Win32Exception(
+                        Marshal.GetLastWin32Error(), "Could not remove the Excel editor IME message hook.");
             }
             catch (Exception exception)
             {
@@ -130,13 +166,14 @@ namespace XmuxAddIn
             }
             finally
             {
-                StopWorker();
+                if (hook == IntPtr.Zero && messageHook == IntPtr.Zero) StopWorker();
                 lock (stateGate)
                 {
                     disposing = false;
-                    if (unhookFailure == null) disposed = true;
+                    if (hook == IntPtr.Zero && messageHook == IntPtr.Zero) disposed = true;
                 }
                 GC.KeepAlive(callback);
+                GC.KeepAlive(messageCallback);
             }
             if (unhookFailure != null) throw unhookFailure;
         }
@@ -144,6 +181,40 @@ namespace XmuxAddIn
         private static void Publish(long window, string json)
         {
             Volatile.Write(ref latest, new PublishedState(window, json));
+        }
+
+        private static bool TryRemoveHook(ref IntPtr target)
+        {
+            if (target == IntPtr.Zero) return true;
+            if (!UnhookWindowsHookEx(target)) return false;
+            target = IntPtr.Zero;
+            return true;
+        }
+
+        private static void RetryIncompleteRollbacks()
+        {
+            lock (incompleteRollbackGate)
+            {
+                for (var index = incompleteRollbacks.Count - 1; index >= 0; index--)
+                {
+                    var failed = incompleteRollbacks[index];
+                    if (!failed.TryCompleteRollback()) continue;
+                    incompleteRollbacks.RemoveAt(index);
+                }
+            }
+        }
+
+        private bool TryCompleteRollback()
+        {
+            for (var attempt = 0; attempt < RollbackRetriesPerEntry; attempt++)
+            {
+                TryRemoveHook(ref hook);
+                TryRemoveHook(ref messageHook);
+                if (hook != IntPtr.Zero || messageHook != IntPtr.Zero) continue;
+                StopWorker();
+                return true;
+            }
+            return false;
         }
 
         private bool BeginShutdown()
@@ -189,25 +260,71 @@ namespace XmuxAddIn
         {
             try
             {
-                var released = (data.ToInt64() & KeyReleased) != 0;
-                if (!disposing && !workerStopped && code >= 0 && !released && word.ToInt32() == VirtualKeyTab &&
-                    (GetAsyncKeyState(VirtualKeyShift) & 0x8000) == 0 &&
-                    (GetAsyncKeyState(VirtualKeyControl) & 0x8000) == 0 &&
-                    (GetAsyncKeyState(VirtualKeyMenu) & 0x8000) == 0 &&
-                    NativeEditorObserver.TryCycleReference(excelProcessId))
-                    return new IntPtr(1);
+                try
+                {
+                    var released = (data.ToInt64() & KeyReleased) != 0;
+                    if (!disposing && !workerStopped && code >= 0 && !released && word.ToInt32() == VirtualKeyTab &&
+                        (GetAsyncKeyState(VirtualKeyShift) & 0x8000) == 0 &&
+                        (GetAsyncKeyState(VirtualKeyControl) & 0x8000) == 0 &&
+                        (GetAsyncKeyState(VirtualKeyMenu) & 0x8000) == 0)
+                    {
+                        var result = NativeEditorObserver.TryCycleReference(excelProcessId);
+                        if (result == NativeEditorObserver.CycleResult.RestoreFailed)
+                            Volatile.Write(ref callbackFailure, 1);
+                        if (result != NativeEditorObserver.CycleResult.Chain) return new IntPtr(1);
+                    }
+                }
+                catch
+                {
+                    // Managed exceptions must not suppress the native key's normal routing.
+                    Volatile.Write(ref callbackFailure, 1);
+                }
+                return CallNextHookEx(hook, code, word, data);
             }
             catch
             {
-                // Managed exceptions must never cross a native hook callback boundary.
+                // No exception may cross a native hook callback boundary.
+                Volatile.Write(ref callbackFailure, 1);
+                return IntPtr.Zero;
             }
-            return CallNextHookEx(hook, code, word, data);
+        }
+
+        private IntPtr HandleWindowMessage(int code, IntPtr word, IntPtr data)
+        {
+            try
+            {
+                if (code >= 0 && data != IntPtr.Zero)
+                {
+                    var message = unchecked((uint)Marshal.ReadInt32(data, CwpMessageOffset));
+                    if (message == 0x010D || message == 0x010E || message == 0x010F)
+                        NativeEditorObserver.ObserveImeMessage(
+                            Marshal.ReadIntPtr(data, CwpWindowOffset), message);
+                }
+            }
+            catch
+            {
+                Volatile.Write(ref callbackFailure, 1);
+            }
+            try
+            {
+                return CallNextHookEx(messageHook, code, word, data);
+            }
+            catch
+            {
+                Volatile.Write(ref callbackFailure, 1);
+                return IntPtr.Zero;
+            }
         }
 
         private void RefreshState()
         {
             try
             {
+                if (Interlocked.Exchange(ref callbackFailure, 0) != 0)
+                {
+                    PublishIfActive(0, UnavailableState);
+                    return;
+                }
                 IntPtr editorWindow;
                 var state = NativeEditorObserver.Read(excelProcessId, out editorWindow);
                 PublishIfActive(

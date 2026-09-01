@@ -245,11 +245,13 @@ namespace XmuxAddIn
 
         private object Call(object target, string member, object[] args)
         {
-            dynamic app = ExcelDnaUtil.Application;
-            dynamic workbook = CurrentWorkbook();
             if (member == "set") { Set(target, StringArg(args, 0), Arg(args, 1)); return target; }
             if (target is WorkbookHandle)
             {
+                dynamic workbook = null;
+                if (member != "getSelectedRange" && member != "getSelectedRanges" && member != "func" &&
+                    member != "application.calculate")
+                    workbook = CurrentWorkbook();
                 if (member == "worksheets") return new WorksheetsHandle(workbook.Worksheets);
                 if (member == "getSelectedRange") return new RangeHandle(excelWindow.RangeSelection);
                 if (member == "getSelectedRanges") return new SelectedAreasHandle(excelWindow.RangeSelection);
@@ -258,7 +260,7 @@ namespace XmuxAddIn
                 if (member == "getTable") return TableByName(workbook, StringArg(args, 0));
                 if (member == "names.add") { workbook.Names.Add(Name: StringArg(args, 0), RefersTo: "=" + QualifiedAddress(RangeArgument(Arg(args, 1)))); return target; }
                 if (member == "linkedWorkbooks.refreshAll") { RefreshLinks(workbook); return target; }
-                if (member == "application.calculate") { Calculate(app, StringArg(args, 0)); return target; }
+                if (member == "application.calculate") { Calculate(ExcelDnaUtil.Application, StringArg(args, 0)); return target; }
             }
             if (target is WorksheetsHandle)
             {
@@ -278,7 +280,7 @@ namespace XmuxAddIn
                 if (member == "getRangeByIndexes") return new RangeHandle(sheet.Cells[IntArg(args, 0) + 1, IntArg(args, 1) + 1].Resize[IntArg(args, 2), IntArg(args, 3)]);
                 if (member == "getUsedRange") return UsedRange(sheet.Cells, BoolArg(args, 0));
                 if (member == "activate") { sheet.Activate(); return target; }
-                if (member == "delete") { DeleteSheet(app, sheet); return target; }
+                if (member == "delete") { DeleteSheet(ExcelDnaUtil.Application, sheet); return target; }
                 if (member == "copy") return CopySheet(sheet, args);
                 if (member == "freezePanes.freezeRows" || member == "freezePanes.freezeColumns") { Freeze(sheet, member, IntArg(args, 0)); return target; }
                 if (member == "charts.add") return AddChart(sheet, StringArg(args, 0), RangeArgument(Arg(args, 1)), Optional(args, 2));
@@ -353,20 +355,38 @@ namespace XmuxAddIn
 
         private Dictionary<string, object> LoadWorkbook(string[] properties)
         {
-            dynamic app = ExcelDnaUtil.Application;
             var loaded = new Dictionary<string, object>();
             var nameProperties = new List<string>();
             var linkProperties = new List<string>();
+            var calculationRequested = false;
             foreach (var property in properties)
             {
-                if (property == "application/calculationMode") loaded[property] = CalculationMode(app.Calculation);
+                if (property == "application/calculationMode") calculationRequested = true;
                 else if (property.StartsWith("names/", StringComparison.Ordinal)) nameProperties.Add(property);
                 else if (property.StartsWith("linkedWorkbooks/", StringComparison.Ordinal)) linkProperties.Add(property);
                 else throw NoDispatch(property);
             }
-            dynamic workbook = CurrentWorkbook();
-            if (nameProperties.Count != 0) loaded["names/items"] = LoadNames(workbook, nameProperties);
-            if (linkProperties.Count != 0) loaded["linkedWorkbooks/items"] = LoadLinks(workbook, linkProperties);
+            dynamic application = null;
+            dynamic workbook = null;
+            try
+            {
+                if (calculationRequested)
+                {
+                    application = ExcelDnaUtil.Application;
+                    loaded["application/calculationMode"] = CalculationMode(application.Calculation);
+                }
+                if (nameProperties.Count != 0 || linkProperties.Count != 0)
+                {
+                    workbook = CurrentWorkbook();
+                    if (nameProperties.Count != 0) loaded["names/items"] = LoadNames(workbook, nameProperties);
+                    if (linkProperties.Count != 0) loaded["linkedWorkbooks/items"] = LoadLinks(workbook, linkProperties);
+                }
+            }
+            finally
+            {
+                ReleaseCom(workbook);
+                // ExcelDnaUtil owns and may share the Application RCW; never release it here.
+            }
             return loaded;
         }
 
@@ -452,7 +472,30 @@ namespace XmuxAddIn
                 else if (property == "worksheet/name") loaded[property] = range == null ? "" : Convert.ToString(range.Worksheet.Name);
                 else if (property == "areas/items/cellCount")
                 {
-                    var items = new List<object>(); if (range != null) foreach (dynamic area in range.Areas) { var id = nextHostHandle--; handles[id] = new RangeHandle(area); items.Add(new Dictionary<string, object> { { "id", id }, { "cellCount", Convert.ToDouble(area.CountLarge) } }); }
+                    var items = new List<object>();
+                    dynamic areas = null;
+                    try
+                    {
+                        if (range != null)
+                        {
+                            areas = range.Areas;
+                            foreach (dynamic area in areas)
+                            {
+                                try
+                                {
+                                    var id = nextHostHandle--;
+                                    handles[id] = AreaCellCountHandle.Instance;
+                                    items.Add(new Dictionary<string, object>
+                                    {
+                                        { "id", id },
+                                        { "cellCount", Convert.ToDouble(area.CountLarge) }
+                                    });
+                                }
+                                finally { ReleaseCom(area); }
+                            }
+                        }
+                    }
+                    finally { ReleaseCom(areas); }
                     loaded["areas/items"] = items;
                 }
                 else throw NoDispatch(property);
@@ -539,8 +582,12 @@ namespace XmuxAddIn
 
         private void Set(object target, string path, object value)
         {
-            dynamic app = ExcelDnaUtil.Application;
-            if (target is WorkbookHandle && path == "application.calculationMode") { app.Calculation = Calculation(String(value)); return; }
+            if (target is WorkbookHandle && path == "application.calculationMode")
+            {
+                dynamic application = ExcelDnaUtil.Application;
+                application.Calculation = Calculation(String(value));
+                return;
+            }
             if (target is WorksheetHandle)
             {
                 dynamic sheet = ((WorksheetHandle)target).Worksheet; if (sheet == null) throw new DispatchException("excel", "The worksheet is null.");
@@ -692,18 +739,12 @@ namespace XmuxAddIn
                 }
                 else
                 {
-                    var rows = new List<object>();
-                    for (var row = 1; row <= height; row++)
-                    {
-                        var cells = new List<object>();
-                        for (var column = 1; column <= width; column++)
-                        {
-                            dynamic cell = range.Cells[row, column];
-                            cells.Add(DisplayTextAndRelease(worksheetFunction, cell));
-                        }
-                        rows.Add(cells);
-                    }
-                    result = rows;
+                    result = DisplayTextWithMixedFormats(
+                        range,
+                        worksheetFunction,
+                        height,
+                        width,
+                        values);
                 }
             }
             catch (Exception exception) { primaryFailure = exception; }
@@ -717,6 +758,50 @@ namespace XmuxAddIn
             if (primaryFailure != null) throw primaryFailure;
             if (releaseFailure != null) throw releaseFailure;
             return result;
+        }
+
+        private static object DisplayTextWithMixedFormats(
+            dynamic range,
+            dynamic worksheetFunction,
+            int height,
+            int width,
+            object values)
+        {
+            var formats = range.NumberFormatLocal as Array;
+            if (formats != null)
+            {
+                var rawRows = (IList)NormalizeMatrix(values, height, width, delegate(object value) { return value; });
+                var formatRows = (IList)NormalizeMatrix(formats, height, width, delegate(object format)
+                {
+                    return Convert.ToString(format, CultureInfo.CurrentCulture);
+                });
+                var rows = new List<object>();
+                for (var row = 0; row < height; row++)
+                {
+                    var rawCells = (IList)rawRows[row];
+                    var formatCells = (IList)formatRows[row];
+                    var cells = new List<object>();
+                    for (var column = 0; column < width; column++)
+                        cells.Add(DisplayTextValue(worksheetFunction, rawCells[column], (string)formatCells[column]));
+                    rows.Add(cells);
+                }
+                return rows;
+            }
+            const int cellTraversalLimit = 10000;
+            if ((long)height * width > cellTraversalLimit)
+                throw new DispatchException("excel", "Excel did not return a bulk number-format matrix for this large range.");
+            var fallbackRows = new List<object>();
+            for (var row = 1; row <= height; row++)
+            {
+                var cells = new List<object>();
+                for (var column = 1; column <= width; column++)
+                {
+                    dynamic cell = range.Cells[row, column];
+                    cells.Add(DisplayTextAndRelease(worksheetFunction, cell));
+                }
+                fallbackRows.Add(cells);
+            }
+            return fallbackRows;
         }
 
         private static string DisplayTextAndRelease(dynamic worksheetFunction, dynamic cell)
@@ -808,9 +893,22 @@ namespace XmuxAddIn
         {
             var height = Convert.ToInt32(range.Rows.Count);
             var width = Convert.ToInt32(range.Columns.Count);
-            var uniformFormat = range.NumberFormat as string;
+            object bulkFormats = range.NumberFormat;
+            var uniformFormat = bulkFormats as string;
             if (uniformFormat != null) return RepeatedMatrix(uniformFormat, height, width);
-
+            Array formats = bulkFormats as Array;
+            if (formats != null)
+                return NormalizeMatrix(
+                    formats,
+                    height,
+                    width,
+                    (Func<object, object>)delegate(object format)
+                    {
+                        return Convert.ToString(format, CultureInfo.InvariantCulture) ?? string.Empty;
+                    });
+            const int cellTraversalLimit = 10000;
+            if ((long)height * width > cellTraversalLimit)
+                throw new DispatchException("excel", "Excel did not return a bulk number-format matrix for this large range.");
             var rows = new List<object>();
             for (var row = 1; row <= height; row++)
             {
@@ -860,6 +958,7 @@ namespace XmuxAddIn
 
         private static void SetFormulaMatrix(dynamic range, object values)
         {
+            ValidateMatrixDimensions(range, (Array)values, "Formula");
             try { range.Formula2 = values; }
             catch (RuntimeBinderException) { range.Formula = values; }
             catch (COMException exception) when (IsMissingFormula2Member(exception)) { range.Formula = values; }
@@ -874,16 +973,21 @@ namespace XmuxAddIn
         private static void SetNumberFormat(dynamic range, object value)
         {
             var matrix = (Array)ComMatrix(value);
-            var rows = Convert.ToInt32(range.Rows.Count, CultureInfo.InvariantCulture);
-            var columns = Convert.ToInt32(range.Columns.Count, CultureInfo.InvariantCulture);
             if (matrix.GetLength(0) == 1 && matrix.GetLength(1) == 1)
             {
                 range.NumberFormat = matrix.GetValue(0, 0);
                 return;
             }
-            if (matrix.GetLength(0) != rows || matrix.GetLength(1) != columns)
-                throw new DispatchException("protocol", "Number-format matrix must be one cell or match the target range.");
+            ValidateMatrixDimensions(range, matrix, "Number-format");
             range.NumberFormat = matrix;
+        }
+
+        private static void ValidateMatrixDimensions(dynamic range, Array matrix, string label)
+        {
+            var rows = Convert.ToInt32(range.Rows.Count, CultureInfo.InvariantCulture);
+            var columns = Convert.ToInt32(range.Columns.Count, CultureInfo.InvariantCulture);
+            if (matrix.Rank != 2 || matrix.GetLength(0) != rows || matrix.GetLength(1) != columns)
+                throw new DispatchException("protocol", label + " matrix must match the target range.");
         }
 
         private static object ColumnPointWidth(dynamic range)
@@ -1002,8 +1106,12 @@ namespace XmuxAddIn
         private dynamic CurrentWorkbook()
         {
             dynamic sheet = excelWindow.ActiveSheet;
-            if (sheet == null) throw new DispatchException("excel", "The Excel window has no active worksheet.");
-            return sheet.Parent;
+            try
+            {
+                if (sheet == null) throw new DispatchException("excel", "The Excel window has no active worksheet.");
+                return sheet.Parent;
+            }
+            finally { ReleaseCom(sheet); }
         }
 
         private static void RefreshLinks(dynamic workbook)
@@ -1074,6 +1182,9 @@ namespace XmuxAddIn
         private static DispatchException NoDispatch(string member) { return new DispatchException("dispatch", "no dispatch for \"" + member + "\""); }
 
         private sealed class WorkbookHandle { internal static readonly WorkbookHandle Instance = new WorkbookHandle(); }
+        // areas/items currently exposes cellCount only.  Keep its required protocol id without
+        // retaining the short-lived area RCW after that count has been read.
+        private sealed class AreaCellCountHandle { internal static readonly AreaCellCountHandle Instance = new AreaCellCountHandle(); }
         private sealed class WorksheetsHandle { internal dynamic Worksheets; internal WorksheetsHandle(dynamic value) { Worksheets = value; } }
         private sealed class WorksheetHandle { internal dynamic Worksheet; internal WorksheetHandle(dynamic value) { Worksheet = value; } }
         private sealed class RangeHandle { internal dynamic Range; internal RangeHandle(dynamic value) { Range = value; } }
@@ -1098,6 +1209,12 @@ namespace XmuxAddIn
         }
         private sealed class PivotHandle { internal dynamic Pivot; internal PivotHandle(dynamic value) { Pivot=value; } }
         private sealed class PivotDataHandle { internal dynamic Field; internal PivotDataHandle(dynamic value) { Field=value; } }
+        private sealed class SortField
+        {
+            internal readonly int Key;
+            internal readonly bool Ascending;
+            internal SortField(int key, bool ascending) { Key = key; Ascending = ascending; }
+        }
         private sealed class ReferenceComparer : IEqualityComparer<object>
         {
             internal static readonly ReferenceComparer Instance = new ReferenceComparer();
@@ -1147,10 +1264,17 @@ namespace XmuxAddIn
                     Convert.ToInt32(worksheetUsed.Row) == 1 &&
                     Convert.ToInt32(worksheetUsed.Column) == 1 &&
                     IsPristineA1(worksheetUsed.Cells[1, 1], worksheet);
-                if (pristineA1) return new RangeHandle(null);
-                dynamic app = ExcelDnaUtil.Application;
-                dynamic intersection = app.Intersect(source, worksheetUsed);
-                return new RangeHandle(intersection);
+                if (pristineA1)
+                {
+                    ReleaseCom(worksheetUsed);
+                    return new RangeHandle(null);
+                }
+                if (IsWholeWorksheetRange(source, worksheet))
+                    return new RangeHandle(worksheetUsed);
+                ReleaseCom(worksheetUsed);
+                throw new DispatchException(
+                    "excel",
+                    "Range-scoped getUsedRange(false) cannot exactly preserve format-only cells.");
             }
             var lookIn = valuesOnly ? -4163 : -4123;
             dynamic lastCell = source.Cells[source.Rows.Count, source.Columns.Count];
@@ -1165,6 +1289,16 @@ namespace XmuxAddIn
                 sheet.Cells[firstByRows.Row, firstByColumns.Column],
                 sheet.Cells[lastByRows.Row, lastByColumns.Column]];
             return new RangeHandle(used);
+        }
+
+        private static bool IsWholeWorksheetRange(dynamic range, dynamic worksheet)
+        {
+            return Convert.ToInt32(range.Row, CultureInfo.InvariantCulture) == 1 &&
+                Convert.ToInt32(range.Column, CultureInfo.InvariantCulture) == 1 &&
+                Convert.ToInt32(range.Rows.Count, CultureInfo.InvariantCulture) ==
+                    Convert.ToInt32(worksheet.Rows.Count, CultureInfo.InvariantCulture) &&
+                Convert.ToInt32(range.Columns.Count, CultureInfo.InvariantCulture) ==
+                    Convert.ToInt32(worksheet.Columns.Count, CultureInfo.InvariantCulture);
         }
 
         private static bool IsPristineA1(dynamic cell, dynamic sheet)
@@ -1294,7 +1428,67 @@ namespace XmuxAddIn
             throw new DispatchException("protocol", "Unknown delete shift " + value + ".");
         }
         private static void Clear(dynamic range, object type) { var value=String(type); if(value=="Contents") range.ClearContents(); else if(value=="Formats") range.ClearFormats(); else range.Clear(); }
-        private static void Sort(dynamic range, object fields, bool matchCase, bool headers) { var list=fields as IEnumerable; object first=null; if(list!=null) foreach(var x in list){first=x;break;} var map=first as Dictionary<string,object>; var key=map != null && map.ContainsKey("key") ? Convert.ToInt32(map["key"])+1 : 1; var ascending=map==null || !map.ContainsKey("ascending") || Bool(map["ascending"]); range.Sort(Key1:range.Columns[key],Order1:ascending?1:2,Header:headers?1:2,MatchCase:matchCase); }
+        private static void Sort(dynamic range, object fields, bool matchCase, bool headers)
+        {
+            var columnCount = Convert.ToInt32(range.Columns.Count, CultureInfo.InvariantCulture);
+            var sortFields = ParseSortFields(fields, columnCount);
+            dynamic sort = null;
+            dynamic comSortFields = null;
+            try
+            {
+                sort = range.Worksheet.Sort;
+                comSortFields = sort.SortFields;
+                comSortFields.Clear();
+                foreach (var field in sortFields)
+                {
+                    dynamic column = range.Columns[field.Key + 1];
+                    try { comSortFields.Add(column, 0, field.Ascending ? 1 : 2); }
+                    finally { ReleaseCom(column); }
+                }
+                sort.SetRange(range);
+                sort.Header = headers ? 1 : 2;
+                sort.MatchCase = matchCase;
+                sort.Orientation = 1;
+                sort.Apply();
+            }
+            finally
+            {
+                ReleaseCom(comSortFields);
+                ReleaseCom(sort);
+            }
+        }
+
+        private static List<SortField> ParseSortFields(object fields, int columnCount)
+        {
+            var list = fields as IEnumerable;
+            if (list == null || fields is string)
+                throw new DispatchException("protocol", "Sort fields must be a non-empty array.");
+            var sortFields = new List<SortField>();
+            foreach (var field in list)
+            {
+                var map = field as Dictionary<string, object>;
+                if (map == null || !map.ContainsKey("key"))
+                    throw new DispatchException("protocol", "Each sort field must specify a key.");
+                var keyValue = map["key"];
+                if (!(keyValue is int))
+                    throw new DispatchException("protocol", "Sort field key must be an integer.");
+                var key = (int)keyValue;
+                if (key < 0 || key >= columnCount)
+                    throw new DispatchException("protocol", "Sort field key is outside the target range.");
+                object ascendingValue;
+                var ascending = true;
+                if (map.TryGetValue("ascending", out ascendingValue))
+                {
+                    if (!(ascendingValue is bool))
+                        throw new DispatchException("protocol", "Sort field ascending must be a boolean.");
+                    ascending = (bool)ascendingValue;
+                }
+                sortFields.Add(new SortField(key, ascending));
+            }
+            if (sortFields.Count == 0)
+                throw new DispatchException("protocol", "Sort fields must be a non-empty array.");
+            return sortFields;
+        }
         private static object AutoFillType(string value) { return value=="FillCopy" ? 2 : 0; }
         private static void CopyFrom(dynamic destination,dynamic source,object copyType,object skipBlanks,object transpose) { source.Copy(); destination.PasteSpecial(CopyType(copyType), -4142, Bool(skipBlanks), Bool(transpose)); ((dynamic)ExcelDnaUtil.Application).CutCopyMode=false; }
         private static object CopyType(object value) { var word=String(value); if(word=="Values") return -4163; if(word=="Formats") return -4122; if(word=="Formulas") return -4123; return -4104; }

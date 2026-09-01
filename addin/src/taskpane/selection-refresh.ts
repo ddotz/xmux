@@ -1,3 +1,5 @@
+import { splitAreas } from "../excel/address"
+
 export type SelectionRefreshRequest = {
   readonly address: string
   readonly isCurrent: () => boolean
@@ -18,7 +20,7 @@ export type SelectionEvent = {
 }
 
 export type ExpectedSelectionSuppression = {
-  readonly expect: (selection: SelectionEvent) => void
+  readonly expect: (selection: SelectionEvent) => () => void
   readonly consume: (selection: SelectionEvent) => boolean
 }
 
@@ -44,7 +46,7 @@ export type SelectionWorksheetEvents = {
 }
 
 export type SelectionEvents = {
-  readonly expect: (selection: SelectionEvent) => void
+  readonly expect: (selection: SelectionEvent) => () => void
   readonly attach: (worksheets: SelectionWorksheetEvents, recoverClicks: boolean) => void
   readonly select: (address: string) => void
 }
@@ -76,11 +78,12 @@ export const attachSelection = (
   // verify claims against a range the user never meant (HARNESS-DESIGN.md carries the
   // per-area attachment design). Until that lands, a multi-area selection attaches
   // nothing.
-  if (selection.address.includes(",")) return
-  const separator = selection.address.lastIndexOf("!")
+  const [area, second] = splitAreas(selection.address)
+  if (area === undefined || second !== undefined) return
+  const separator = area.lastIndexOf("!")
   update({
     sheet: selection.worksheet.name,
-    address: separator < 0 ? selection.address : selection.address.slice(separator + 1),
+    address: separator < 0 ? area : area.slice(separator + 1),
     cellCount: selection.cellCount,
   })
 }
@@ -108,21 +111,52 @@ export const attachSelectionListeners = (
   source.onSingleClicked?.add(handle)
 }
 
-/** One matching Office event is programmatic; a mismatch expires the expectation immediately. */
+/** Programmatic targets are bounded and expire unless their exact event arrives. */
 export const createExpectedSelectionSuppression = (): ExpectedSelectionSuppression => {
-  let expected: SelectionEvent | null = null
+  type Expected = {
+    readonly token: number
+    readonly selection: SelectionEvent
+    readonly expires: ReturnType<typeof setTimeout>
+  }
+  const expected: Expected[] = []
+  const limit = 8
+  let nextToken = 0
+  const remove = (token: number): void => {
+    const index = expected.findIndex((candidate) => candidate.token === token)
+    if (index < 0) return
+    const [removed] = expected.splice(index, 1)
+    if (removed !== undefined) clearTimeout(removed.expires)
+  }
+  const retire = (): void => {
+    for (const candidate of expected) clearTimeout(candidate.expires)
+    expected.length = 0
+  }
 
   return {
     expect: (selection) => {
-      expected = selection
+      while (expected.length >= limit) {
+        const oldest = expected.shift()
+        if (oldest !== undefined) clearTimeout(oldest.expires)
+      }
+      const token = nextToken
+      nextToken += 1
+      const expires = setTimeout(() => remove(token), 1_000)
+      expected.push({ token, selection, expires })
+      return () => remove(token)
     },
     consume: (selection) => {
-      const match =
-        expected !== null &&
-        expected.worksheetId === selection.worksheetId &&
-        expected.address === selection.address
-      expected = null
-      return match
+      const index = expected.findIndex(
+        (candidate) =>
+          candidate.selection.worksheetId === selection.worksheetId &&
+          candidate.selection.address === selection.address,
+      )
+      if (index < 0) {
+        retire()
+        return false
+      }
+      const [matched] = expected.splice(index, 1)
+      if (matched !== undefined) clearTimeout(matched.expires)
+      return true
     },
   }
 }
@@ -169,7 +203,7 @@ export const createSelectionRefresh = (deps: SelectionRefreshDeps): SelectionRef
     try {
       await deps.refresh({ address, isCurrent: () => revision === startedAt })
     } catch (error) {
-      deps.onError(error instanceof Error ? error : String(error))
+      if (revision === startedAt) deps.onError(error instanceof Error ? error : String(error))
     } finally {
       if (revision !== startedAt) void run(latestAddress, revision)
       else running = false

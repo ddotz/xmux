@@ -24,6 +24,7 @@ namespace XmuxAddIn
         {
             var spans = new List<ReferenceSpan>();
             if (string.IsNullOrEmpty(formula) || formula[0] != '=') return spans;
+            if (HasUnsupportedGrammar(formula)) return spans;
             var scanner = new Scanner(formula) { Position = 1 };
             while (!scanner.AtEnd)
             {
@@ -39,6 +40,106 @@ namespace XmuxAddIn
                 if (scanner.Position <= start) scanner.Position = start + 1;
             }
             return spans;
+        }
+
+        private static bool HasUnsupportedGrammar(string formula)
+        {
+            for (var position = 1; position < formula.Length; position++)
+            {
+                if (formula[position] == '"')
+                {
+                    position++;
+                    while (position < formula.Length)
+                    {
+                        if (formula[position] != '"') { position++; continue; }
+                        position++;
+                        if (position < formula.Length && formula[position] == '"') { position++; continue; }
+                        break;
+                    }
+                    continue;
+                }
+                if (formula[position] == '\'')
+                {
+                    var end = ReadQuotedFormulaName(formula, position);
+                    if (end < formula.Length &&
+                        ((formula.IndexOf(':', position + 1, end - position - 1) >= 0 &&
+                          end + 1 < formula.Length && formula[end + 1] == '!') ||
+                         IsQuotedThreeDReference(formula, end))) return true;
+                    position = end;
+                    continue;
+                }
+                if (!IsIdentifierStart(formula[position])) { position++; continue; }
+                var start = position;
+                while (position < formula.Length && IsIdentifierPart(formula[position])) position++;
+                var name = formula.Substring(start, position - start);
+                var next = position;
+                while (next < formula.Length && formula[next] == ' ') next++;
+                if ((string.Equals(name, "LET", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(name, "LAMBDA", StringComparison.OrdinalIgnoreCase)) &&
+                    next < formula.Length && formula[next] == '(') return true;
+                if (IsR1C1Reference(formula, start)) return true;
+                if (position < formula.Length && formula[position] == ':')
+                {
+                    var second = position + 1;
+                    while (second < formula.Length && IsIdentifierPart(formula[second])) second++;
+                    if (second < formula.Length && formula[second] == '!') return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsR1C1Reference(string formula, int start)
+        {
+            if (formula[start] != 'R' && formula[start] != 'r') return false;
+            var position = start + 1;
+            ReadR1C1Axis(formula, ref position);
+            if (position >= formula.Length ||
+                (formula[position] != 'C' && formula[position] != 'c')) return false;
+            position++;
+            ReadR1C1Axis(formula, ref position);
+            return
+                (position == formula.Length || !IsIdentifierPart(formula[position]));
+        }
+
+        private static int ReadQuotedFormulaName(string formula, int start)
+        {
+            var position = start + 1;
+            while (position < formula.Length)
+            {
+                if (formula[position] != '\'') { position++; continue; }
+                if (position + 1 < formula.Length && formula[position + 1] == '\'')
+                {
+                    position += 2;
+                    continue;
+                }
+                return position;
+            }
+            return formula.Length;
+        }
+
+        private static bool IsQuotedThreeDReference(string formula, int firstQuoteEnd)
+        {
+            if (firstQuoteEnd + 2 >= formula.Length || formula[firstQuoteEnd + 1] != ':' ||
+                formula[firstQuoteEnd + 2] != '\'') return false;
+            var secondQuoteEnd = ReadQuotedFormulaName(formula, firstQuoteEnd + 2);
+            return secondQuoteEnd + 1 < formula.Length && formula[secondQuoteEnd + 1] == '!';
+        }
+
+        private static bool ReadR1C1Axis(string formula, ref int position)
+        {
+            if (position < formula.Length && formula[position] == '[')
+            {
+                position++;
+                if (position < formula.Length && (formula[position] == '+' || formula[position] == '-')) position++;
+                var digits = position;
+                while (position < formula.Length && IsDigit(formula[position])) position++;
+                if (digits == position || position >= formula.Length || formula[position] != ']') return false;
+                position++;
+                return true;
+            }
+            var start = position;
+            while (position < formula.Length && IsDigit(formula[position])) position++;
+            return start != position;
         }
 
         private static bool IsAsciiLetter(char value)
@@ -144,11 +245,13 @@ namespace XmuxAddIn
                 var bracketEnd = Position;
                 if (Peek() == '\'') ReadQuotedName();
                 else ReadIdentifier();
-                if (Peek() == '!' && ReadBodyAfterBang())
+                var unsupported = false;
+                if (Peek() == '!' && ReadBodyAfterBang(out unsupported))
                 {
                     spans.Add(new ReferenceSpan(start, Position));
                     return;
                 }
+                if (unsupported) return;
                 Position = bracketEnd;
                 spans.Add(new ReferenceSpan(start, bracketEnd));
             }
@@ -156,12 +259,15 @@ namespace XmuxAddIn
             internal void ReadReferenceLike(List<ReferenceSpan> spans)
             {
                 var start = Position;
+                if ((Peek() == 'R' || Peek() == 'r') && ReadR1C1Reference()) return;
                 var quoted = Peek() == '\'';
+                string name;
                 if (quoted)
                 {
                     if (!ReadQuotedName()) { Position = start + 1; return; }
+                    name = source.Substring(start + 1, Position - start - 2);
                 }
-                else if (ReadIdentifier().Length == 0)
+                else if ((name = ReadIdentifier()).Length == 0)
                 {
                     Position = start + 1;
                     return;
@@ -172,19 +278,23 @@ namespace XmuxAddIn
                     var afterFirst = Position;
                     Position++;
                     if (Peek() == '\'') ReadQuotedName(); else ReadIdentifier();
-                    if (Peek() == '!' && ReadBodyAfterBang())
+                    var unsupported = false;
+                    if (Peek() == '!' && ReadBodyAfterBang(out unsupported))
                     {
-                        spans.Add(new ReferenceSpan(start, Position));
                         return;
                     }
+                    if (unsupported) return;
                     Position = afterFirst;
                 }
 
-                if (Peek() == '!' && ReadBodyAfterBang())
+                var bodyUnsupported = false;
+                if (Peek() == '!' && ReadBodyAfterBang(out bodyUnsupported))
                 {
+                    if (quoted && name.IndexOf(':') >= 0) return;
                     spans.Add(new ReferenceSpan(start, Position));
                     return;
                 }
+                if (bodyUnsupported) return;
 
                 if (Peek() == '[')
                 {
@@ -205,9 +315,43 @@ namespace XmuxAddIn
                 spans.Add(new ReferenceSpan(start, nameEnd));
             }
 
-            private bool ReadBodyAfterBang()
+            private bool ReadR1C1Reference()
+            {
+                var start = Position;
+                Position++;
+                if (!ReadR1C1Axis()) { Position = start; return false; }
+                if (Peek() != 'C' && Peek() != 'c') { Position = start; return false; }
+                Position++;
+                if (!ReadR1C1Axis() || IsIdentifierPart(Peek()))
+                {
+                    Position = start;
+                    return false;
+                }
+                return true;
+            }
+
+            private bool ReadR1C1Axis()
+            {
+                if (Peek() == '[')
+                {
+                    Position++;
+                    if (Peek() == '+' || Peek() == '-') Position++;
+                    var digits = Position;
+                    while (IsDigit(Peek())) Position++;
+                    if (digits == Position || Peek() != ']') return false;
+                    Position++;
+                    return true;
+                }
+                var start = Position;
+                while (IsDigit(Peek())) Position++;
+                return Position != start;
+            }
+
+            private bool ReadBodyAfterBang(out bool unsupported)
             {
                 Position++;
+                unsupported = (Peek() == 'R' || Peek() == 'r') && ReadR1C1Reference();
+                if (unsupported) return false;
                 return ReadBody();
             }
 

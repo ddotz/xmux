@@ -54,6 +54,7 @@ describe("reference summaries", () => {
           }),
         },
         functions: {
+          count: (_range: unknown) => functionResult(3),
           countA: (_range: unknown) => functionResult(3),
           sum: (_range: unknown) => functionResult(12),
           average: (_range: unknown) => functionResult(4),
@@ -80,20 +81,42 @@ describe("reference summaries", () => {
 
   it("loads display text only for one-cell summaries", async () => {
     const loaded: { readonly address: string; readonly properties: string }[] = []
+    const functions: string[] = []
     const context = {
       workbook: {
         worksheets: {
           getItem: (_sheet: string) => ({
-            getRange: (address: string) => ({
-              text: [[address]],
-              load: (properties: string) => loaded.push({ address, properties }),
-            }),
+            getRange: (address: string) =>
+              address === "A1"
+                ? {
+                    text: [[address]],
+                    load: (properties: string) => loaded.push({ address, properties }),
+                  }
+                : {
+                    get text(): readonly (readonly string[])[] {
+                      throw new Error("large summary must not read a text matrix")
+                    },
+                    load: (properties: string) => loaded.push({ address, properties }),
+                  },
           }),
         },
         functions: {
-          countA: (_range: unknown) => functionResult(2),
-          sum: (_range: unknown) => functionResult(3),
-          average: (_range: unknown) => functionResult(1.5),
+          count: (_range: unknown) => {
+            functions.push("COUNT")
+            return functionResult(2)
+          },
+          countA: (_range: unknown) => {
+            functions.push("COUNTA")
+            return functionResult(2)
+          },
+          sum: (_range: unknown) => {
+            functions.push("SUM")
+            return functionResult(3)
+          },
+          average: (_range: unknown) => {
+            functions.push("AVERAGE")
+            return functionResult(1.5)
+          },
         },
       },
       sync: async () => {},
@@ -101,10 +124,11 @@ describe("reference summaries", () => {
 
     await summariseReferences(context, [
       { sheet: "Main", area: { top: 1, left: 1, height: 1, width: 1 } },
-      { sheet: "Main", area: { top: 1, left: 1, height: 100_000, width: 10 } },
+      { sheet: "Main", area: { top: 1, left: 1, height: 1_000_000, width: 1 } },
     ])
 
     expect(loaded).toEqual([{ address: "A1", properties: "text" }])
+    expect(functions).toEqual(["COUNT", "COUNTA", "SUM", "AVERAGE"])
   })
   it("omits an Excel error average for a text-only range", async () => {
     const context = {
@@ -127,6 +151,7 @@ describe("reference summaries", () => {
           }),
         },
         functions: {
+          count: (_range: unknown) => functionResult(0),
           countA: (_range: unknown) => functionResult(2),
           sum: (_range: unknown) => functionResult(0),
           average: (_range: unknown) => functionResult("#DIV/0!"),
@@ -138,7 +163,32 @@ describe("reference summaries", () => {
     const result = await resolveAndSummariseTokens(context, [namedToken("Labels", 0)], "Main")
 
     expect(result.summaries).toEqual([
-      { label: "Sales!A1:A2", cells: 2, sum: 0, average: null, value: null },
+      { label: "Sales!A1:A2", cells: 2, sum: null, average: null, value: null },
     ])
+  })
+
+  it("keeps a numeric zero distinct from a text-only range", async () => {
+    const context = {
+      workbook: {
+        worksheets: {
+          getItem: (_sheet: string) => ({
+            getRange: (_address: string) => addressRange("Main!A1:A2"),
+          }),
+        },
+        functions: {
+          count: (_range: unknown) => functionResult(2),
+          countA: (_range: unknown) => functionResult(2),
+          sum: (_range: unknown) => functionResult(0),
+          average: (_range: unknown) => functionResult(0),
+        },
+      },
+      sync: async () => {},
+    }
+
+    const summaries = await summariseReferences(context, [
+      { sheet: "Main", area: { top: 1, left: 1, height: 2, width: 1 } },
+    ])
+
+    expect(summaries).toEqual([{ label: "Main!A1:A2", cells: 2, sum: 0, average: 0, value: null }])
   })
 })
