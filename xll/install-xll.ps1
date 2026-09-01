@@ -186,6 +186,17 @@ function Get-WebView2RuntimeVersion {
 if ($env:OS -ne "Windows_NT") {
     throw "This installer must be run on Windows."
 }
+$installerMutex = New-Object Threading.Mutex($false, "Local\DdotExcelXllInstaller")
+$installerLockHeld = $false
+try {
+    try {
+        $installerLockHeld = $installerMutex.WaitOne(0, $false)
+    } catch [Threading.AbandonedMutexException] {
+        $installerLockHeld = $true
+    }
+    if (-not $installerLockHeld) {
+        throw "Another DdotExcel XLL installer is already running."
+    }
 $webViewRuntimeVersion = Get-WebView2RuntimeVersion
 Write-Host "WebView2 Runtime: $webViewRuntimeVersion"
 Confirm-ExcelStopped -PromptForHiddenProcesses:$PromptForHiddenExcel
@@ -261,14 +272,20 @@ $installId = if ($null -ne $ownership -and $ownership.InstallId) {
 }
 $dataRootPath = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "DdotExcelXllData"))
 $dataRootExisted = Test-Path -LiteralPath $dataRootPath
+$dataRootQuarantinePath = $null
 if ($dataRootExisted) {
     $dataRootItem = Get-Item -LiteralPath $dataRootPath
+    if (($dataRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "The WebView2 data directory cannot be a reparse point: $dataRootPath"
+    }
     $dataSentinelPath = Join-Path $dataRootPath "install-id.txt"
-    if (($dataRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-        -not $ownership.InstallId -or
-        -not (Test-Path -LiteralPath $dataSentinelPath -PathType Leaf) -or
-        (Get-Content -LiteralPath $dataSentinelPath -Raw).Trim() -ne $installId) {
-        throw "The WebView2 data directory is not owned by this installation: $dataRootPath"
+    $dataRootOwned = (
+        $null -ne $ownership -and
+        $ownership.InstallId -and
+        (Test-Path -LiteralPath $dataSentinelPath -PathType Leaf) -and
+        (Get-Content -LiteralPath $dataSentinelPath -Raw).Trim() -eq $installId)
+    if (-not $dataRootOwned) {
+        $dataRootQuarantinePath = "$dataRootPath.unowned-$([Guid]::NewGuid().ToString('N'))"
     }
 }
 if (Test-Path -LiteralPath $installRootPath) {
@@ -348,8 +365,42 @@ try {
 $openValueName = $null
 $previousOpenValueExists = $false
 $previousOpenValue = $null
+$dataRootQuarantined = $false
+$dataRootCreated = $false
 try {
-    New-Item -ItemType Directory -Path $dataRootPath -Force | Out-Null
+    $currentDataRootExists = Test-Path -LiteralPath $dataRootPath
+    if ($dataRootQuarantinePath) {
+        if (-not $currentDataRootExists) {
+            throw "The WebView2 data directory changed during installation: $dataRootPath"
+        }
+        $currentDataRootItem = Get-Item -LiteralPath $dataRootPath
+        if (($currentDataRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "The WebView2 data directory became a reparse point: $dataRootPath"
+        }
+        if (Test-Path -LiteralPath $dataRootQuarantinePath) {
+            throw "The WebView2 quarantine destination already exists: $dataRootQuarantinePath"
+        }
+        Move-Item `
+            -LiteralPath $dataRootPath `
+            -Destination $dataRootQuarantinePath `
+            -ErrorAction Stop
+        $dataRootQuarantined = $true
+        Write-Warning "Preserved an unowned WebView2 data directory at $dataRootQuarantinePath"
+    } elseif ($dataRootExisted) {
+        $currentDataRootItem = Get-Item -LiteralPath $dataRootPath -ErrorAction Stop
+        $currentDataSentinel = Join-Path $dataRootPath "install-id.txt"
+        if (($currentDataRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-Path -LiteralPath $currentDataSentinel -PathType Leaf) -or
+            (Get-Content -LiteralPath $currentDataSentinel -Raw).Trim() -ne $installId) {
+            throw "The owned WebView2 data directory changed during installation: $dataRootPath"
+        }
+    } elseif ($currentDataRootExists) {
+        throw "A WebView2 data directory appeared during installation: $dataRootPath"
+    }
+    if (-not (Test-Path -LiteralPath $dataRootPath)) {
+        New-Item -ItemType Directory -Path $dataRootPath -ErrorAction Stop | Out-Null
+        $dataRootCreated = $true
+    }
     [IO.File]::WriteAllText(
         (Join-Path $dataRootPath "install-id.txt"),
         $installId,
@@ -396,6 +447,7 @@ try {
     New-ItemProperty -Path $OwnershipRegistryPath -Name "InstallId" -Value $installId -Force | Out-Null
     New-ItemProperty -Path $OwnershipRegistryPath -Name "DataRoot" -Value $dataRootPath -Force | Out-Null
 } catch {
+    $installFailure = $_.Exception
     if ($openValueName) {
         if ($previousOpenValueExists) {
             New-ItemProperty `
@@ -438,14 +490,65 @@ try {
             }
         }
     }
-    if (-not $dataRootExisted) {
-        Remove-Item -LiteralPath $dataRootPath -Recurse -Force -ErrorAction SilentlyContinue
+    $rollbackFailures = @()
+    try {
+        if (Test-Path -LiteralPath $installRootPath) {
+            Remove-Item -LiteralPath $installRootPath -Recurse -Force -ErrorAction Stop
+        }
+        if (Test-Path -LiteralPath $backupRoot) {
+            Move-Item -LiteralPath $backupRoot -Destination $installRootPath -ErrorAction Stop
+        }
+    } catch {
+        $rollbackFailures += "install root: $($_.Exception.Message)"
     }
-    Remove-Item -LiteralPath $installRootPath -Recurse -Force -ErrorAction SilentlyContinue
-    if (Test-Path -LiteralPath $backupRoot) {
-        Move-Item -LiteralPath $backupRoot -Destination $installRootPath
+    try {
+        if ($dataRootCreated -and (Test-Path -LiteralPath $dataRootPath)) {
+            $newDataSentinel = Join-Path $dataRootPath "install-id.txt"
+            if ((Test-Path -LiteralPath $newDataSentinel -PathType Leaf) -and
+                (Get-Content -LiteralPath $newDataSentinel -Raw).Trim() -ne $installId) {
+                throw "The installer-created WebView2 ownership marker changed."
+            }
+            $unexpectedData = @(
+                Get-ChildItem -LiteralPath $dataRootPath -Force |
+                    Where-Object { $_.Name -ne "install-id.txt" })
+            if ($unexpectedData.Count -ne 0) {
+                throw "The installer-created WebView2 directory is no longer empty."
+            }
+            if (Test-Path -LiteralPath $newDataSentinel -PathType Leaf) {
+                Remove-Item -LiteralPath $newDataSentinel -Force -ErrorAction Stop
+            }
+            Remove-Item -LiteralPath $dataRootPath -Force -ErrorAction Stop
+        }
+        if ($dataRootQuarantined) {
+            if (Test-Path -LiteralPath $dataRootPath) {
+                throw "The WebView2 restore destination is not empty."
+            }
+            if (-not (Test-Path -LiteralPath $dataRootQuarantinePath)) {
+                throw "The preserved WebView2 data directory is missing."
+            }
+            Move-Item `
+                -LiteralPath $dataRootQuarantinePath `
+                -Destination $dataRootPath `
+                -ErrorAction Stop
+            if (-not (Test-Path -LiteralPath $dataRootPath) -or
+                (Test-Path -LiteralPath $dataRootQuarantinePath)) {
+                throw "The preserved WebView2 data directory could not be restored exactly."
+            }
+        }
+    } catch {
+        $rollbackFailures += "WebView2 data: $($_.Exception.Message)"
     }
-    throw
+    if ($rollbackFailures.Count -ne 0) {
+        $preservedLocation = if ($dataRootQuarantined -and
+            (Test-Path -LiteralPath $dataRootQuarantinePath)) {
+            " Preserved WebView2 data remains at $dataRootQuarantinePath."
+        } else {
+            ""
+        }
+        throw ("Installation failed: $($installFailure.Message) Rollback failed: " +
+            ($rollbackFailures -join "; ") + "." + $preservedLocation)
+    }
+    throw $installFailure
 }
 
 Remove-Item -LiteralPath $backupRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -454,3 +557,9 @@ Write-Host "DdotExcel XLL $packageVersionText was $action for Office $resolvedAr
 Write-Host "Managed files: $installRootPath"
 Write-Host "Excel registration: $ExcelOptionsPath\$openValueName"
 Write-Host "Open Excel to load the add-in."
+} finally {
+    if ($installerLockHeld) {
+        $installerMutex.ReleaseMutex()
+    }
+    $installerMutex.Dispose()
+}

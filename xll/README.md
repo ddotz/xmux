@@ -63,12 +63,12 @@ await chrome.webview.hostObjects.xmux.execute(JSON.stringify([
 ]))
 ```
 
-3. Pass: the JSON response has `values["3"]` with the range address, displayed text, and formula(s), including the distinctive cell value. Workbook operations run through the macro queue; selection delivery runs synchronously from Excel's own application event.
+3. Pass: the JSON response has `values["3"]` with the range address, displayed text, and formula(s), including the distinctive cell value. Workbook operations run through the macro queue; Excel's application event is the selection source and pane delivery is coalesced on the UI timer until a drag has ended.
 4. Fail: a response containing `failure`, a two-second macro-context timeout, or an unresponsive pane. Record the response and Excel state. Unknown calls return `{"values":{…},"failure":{"code":"dispatch","message":"no dispatch for \"member\""}}` rather than reporting false success.
 
 ### What the pane itself does
 
-Once loaded, each Excel window owns its own CTP, bridge, workbook context, and selection feed. Excel's `SheetSelectionChange` event pushes `{kind, address, worksheetId}` immediately through `PostWebMessageAsJson`; each pane filters the application-wide event by its owning window handle. The subscription starts only after the pane has registered its selection handlers and completed the matching `context.sync()`, and the current selection is pushed once at startup.
+Once loaded, each Excel window owns its own CTP, bridge, workbook context, and selection feed. Excel's `SheetSelectionChange` event queues the latest `{kind, address, worksheetId}` and delivers it after a 25 ms settle window (and mouse release for a drag), so range reads do not race Excel's in-progress selection gesture. Each pane filters the application-wide event by its owning window handle. The subscription starts only after the pane has registered its selection handlers and completed the matching `context.sync()`, and the current selection is queued once at startup.
 
 The dispatch table covers the pane's read and write surface: worksheets, ranges, names, tables, charts, pivots, filters, validation, conditional formats, page layout, protection, calculation, formatting, sorting, insertion/deletion, copy/move/fill, duplicate removal, replacement counts, collection loads, and verification reads. Mutations execute in issue order and unknown operations fail explicitly.
 

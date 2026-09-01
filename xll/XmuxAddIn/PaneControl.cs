@@ -27,6 +27,10 @@ namespace XmuxAddIn
         private Action<object, object> selectionChanged;
         private bool selectionSubscribed;
         private string lastReportedSelection = string.Empty;
+        private System.Windows.Forms.Timer selectionDeliveryTimer;
+        private string pendingSelectionAddress = string.Empty;
+        private string pendingSelectionKey = string.Empty;
+        private string pendingSelectionMessage = string.Empty;
         private int disposed;
         private bool initializationStarted;
         private SynchronizationContext uiContext;
@@ -294,21 +298,45 @@ namespace XmuxAddIn
             });
             uiContext.Post(delegate(object ignored)
             {
-                try
+                if (Interlocked.CompareExchange(ref disposed, 0, 0) != 0) return;
+                pendingSelectionAddress = address;
+                pendingSelectionKey = key;
+                pendingSelectionMessage = message;
+                if (selectionDeliveryTimer == null)
                 {
-                    if (Interlocked.CompareExchange(ref disposed, 0, 0) == 0 &&
-                        !string.IsNullOrEmpty(address) &&
-                        key != lastReportedSelection)
-                    {
-                        webView.CoreWebView2.PostWebMessageAsJson(message);
-                        lastReportedSelection = key;
-                    }
+                    selectionDeliveryTimer = new System.Windows.Forms.Timer { Interval = 25 };
+                    selectionDeliveryTimer.Tick += DeliverSelection;
                 }
-                catch (Exception)
-                {
-                    // A closing WebView invalidates delivery after the Excel event has fired.
-                }
+                selectionDeliveryTimer.Stop();
+                selectionDeliveryTimer.Start();
             }, null);
+        }
+
+        private void DeliverSelection(object sender, EventArgs eventArgs)
+        {
+            if ((Control.MouseButtons & MouseButtons.Left) != 0) return;
+            selectionDeliveryTimer.Stop();
+            if (Interlocked.CompareExchange(ref disposed, 0, 0) != 0 ||
+                string.IsNullOrEmpty(pendingSelectionAddress) ||
+                pendingSelectionKey == lastReportedSelection)
+            {
+                return;
+            }
+            try
+            {
+                webView.CoreWebView2.PostWebMessageAsJson(pendingSelectionMessage);
+                lastReportedSelection = pendingSelectionKey;
+            }
+            catch (Exception)
+            {
+                // A closing WebView invalidates delivery after the Excel event has fired.
+            }
+            finally
+            {
+                pendingSelectionAddress = string.Empty;
+                pendingSelectionKey = string.Empty;
+                pendingSelectionMessage = string.Empty;
+            }
         }
 
         private void StopReportingSelection()
@@ -350,6 +378,16 @@ namespace XmuxAddIn
                 webView.NavigationCompleted -= WebViewNavigationCompleted;
                 if (webView.CoreWebView2 != null)
                     webView.CoreWebView2.WebMessageReceived -= PaneMessageReceived;
+                if (selectionDeliveryTimer != null)
+                {
+                    selectionDeliveryTimer.Stop();
+                    selectionDeliveryTimer.Tick -= DeliverSelection;
+                    selectionDeliveryTimer.Dispose();
+                    selectionDeliveryTimer = null;
+                }
+                pendingSelectionAddress = string.Empty;
+                pendingSelectionKey = string.Empty;
+                pendingSelectionMessage = string.Empty;
             }
             if (disposing && selectionApplication != null)
             {
