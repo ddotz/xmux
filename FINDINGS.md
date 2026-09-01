@@ -114,8 +114,8 @@ The same boundary with the full and minimal manifests rules out the product mani
 permissions, external app domains, GetStarted block, and metadata URLs as the trigger among
 the tested variants. The evidence establishes a cold-profile failure before
 `SourceLocation` and the Developer error-view warmup as a working recovery on this target.
-It does not identify Office's internal cause, prove a Trusted Catalog workaround, prove
-reboot persistence, or verify the full Windows product flow.
+A later operator-run Trusted Catalog pilot also failed on this target (F10). The evidence still
+does not identify Office's internal cause or verify the full Windows product flow.
 
 ## F9 — The Developer warmup state is in-process; on-disk replay cannot substitute
 
@@ -140,5 +140,14 @@ the same LTSC target. Case-by-case verdicts and the response playbook live in
 * Conclusion: the enabling state lives in Excel **process memory** — opening the Office
   Add-ins error dialog initializes an in-process catalog/identity subsystem, and only that
   session's re-Add succeeds. No registry/cache pre-seed can substitute; the warmup wizard
-  is a mitigation, not a root fix. The open root-fix candidate is the Trusted Catalog
-  channel (the failure popup itself asks for an add-in catalog).
+  is a mitigation, not a root fix. The Trusted Catalog candidate subsequently failed too (F10),
+  so the remaining product path is outside WEF.
+
+## F10 — Per-user Trusted Catalog did not recover acquisition on the LTSC target
+
+Operator-reported on 2026-09-01 using prerelease `v1.13.2-catalog.1`: the Trusted Catalog
+pilot failed on the same Office LTSC target. Detailed failure-stage capture has not yet been
+returned, so this result closes the end-to-end candidate without claiming whether Office
+rejected catalog discovery, manifest acquisition, or activation internally. It is sufficient
+for the channel decision: do not merge the pilot into `main`; proceed with the non-WEF XLL
+host and retain Developer warmup only as the existing temporary WEF fallback.

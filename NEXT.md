@@ -13,30 +13,25 @@ table resolution, named refusals for what cannot resolve, and the macOS companio
 F2/Tab inside Excel's own cell editor. The 대화 tab drives real workbook writes through the
 tool path with undo history behind every one.
 
-Gates on `main`: 857 tests, `tsc --noEmit`, Biome — all green, all local, no CI.
+Gates on `main`: 870 tests, `tsc --noEmit`, Biome — all green, all local, no CI.
 
 ## The direction: off WEF
 
-Every WEF acquisition path on the target environment is failed or unjudged — cases 1, 3 and
-4 failed, 6 is a session-scoped workaround with an unverified 24-hour TTL, and 7 needs a
-machine nobody has. **No WEF acquisition route is known to work there.** So the plan of
-record is the in-process host (XLL + WebView2 host object), and the Trusted Catalog pilot is
-a cheap parallel lottery ticket rather than a gate. `WEF-ACQUISITION.md` holds the evidence
-and the revised decision rule.
+Every durable WEF acquisition path on the target environment has failed: cases 1, 3, 4 and
+7 failed, while 6 is only a session-scoped workaround with an unverified 24-hour TTL.
+**No durable WEF acquisition route works there.** The plan of record is the in-process host
+(XLL + WebView2 host object); the Trusted Catalog pilot is closed and must not merge.
+`WEF-ACQUISITION.md` holds the evidence and decision rule.
 
-That track lives on **`adapter/xll-host`**, not here: everything on it is unverified until
-an XLL loads on a real machine, and `main` has to stay the thing that installs today.
+That track lives on **`adapter/xll-host`**, not here. Its implementation and deployment ZIP
+are complete, but remain unverified until the XLL loads and mutates a workbook on the target PC.
 
 ## Blocked on a Windows PC
 
-1. **XLL spike.** Three gates: a CTP hosting WebView2 that renders `dist/index.html`
-   through a virtual host mapping, one host-object round trip to a real cell, and an
-   unsigned `.xll` loading on the target PC. Only the first is a genuine unknown — the
-   registry snapshot shows no Office policy and no `RequireAddinSig` on that machine.
-2. **Trusted Catalog pilot (case 7), in parallel.** The kit is built on
-   `windows/trusted-catalog-pilot`. If it passes, deployment gets easy immediately and the
-   XLL work still stands; if it fails, nothing about the schedule changes.
-3. **Warmup TTL re-check.** Does the add-in still open 24 hours after the wizard ran?
+1. **XLL live verification.** Install the prepared x86/x64 package, confirm unsigned `.xll`
+   loading, CTP WebView2 rendering, real-cell reads/writes, native F2/Tab handling, external
+   workbook reads, and clean update/uninstall on the target PC.
+2. **Warmup TTL re-check.** Does the WEF fallback still open 24 hours after the wizard ran?
    `Entitlements` carries a +24h FILETIME and no one has watched it expire.
 
 ## Blocked on a network
@@ -55,6 +50,6 @@ happen on a machine that can reach it.
 - **The formula reference scanner exists twice** — `formula/scanner.ts` and
   `companion/references.swift`. Nothing enforces that they agree; a shared fixture list
   both sides read would.
-- **The Windows companion does not exist.** F2/Tab tracking is macOS-only. Under the XLL
-  channel it would be absorbed into the same binary (`SetWindowsHookEx` + UIA in-process),
-  which is one more reason the channel verdict comes first.
+- **The Windows companion exists only on `adapter/xll-host` and is not live-verified.** Its
+  Excel UI-thread keyboard hook and native editor integration must be exercised during the
+  XLL hardware test.
