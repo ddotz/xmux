@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -13,15 +14,20 @@ namespace XmuxAddIn
     public sealed class PaneControl : UserControl
     {
         private const string VirtualHost = "xmux.local";
+        private const int SheetSelectionChangeDispId = 0x616;
+        private static readonly Guid AppEventsId =
+            new Guid("00024413-0000-0000-C000-000000000046");
         private static readonly object LoaderGate = new object();
         private static bool loaderConfigured;
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly Label status = new Label { Dock = DockStyle.Fill, Padding = new Padding(12) };
         private readonly WebView2 webView;
         private readonly dynamic excelWindow;
-        private System.Windows.Forms.Timer selectionTimer;
+        private object selectionApplication;
+        private Action<object, object> selectionChanged;
+        private bool selectionSubscribed;
+        private string lastReportedSelection = string.Empty;
         private int disposed;
-        private int selectionReadPending;
         private bool initializationStarted;
         private SynchronizationContext uiContext;
 
@@ -187,125 +193,178 @@ namespace XmuxAddIn
 
             webView.CoreWebView2.WebMessageReceived -= PaneMessageReceived;
             status.Visible = false;
-            StartReportingSelection();
+            try { StartReportingSelection(); }
+            catch (Exception exception) { ShowFailure("Selection event initialization failed: " + exception.Message); }
         }
 
         /**
-         * The other direction. The pane registers for selection through an op that carries no
-         * callback — a JS function cannot be handed to a COM object — so the host has to speak
-         * first, and WebView2's own message channel is that path. Selection is the pane's only
-         * trigger: without this it renders once and then never follows anything, which looks
-         * exactly like a WebView2 that failed to start.
-         *
-         * Polling avoids a permanent Office interop dependency while keeping this pane scoped to
-         * its own Excel window. The pane still never polls; this is the host observing selection.
+         * Excel's application-level SheetSelectionChange event is the only workbook callback the
+         * pane needs. Each pane filters the shared application event by its owning window handle,
+         * then pushes one WebView2 message. No timer or repeated COM read runs while selection is
+         * unchanged.
          */
         private void StartReportingSelection()
         {
-            var lastReported = string.Empty;
-            selectionTimer = new System.Windows.Forms.Timer { Interval = 200 };
-            selectionTimer.Tick += delegate
+            selectionApplication = excelWindow.Application;
+            selectionChanged = SelectionChanged;
+            try
             {
-                if (Interlocked.CompareExchange(ref disposed, 0, 0) != 0 ||
-                    Interlocked.CompareExchange(ref selectionReadPending, 1, 0) != 0)
+                ComEventsHelper.Combine(
+                    selectionApplication,
+                    AppEventsId,
+                    SheetSelectionChangeDispId,
+                    selectionChanged);
+                selectionSubscribed = true;
+            }
+            catch (Exception setupFailure)
+            {
+                try { StopReportingSelection(); }
+                catch (Exception cleanupFailure)
                 {
-                    return;
+                    throw new AggregateException(setupFailure, cleanupFailure);
                 }
+                throw;
+            }
 
+            try { ReportCurrentSelection(); }
+            catch (Exception)
+            {
+                // Edit mode can reject the initial read; the next Excel event supplies the state.
+            }
+        }
+
+        private void SelectionChanged(object sheet, object target)
+        {
+            if (Interlocked.CompareExchange(ref disposed, 0, 0) != 0) return;
+            try
+            {
+                if (IsOwnedActiveWindow()) ReportSelection(sheet, target);
+            }
+            catch (Exception)
+            {
+                // Excel can invalidate event arguments while a workbook or window is closing.
+            }
+        }
+
+        private bool IsOwnedActiveWindow()
+        {
+            dynamic activeWindow = null;
+            try
+            {
+                activeWindow = ((dynamic)selectionApplication).ActiveWindow;
+                return activeWindow != null &&
+                    Convert.ToInt32(activeWindow.Hwnd) == Convert.ToInt32(excelWindow.Hwnd);
+            }
+            finally
+            {
+                ReleaseCom(activeWindow);
+            }
+        }
+
+        private void ReportCurrentSelection()
+        {
+            dynamic sheet = null;
+            dynamic target = null;
+            try
+            {
+                sheet = excelWindow.ActiveSheet;
+                target = excelWindow.RangeSelection;
+                ReportSelection(sheet, target);
+            }
+            finally
+            {
+                ReleaseCom(target);
+                ReleaseCom(sheet);
+            }
+        }
+
+        private void ReportSelection(dynamic sheet, dynamic target)
+        {
+            var address = Convert.ToString(target.Address);
+            var sheetId = Convert.ToString(sheet.CodeName);
+            var separator = address.LastIndexOf('!');
+            var local = separator < 0 ? address : address.Substring(separator + 1);
+            local = local.Replace("$", string.Empty);
+            var key = sheetId + "!" + local;
+            var message = json.Serialize(new Dictionary<string, string>
+            {
+                { "kind", "selection" },
+                { "address", local },
+                { "worksheetId", sheetId }
+            });
+            uiContext.Post(delegate(object ignored)
+            {
                 try
                 {
-                    ExcelAsyncUtil.QueueAsMacro(delegate
+                    if (Interlocked.CompareExchange(ref disposed, 0, 0) == 0 &&
+                        !string.IsNullOrEmpty(address) &&
+                        key != lastReportedSelection)
                     {
-                        string address;
-                        string sheet;
-                        try
-                        {
-                            dynamic selection = excelWindow.RangeSelection;
-                            address = Convert.ToString(selection.Address);
-                            sheet = Convert.ToString(excelWindow.ActiveSheet.Name);
-                        }
-                        catch (Exception)
-                        {
-                            Interlocked.Exchange(ref selectionReadPending, 0);
-                            return;
-                        }
-
-                        var separator = address.LastIndexOf('!');
-                        var local = separator < 0 ? address : address.Substring(separator + 1);
-                        local = local.Replace("$", string.Empty);
-                        var key = sheet + "!" + local;
-                        var message = json.Serialize(new Dictionary<string, string>
-                        {
-                            { "kind", "selection" },
-                            { "address", local },
-                            { "worksheetId", sheet }
-                        });
-                        try
-                        {
-                            uiContext.Post(delegate(object ignored)
-                            {
-                                try
-                                {
-                                    if (Interlocked.CompareExchange(ref disposed, 0, 0) == 0 &&
-                                        !string.IsNullOrEmpty(address) &&
-                                        key != lastReported)
-                                    {
-                                        webView.CoreWebView2.PostWebMessageAsJson(message);
-                                        lastReported = key;
-                                    }
-                                }
-                                catch (Exception)
-                                {
-                                    // A failed delivery is retried on the next timer tick.
-                                }
-                                finally
-                                {
-                                    Interlocked.Exchange(ref selectionReadPending, 0);
-                                }
-                            }, null);
-                        }
-                        catch (Exception)
-                        {
-                            Interlocked.Exchange(ref selectionReadPending, 0);
-                        }
-                    });
+                        webView.CoreWebView2.PostWebMessageAsJson(message);
+                        lastReportedSelection = key;
+                    }
                 }
                 catch (Exception)
                 {
-                    Interlocked.Exchange(ref selectionReadPending, 0);
+                    // A closing WebView invalidates delivery after the Excel event has fired.
                 }
-            };
-            selectionTimer.Start();
+            }, null);
+        }
+
+        private void StopReportingSelection()
+        {
+            if (selectionApplication == null) return;
+            if (selectionSubscribed)
+            {
+                ComEventsHelper.Remove(
+                    selectionApplication,
+                    AppEventsId,
+                    SheetSelectionChangeDispId,
+                    selectionChanged);
+                selectionSubscribed = false;
+                selectionChanged = null;
+            }
+            ReleaseCom(selectionApplication);
+            selectionApplication = null;
+        }
+
+        private static void ReleaseCom(object value)
+        {
+            if (value != null && Marshal.IsComObject(value)) Marshal.ReleaseComObject(value);
         }
 
         private void ShowFailure(string reason)
         {
-            if (Interlocked.CompareExchange(ref disposed, 0, 0) != 0)
-            {
-                return;
-            }
+            if (Interlocked.CompareExchange(ref disposed, 0, 0) != 0) return;
             webView.Visible = false;
-            status.Text = "WebView2 initialization failed:\r\n\r\n" + reason;
+            status.Text = "DdotExcel task pane failed:\r\n\r\n" + reason;
             status.Visible = true;
         }
 
         protected override void Dispose(bool disposing)
         {
-            if (disposing && Interlocked.Exchange(ref disposed, 1) == 0)
+            Exception failure = null;
+            var firstDispose = disposing && Interlocked.Exchange(ref disposed, 1) == 0;
+            if (firstDispose)
             {
                 webView.NavigationCompleted -= WebViewNavigationCompleted;
                 if (webView.CoreWebView2 != null)
-                {
                     webView.CoreWebView2.WebMessageReceived -= PaneMessageReceived;
-                }
-                if (selectionTimer != null)
+            }
+            if (disposing && selectionApplication != null)
+            {
+                try { StopReportingSelection(); }
+                catch (Exception exception) { failure = exception; }
+            }
+            if (!disposing || firstDispose)
+            {
+                try { base.Dispose(disposing); }
+                catch (Exception exception)
                 {
-                    selectionTimer.Stop();
-                    selectionTimer.Dispose();
-                    selectionTimer = null;
+                    failure = failure == null ? exception : new AggregateException(failure, exception);
                 }
             }
-            base.Dispose(disposing);
+            if (failure != null) throw failure;
         }
     }
 }

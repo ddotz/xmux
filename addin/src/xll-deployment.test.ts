@@ -72,8 +72,13 @@ describe("XLL Windows deployment", () => {
     expect(pane).toContain('Path.Combine(xllDirectory, "runtimes", architecture, "native")')
     expect(pane).toContain('"DdotExcelXllData"')
     expect(pane).toContain("SetLoaderDllFolderPath")
-    expect(pane).toContain("selectionReadPending")
+    expect(pane).toContain("ComEventsHelper.Combine")
     expect(pane).toContain('message != "xmux-ready"')
+    expect(pane).toContain("ComEventsHelper.Remove")
+    expect(pane).toContain('new Guid("00024413-0000-0000-C000-000000000046")')
+    expect(pane).toContain("SheetSelectionChangeDispId = 0x616")
+    expect(pane).not.toContain("selectionTimer")
+    expect(pane).not.toContain("Interval = 200")
   })
 
   it("uses the Excel UI thread directly and displays the product name", () => {
@@ -131,6 +136,30 @@ describe("XLL bridge parity", () => {
     expect(pane).toContain("new XmuxBridge(excelWindow)")
     expect(bridge).toContain("excelWindow.RangeSelection")
     expect(bridge).not.toContain("app.ActiveWorkbook")
+  })
+
+  it("pushes retryable selection events only to their owning Excel window", () => {
+    const selection = pane.slice(
+      pane.indexOf("private void StartReportingSelection"),
+      pane.indexOf("private void ShowFailure"),
+    )
+    const setupFailure = selection.indexOf("catch (Exception setupFailure)")
+    const initialRead = selection.indexOf("try { ReportCurrentSelection(); }")
+    const remove = selection.indexOf("ComEventsHelper.Remove")
+    const markRemoved = selection.indexOf("selectionSubscribed = false")
+    const release = selection.indexOf("ReleaseCom(selectionApplication)")
+    expect(initialRead).toBeGreaterThan(setupFailure)
+    expect(selection).toContain("IsOwnedActiveWindow()")
+    expect(selection).toContain("activeWindow.Hwnd")
+    expect(selection).toContain("excelWindow.Hwnd")
+    expect(selection).toContain("sheet.CodeName")
+    expect(selection).toContain('{ "worksheetId", sheetId }')
+    expect(selection).toContain("PostWebMessageAsJson(message)")
+    expect(selection).toContain("ReleaseCom(activeWindow)")
+    expect(selection).not.toContain("ExcelAsyncUtil.QueueAsMacro")
+    expect(markRemoved).toBeGreaterThan(remove)
+    expect(release).toBeGreaterThan(markRemoved)
+    expect(pane).toContain("if (disposing && selectionApplication != null)")
   })
 
   it("reads and cycles the real Windows formula editor", () => {

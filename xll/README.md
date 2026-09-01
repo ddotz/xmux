@@ -40,7 +40,7 @@ For manual gate testing without installation, use **File → Options → Add-ins
 
 1. Put `addin\dist` beside the XLL by using the build script, load the XLL, and open a workbook.
 2. Pass: a **땡땡엑셀** task pane appears and renders the existing pane at the `xmux.local` internal origin.
-3. Fail: the pane prints `WebView2 initialization failed:` followed by the exception, or no CTP appears. Capture that text, Office bitness/version, WebView2 Runtime version, and whether Excel has a visible workbook.
+3. Fail: the pane prints `DdotExcel task pane failed:` followed by the exception, or no CTP appears. Capture that text, Office bitness/version, WebView2 Runtime version, and whether Excel has a visible workbook.
 
 The control deliberately waits until it both has a WinForms handle and is visible before starting WebView2. It never waits on `EnsureCoreWebView2Async`; its continuation returns through `SynchronizationContext.Post`. This is the avoidance for the known CTP STA/message-pump reentrancy failure. If a CTP still cannot host WebView2, retreat to a WinForms form owned by the Excel window rather than extending the bridge.
 
@@ -63,12 +63,12 @@ await chrome.webview.hostObjects.xmux.execute(JSON.stringify([
 ]))
 ```
 
-3. Pass: the JSON response has `values["3"]` with the range address, displayed text, and formula(s), including the distinctive cell value. The macro queue is the only place the bridge touches Excel COM.
+3. Pass: the JSON response has `values["3"]` with the range address, displayed text, and formula(s), including the distinctive cell value. Workbook operations run through the macro queue; selection delivery runs synchronously from Excel's own application event.
 4. Fail: a response containing `failure`, a two-second macro-context timeout, or an unresponsive pane. Record the response and Excel state. Unknown calls return `{"values":{…},"failure":{"code":"dispatch","message":"no dispatch for \"member\""}}` rather than reporting false success.
 
 ### What the pane itself does
 
-Once loaded, each Excel window owns its own CTP, bridge, workbook context, and selection feed. The host observes that window's selection every 200 ms from the macro context and pushes `{kind, address, worksheetId}` with `PostWebMessageAsJson`. It starts only after the pane has registered its selection handlers and completed the matching `context.sync()`, so the initial selection is not lost.
+Once loaded, each Excel window owns its own CTP, bridge, workbook context, and selection feed. Excel's `SheetSelectionChange` event pushes `{kind, address, worksheetId}` immediately through `PostWebMessageAsJson`; each pane filters the application-wide event by its owning window handle. The subscription starts only after the pane has registered its selection handlers and completed the matching `context.sync()`, and the current selection is pushed once at startup.
 
 The dispatch table covers the pane's read and write surface: worksheets, ranges, names, tables, charts, pivots, filters, validation, conditional formats, page layout, protection, calculation, formatting, sorting, insertion/deletion, copy/move/fill, duplicate removal, replacement counts, collection loads, and verification reads. Mutations execute in issue order and unknown operations fail explicitly.
 
@@ -87,6 +87,8 @@ The build and offline contract tests cannot settle these host-specific risks. Be
 - Load the extracted, unsigned ZIP after clearing and retaining Mark-of-the-Web in separate runs; record Trust Center or policy blocks.
 - Install and launch on both 32-bit and 64-bit Office, confirming the matching XLL and WebView2 loader architecture.
 - Confirm the pane renders the current selection immediately, follows each reference selected by Tab in the F2/formula-bar editor, and refreshes after leaving edit mode.
+- Start the pane while a cell is in edit mode; it must stay visible and update on the next selection event without a timer fallback.
+- Leave the workbook idle, switch sheets and windows, activate a chart sheet, then close and reopen windows; verify no repeated selection COM reads, cross-window delivery, callback to a disposed pane, or stale subscription.
 - Open two workbook windows, including two windows of one workbook, and verify each pane reads and writes only its owning window.
 - Exercise reads plus representative writes: formulas/values, resize undo, two-axis freeze, names, tables, filters, replacements, charts, and a multi-field pivot.
 - Read a saved external workbook containing dirty formulas, errors, links, macros, and password protection; verify no recalc, prompt, macro, MRU entry, orphaned `EXCEL.EXE`, or change to the user's workbook.
