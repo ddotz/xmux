@@ -60,14 +60,14 @@ export const summariseReferences = async <Range extends SummaryRange>(
     counted.load("value")
     summed.load("value")
     averaged.load("value")
-    range.load("text")
-    return { reference, counted, summed, averaged, range }
+    const single = reference.area.height * reference.area.width === 1
+    if (single) range.load("text")
+    return { reference, counted, summed, averaged, range, single }
   })
   await context.sync()
 
-  return asked.map(({ reference, counted, summed, averaged, range }) => {
+  return asked.map(({ reference, counted, summed, averaged, range, single }) => {
     const cells = reference.area.height * reference.area.width
-    const single = cells === 1
     return {
       label: `${reference.sheet}!${formatArea(reference.area)}`,
       cells,

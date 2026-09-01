@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 import type { RefToken } from "../formula/types"
 import { resolveAndSummariseTokens } from "./summaries"
+import { summariseReferences } from "./summarise"
 
 const namedToken = (name: string, start: number): RefToken => ({
   span: { start, end: start + name.length },
@@ -77,6 +78,34 @@ describe("reference summaries", () => {
     expect(syncCount).toBe(2)
   })
 
+  it("loads display text only for one-cell summaries", async () => {
+    const loaded: { readonly address: string; readonly properties: string }[] = []
+    const context = {
+      workbook: {
+        worksheets: {
+          getItem: (_sheet: string) => ({
+            getRange: (address: string) => ({
+              text: [[address]],
+              load: (properties: string) => loaded.push({ address, properties }),
+            }),
+          }),
+        },
+        functions: {
+          countA: (_range: unknown) => functionResult(2),
+          sum: (_range: unknown) => functionResult(3),
+          average: (_range: unknown) => functionResult(1.5),
+        },
+      },
+      sync: async () => {},
+    }
+
+    await summariseReferences(context, [
+      { sheet: "Main", area: { top: 1, left: 1, height: 1, width: 1 } },
+      { sheet: "Main", area: { top: 1, left: 1, height: 100_000, width: 10 } },
+    ])
+
+    expect(loaded).toEqual([{ address: "A1", properties: "text" }])
+  })
   it("omits an Excel error average for a text-only range", async () => {
     const context = {
       workbook: {

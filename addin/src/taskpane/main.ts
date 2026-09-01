@@ -282,13 +282,12 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
 
   const nextTarget: { readonly sheet: string; readonly area: GridArea } | null = await run(
     async (context) => {
-      // Excel refuses value loads on a ctrl+click selection (a multi-area Range), so the
-      // address is probed alone first. Single rectangles load fully; multi-area ones go
-      // through RangeAreas for counts only — mirroring a multiCell pane needs neither
-      // formulas nor text, and the chat attachment skips them rather than misstate what
-      // was selected.
+      // Load only selection metadata first. A large contiguous range needs native aggregates,
+      // not a raw formula/text matrix; reading that matrix made refresh time scale with the
+      // workbook selection. Only one cell needs its formula and displayed text. Ctrl+click
+      // selections still use RangeAreas for exact counts without pretending they are one range.
       const probe = context.workbook.getSelectedRange()
-      probe.load("address")
+      probe.load("address, cellCount, worksheet/name")
       await context.sync()
       if (!isCurrent()) return null
       const multi = probe.address.includes(",")
@@ -297,15 +296,17 @@ async function refresh(isCurrent: () => boolean = () => true): Promise<void> {
       let snapshot: SelectionSnapshot
       if (!multi) {
         const selection = probe
-        selection.load("cellCount, formulas, text, worksheet/name")
-        await context.sync()
-        if (!isCurrent()) return null
+        if (selection.cellCount === 1) {
+          selection.load("formulas, text")
+          await context.sync()
+          if (!isCurrent()) return null
+        }
         attachSelection(selection, chatting.updateSelection)
         snapshot = {
           address: selection.address,
           cellCount: selection.cellCount,
-          formulas: selection.formulas,
-          text: selection.text,
+          formulas: selection.cellCount === 1 ? selection.formulas : [],
+          text: selection.cellCount === 1 ? selection.text : [],
           sheet: selection.worksheet.name,
         }
       } else {

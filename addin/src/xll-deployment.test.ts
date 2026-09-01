@@ -347,9 +347,15 @@ describe("XLL bridge parity", () => {
     expect(bridge).toContain("External workbook cleanup failed")
   })
 
-  it("reads a single selection from the range captured by its address probe", () => {
+  it("loads raw formulas and text only for a single selected cell", () => {
     expect(taskpaneMain).toContain("const selection = probe")
     expect(taskpaneMain).not.toContain("const selection = context.workbook.getSelectedRange()")
+    expect(taskpaneMain).toContain('probe.load("address, cellCount, worksheet/name")')
+    expect(taskpaneMain).toContain("if (selection.cellCount === 1)")
+    expect(taskpaneMain).toContain('selection.load("formulas, text")')
+    expect(taskpaneMain).not.toContain(
+      'selection.load("cellCount, formulas, text, worksheet/name")',
+    )
     expect(taskpaneMain).toContain("if (areas.address !== probedAddress) return null")
   })
 
