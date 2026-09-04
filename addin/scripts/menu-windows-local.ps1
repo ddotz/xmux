@@ -149,7 +149,8 @@ while ($true) {
     Write-Host "  2. 상태 확인"
     Write-Host "  3. 서비스 다시 시작"
     Write-Host "  4. 제거"
-    Write-Host "  5. Office 첫 실행 초기화 다시 실행"
+    Write-Host "  5. 임베드 통합 문서로 작업창 다시 열기"
+    Write-Host "  6. Office Store 조회 차단 정책 실험"
     Write-Host "  0. 끝내기"
     Write-Host ""
     $choice = Read-Host "  번호를 입력하세요"
@@ -161,9 +162,8 @@ while ($true) {
                 if (-not (Test-Installed)) { return }
                 & $installScript
                 Write-Host ""
-                Write-Host "  설치와 Office 첫 실행 초기화가 완료되었습니다." -ForegroundColor Green
-                Write-Host "  Excel을 완전히 종료했다가 다시 실행하세요." -ForegroundColor Green
-                Write-Host "  리본 [홈] 탭에 땡땡엑셀 단추가 나타납니다."
+                Write-Host "  설치와 작업창 자동 시작이 완료되었습니다." -ForegroundColor Green
+                Write-Host "  열린 '땡땡엑셀 시작.xlsx'에서 바로 사용할 수 있습니다." -ForegroundColor Green
             }
         }
         "2" {
@@ -207,7 +207,7 @@ while ($true) {
             }
         }
         "5" {
-            Invoke-Step "Office 첫 실행 초기화" {
+            Invoke-Step "임베드 통합 문서로 작업창 다시 열기" {
                 if (-not (Test-InvocationAccount)) { return }
                 if (-not (Test-Path -LiteralPath $initializeScript -PathType Leaf)) {
                     Write-Host "  먼저 1번 설치 / 업데이트를 실행하세요." -ForegroundColor Red
@@ -216,12 +216,24 @@ while ($true) {
                 & $initializeScript -InstallRoot $installRoot
             }
         }
+        "6" {
+            Invoke-Step "Office Store 조회 차단 정책 실험" {
+                if (-not (Test-InvocationAccount)) { return }
+                if (-not (Test-Path -LiteralPath $initializeScript -PathType Leaf)) {
+                    Write-Host "  먼저 1번 설치 / 업데이트를 실행하세요." -ForegroundColor Red
+                    return
+                }
+                Write-Host "  현재 Windows 사용자의 Office Store만 차단하고 자동 시작을 재시도합니다." -ForegroundColor Yellow
+                Write-Host "  제거 시 기존 정책 값으로 복원됩니다. 전체 연결 환경은 끄지 않습니다."
+                & $initializeScript -InstallRoot $installRoot -DisableOmexCatalogs
+            }
+        }
         "0" {
             Write-Host ""
             exit 0
         }
         default {
-            Write-Host "  0부터 5 사이의 번호를 입력하세요." -ForegroundColor Yellow
+            Write-Host "  0부터 6 사이의 번호를 입력하세요." -ForegroundColor Yellow
             Start-Sleep -Seconds 1
         }
     }

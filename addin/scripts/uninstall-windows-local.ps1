@@ -14,6 +14,7 @@ $StartupApprovedRegistryPath =
     "HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 $LegacyCatalogRegistryPath =
     "HKCU:\Software\Microsoft\Office\16.0\WEF\TrustedCatalogs\{E16E7B92-0D8C-4E8A-94D4-D8267AF4A7D6}"
+$OmexPolicyPath = "HKCU:\Software\Policies\Microsoft\Office\16.0\WEF\TrustedCatalogs"
 
 if ($env:OS -ne "Windows_NT") {
     throw "This uninstaller must be run on Windows."
@@ -93,6 +94,24 @@ if ($ownedThumbprints.Count -gt 0) {
     }
 } else {
     Write-Warning "Certificate ownership metadata is missing; no certificates were removed."
+}
+if ($ownership.OmexPolicyOwned -eq 1) {
+    $currentOmexPolicy = Get-ItemPropertyValue `
+        -LiteralPath $OmexPolicyPath `
+        -Name "DisableOmexCatalogs" `
+        -ErrorAction SilentlyContinue
+    if ($currentOmexPolicy -eq 1) {
+        if ($ownership.OmexPolicyPreviousPresent -eq 1) {
+            New-ItemProperty -Path $OmexPolicyPath -Name "DisableOmexCatalogs" `
+                -Value ([int]$ownership.OmexPolicyPreviousValue) -PropertyType DWord -Force |
+                Out-Null
+        } else {
+            Remove-ItemProperty -LiteralPath $OmexPolicyPath -Name "DisableOmexCatalogs" `
+                -Force -ErrorAction SilentlyContinue
+        }
+    } else {
+        Write-Warning "The Office Store policy changed after installation and was left untouched."
+    }
 }
 Remove-Item `
     -LiteralPath $OwnershipRegistryPath `

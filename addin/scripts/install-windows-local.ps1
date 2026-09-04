@@ -35,6 +35,7 @@ $requiredFiles = @(
     (Join-Path $packageRuntime "node.exe"),
     (Join-Path $PSScriptRoot "manage.ps1"),
     (Join-Path $PSScriptRoot "initialize.ps1"),
+    (Join-Path $PSScriptRoot "create-bootstrap.ps1"),
     (Join-Path $PSScriptRoot "start-hidden.vbs"),
     (Join-Path $PSScriptRoot "uninstall.ps1")
 )
@@ -116,8 +117,13 @@ Copy-Item -LiteralPath (Join-Path $packageApp "external-range.mjs") -Destination
 Copy-Item -LiteralPath (Join-Path $packageRuntime "node.exe") -Destination $runtimeRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "manage.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "initialize.ps1") -Destination $InstallRoot
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot "create-bootstrap.ps1") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "start-hidden.vbs") -Destination $InstallRoot
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "uninstall.ps1") -Destination $InstallRoot
+$starterWorkbookPath = Join-Path $InstallRoot "땡땡엑셀 시작.xlsx"
+& (Join-Path $InstallRoot "create-bootstrap.ps1") `
+    -ManifestPath (Join-Path $appRoot "manifest.xml") `
+    -OutputPath $starterWorkbookPath
 
 # Edge WebView2 renders the task pane, and Chromium's Windows verifier only accepts a Root
 # store entry as a trust anchor when it is a CA (basic constraints CA:TRUE). A self-signed

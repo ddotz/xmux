@@ -35,6 +35,10 @@ const initializeScript = readFileSync(
   new URL("../scripts/initialize-windows-local.ps1", import.meta.url),
   "utf8",
 )
+const bootstrapScript = readFileSync(
+  new URL("../scripts/create-wef-bootstrap-workbook.ps1", import.meta.url),
+  "utf8",
+)
 const serverScript = readFileSync(new URL("../scripts/local-server.mjs", import.meta.url), "utf8")
 const manifestId = "6374B2A1-D997-4BB0-B23B-17F28561827B"
 
@@ -713,12 +717,13 @@ describe("Windows package layout", () => {
     expect(packageScript).toContain("diagnose-wef-firstrun.ps1")
   })
 
-  it("ships the one-time initializer without a production SMB catalog", () => {
+  it("ships the embedded-workbook generator with the automatic initializer", () => {
+    expect(packageScript).toContain("create-wef-bootstrap-workbook.ps1")
+    expect(packageScript).toContain('(Join-Path $scriptsRoot "create-bootstrap.ps1")')
     expect(packageScript).toContain("initialize-windows-local.ps1")
     expect(packageScript).toContain('(Join-Path $scriptsRoot "initialize.ps1")')
-    expect(installScript).toContain('(Join-Path $PSScriptRoot "initialize.ps1")')
-    expect(packageScript).not.toContain("catalog-windows-local.ps1")
-    expect(packageScript).not.toContain('(Join-Path $scriptsRoot "catalog.ps1")')
+    expect(installScript).toContain('(Join-Path $PSScriptRoot "create-bootstrap.ps1")')
+    expect(installScript).toContain("땡땡엑셀 시작.xlsx")
   })
 
   it("declares every parameter its launcher passes", () => {
@@ -815,44 +820,80 @@ describe("Office LTSC first-acquisition diagnostics", () => {
   })
 })
 
-describe("Office LTSC first-acquisition mitigation", () => {
-  it("keeps the production installer on the proven current-user Developer path", () => {
-    // Given: the Trusted Catalog channel is unverified until the pilot has a verdict
-    // (WEF-ACQUISITION.md case 7). Until then it lives on windows/trusted-catalog-pilot
-    // and must not reach a user's machine through this package.
-    for (const script of [installScript, initializeScript, packageScript, uninstallScript]) {
-      expect(script).not.toContain("catalog.ps1")
-      expect(script).not.toContain("catalog-windows-local.ps1")
-      expect(script).not.toContain("New-SmbShare")
-      expect(script).not.toContain("-Verb RunAs")
+describe("Office LTSC acquisition bypass", () => {
+  it("builds the official embedded Developer-registry task-pane shape", () => {
+    expect(bootstrapScript).toContain("xl/webextensions/webextension.xml")
+    expect(bootstrapScript).toContain("xl/webextensions/taskpanes.xml")
+    expect(bootstrapScript).toContain('store=`"developer`" storeType=`"Registry`"')
+    expect(bootstrapScript).toContain('visibility="1"')
+    expect(bootstrapScript).toContain("$manifestId")
+    expect(bootstrapScript).toContain("$manifestVersion")
+    expect(bootstrapScript).toContain("IO.Compression.ZipArchive")
+  })
+
+  it("opens the embedded workbook before touching the Add-ins dialog", () => {
+    const directAttempt = initializeScript.indexOf("Invoke-EmbeddedWorkbook $startedAt $false")
+    const warmAttempt = initializeScript.indexOf("Invoke-EmbeddedWorkbook $startedAt $true")
+    const dialog = initializeScript.indexOf('ExecuteMso("OfficeExtensionsDialog")')
+    expect(initializeScript).toContain("땡땡엑셀 시작.xlsx")
+    expect(initializeScript).toContain("$excel.Workbooks.Open($StarterWorkbookPath)")
+    expect(directAttempt).toBeGreaterThanOrEqual(0)
+    expect(warmAttempt).toBeGreaterThan(directAttempt)
+    expect(dialog).toBeGreaterThanOrEqual(0)
+    expect(initializeScript).not.toContain("홈 > 추가 기능")
+  })
+
+  it("automates the measured in-process dialog warmup in the same Excel process", () => {
+    const dialog = initializeScript.indexOf('ExecuteMso("OfficeExtensionsDialog")')
+    const open = initializeScript.indexOf("$excel.Workbooks.Open($StarterWorkbookPath)", dialog)
+    expect(dialog).toBeGreaterThanOrEqual(0)
+    expect(open).toBeGreaterThan(dialog)
+    expect(initializeScript).toContain('$shell.SendKeys("{ESC}")')
+    expect(initializeScript).toContain("Start-DialogCloser $excelProcess.Id")
+  })
+
+  it("keeps the Store-block policy opt-in, narrow, owned, and reversible", () => {
+    const policyPath = "HKCU:\\Software\\Policies\\Microsoft\\Office\\16.0\\WEF\\TrustedCatalogs"
+    expect(initializeScript).toContain("[switch]$DisableOmexCatalogs")
+    expect(initializeScript).toContain(policyPath)
+    expect(initializeScript).toContain('Name "DisableOmexCatalogs"')
+    expect(initializeScript).toContain('Name "OmexPolicyPreviousValue"')
+    expect(uninstallScript).toContain(policyPath)
+    expect(uninstallScript).toContain("OmexPolicyPreviousPresent")
+    for (const script of [initializeScript, installScript, uninstallScript]) {
+      expect(script.toLowerCase()).not.toContain("disconnectedstate")
+      expect(script.toLowerCase()).not.toContain("useonlinecontent")
+      expect(script.toLowerCase()).not.toContain("disableallcatalogs")
     }
   })
 
-  it("always restores the developer registration after Office closes", () => {
-    const attempt = initializeScript.indexOf("try {\n    Start-Excel")
-    const finallyBlock = initializeScript.indexOf("finally", attempt)
-    const guardedClose = initializeScript.indexOf("try {\n        Wait-OfficeClosed", finallyBlock)
-    const restoreFinally = initializeScript.indexOf("finally", guardedClose)
-    const restore = initializeScript.indexOf("Restore-DeveloperRegistration", restoreFinally)
-    expect(attempt).toBeGreaterThanOrEqual(0)
-    expect(finallyBlock).toBeGreaterThanOrEqual(0)
-    expect(guardedClose).toBeGreaterThan(finallyBlock)
-    expect(restoreFinally).toBeGreaterThan(guardedClose)
-    expect(restore).toBeGreaterThan(restoreFinally)
-    expect(initializeScript).toContain("-Name $ManifestId")
-    expect(initializeScript).toContain("-Value $RegisteredPath")
-    expect(initializeScript.match(/& \$ManagePath start -InstallRoot \$InstallRoot/g)).toHaveLength(
-      2,
-    )
-  })
-
-  it("runs the proven error-view warmup and verifies a fresh SourceLocation request", () => {
+  it("verifies a fresh SourceLocation request and binds success to the WEF cache", () => {
     expect(initializeScript).toContain("GET /index\\.html -> 200")
-    expect(initializeScript).toContain('Mark-Initialized "developer-warmup"')
-    expect(initializeScript).not.toContain('Mark-Initialized "trusted-catalog"')
-    expect(initializeScript).not.toContain("$Offset = 0")
     expect(initializeScript).toContain("[DateTimeOffset]::UtcNow")
     expect(initializeScript).toContain("[DateTimeOffset]::TryParse")
+    expect(initializeScript).toContain('-Name "WefInitialized"')
+    expect(initializeScript).toContain('-Name "WefCacheId"')
+    const commit = initializeScript.indexOf('-Name "WefInitialized"')
+    const cacheId = initializeScript.indexOf('-Name "WefCacheId"')
+    expect(commit).toBeGreaterThan(cacheId)
+    expect(installScript).toContain("$initialization.WefCacheId -eq $currentWefCacheId")
+  })
+
+  it("always repairs the Developer registration after either attempt", () => {
+    expect(initializeScript).toContain("Restore-DeveloperRegistration $registeredPath")
+    expect(initializeScript).toContain("-Name $ManifestId")
+    expect(initializeScript).toContain("-Value $RegisteredPath")
+    expect(
+      initializeScript.match(/& \$ManagePath start -InstallRoot \$InstallRoot/g)?.length,
+    ).toBeGreaterThan(1)
+  })
+
+  it("exposes normal reopen and explicit Store-policy experiment actions", () => {
+    const menu = menuScript.toString("utf8")
+    expect(menu).toContain("임베드 통합 문서로 작업창 다시 열기")
+    expect(menu).toContain("Office Store 조회 차단 정책 실험")
+    expect(menu).toContain("& $initializeScript -InstallRoot $installRoot")
+    expect(menu).toContain("-DisableOmexCatalogs")
   })
 
   it("returns to its caller and reports an incomplete initialization as a failure", () => {
@@ -863,20 +904,6 @@ describe("Office LTSC first-acquisition mitigation", () => {
     expect(call).toBeGreaterThanOrEqual(0)
     expect(catchBlock).toBeGreaterThan(call)
     expect(failure).toBeGreaterThan(catchBlock)
-  })
-
-  it("exposes a menu action to rerun first initialization", () => {
-    expect(menuScript.toString("utf8")).toContain("Office 첫 실행 초기화 다시 실행")
-    expect(menuScript.toString("utf8")).toContain("& $initializeScript -InstallRoot $installRoot")
-  })
-
-  it("binds completed initialization to the current Office WEF cache", () => {
-    expect(initializeScript).toContain('-Name "WefInitialized"')
-    expect(initializeScript).toContain('-Name "WefCacheId"')
-    const commit = initializeScript.indexOf('-Name "WefInitialized"')
-    const cacheId = initializeScript.indexOf('-Name "WefCacheId"')
-    expect(commit).toBeGreaterThan(cacheId)
-    expect(installScript).toContain("$initialization.WefCacheId -eq $currentWefCacheId")
   })
 
   it("invalidates the product marker when WEF state is reset or retried", () => {
@@ -894,6 +921,6 @@ describe("Office LTSC first-acquisition mitigation", () => {
   it("blocks every menu operation after elevation switches Windows accounts", () => {
     expect(menuScript.toString("utf8")).toContain("function Test-InvocationAccount")
     expect(menuScript.toString("utf8")).toContain("다른 계정의 HKCU에는 작업하지 않습니다")
-    expect(menuScript.toString("utf8").match(/Test-InvocationAccount/g)?.length).toBeGreaterThan(5)
+    expect(menuScript.toString("utf8").match(/Test-InvocationAccount/g)?.length).toBeGreaterThan(6)
   })
 })

@@ -60,19 +60,16 @@ scripts\              설치·관리·제거 스크립트
 Service: https://localhost:3927
 ```
 
-7. 설치가 끝나면 **Office 첫 실행 초기화**가 Excel을 엽니다. 새 통합 문서에서
-   **홈 > 추가 기능 > 더 많은 추가 기능 > 개발자 추가 기능**의
-   **땡땡엑셀 > 추가**를 선택합니다. Excel 버전에 따라 첫 메뉴가
-   **추가 기능 가져오기**로 표시될 수 있습니다.
-8. 작업창이 바로 열리면 초기화 창으로 돌아와 Enter를 누릅니다. Excel 아래쪽에
-   **추가 기능 로드 오류**가 표시되면 다음 순서를 한 번만 수행합니다.
-   1. 아래쪽 오류를 클릭합니다.
-   2. 열린 **Office 추가 기능** 화면을 닫습니다.
-   3. 개발자 추가 기능에서 **땡땡엑셀 > 추가**를 다시 선택합니다.
-   4. 작업창이 열린 것을 확인하고 초기화 창으로 돌아와 Enter를 누릅니다.
-9. 안내에 따라 Excel을 완전히 닫습니다. 초기화 도구는 이번 시도 이후의
-   `/index.html` 요청과 Office WEF 캐시 ID를 확인한 뒤에만 완료 상태를 기록합니다.
-10. Excel을 다시 실행하고 **홈 > 땡땡엑셀** 리본 버튼을 눌러 작업창을 엽니다.
+7. 설치가 끝나면 Excel이 **땡땡엑셀 시작.xlsx**를 자동으로 엽니다. 이 문서는
+   추가 기능 화면의 **추가** 단계를 거치지 않고 작업창을 직접 삽입합니다.
+8. 오른쪽에 땡땡엑셀 작업창이 열리면 설치가 완료된 것입니다. 설치 도구는 이번 시도
+   이후의 `/index.html` 요청과 Office WEF 캐시 ID를 확인한 뒤에만 완료로 표시합니다.
+9. 직접 삽입이 응답하지 않으면 설치 도구가 Office 추가 기능 대화상자를 자동으로
+   열고 닫은 뒤 같은 Excel 프로세스에서 시작 문서를 다시 엽니다. 사용자가 추가 기능을
+   선택하거나 **추가**를 누르지 않습니다.
+10. 자동 경로가 모두 실패하면 설치 메뉴의 **6. Office Store 조회 차단 정책 실험**을
+    실행합니다. 이 옵션은 현재 사용자의 Office Store 조회만 차단하고 재시도하며,
+    제거할 때 이전 값으로 복원합니다.
 
 메뉴 대신 PowerShell을 직접 쓰려면 압축을 푼 폴더에서 다음 명령을 실행합니다.
 
@@ -80,9 +77,9 @@ Service: https://localhost:3927
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 ```
 
-이 절차는 현재 Windows 사용자의 현재 Office WEF 캐시마다 최초 1회만 필요합니다.
-Office 캐시가 초기화되어 다시 필요해지면 설치 메뉴의
-**5. Office 첫 실행 초기화 다시 실행**을 선택합니다.
+작업창을 다시 열거나 Office 캐시가 초기화된 경우 설치 메뉴의
+**5. 임베드 통합 문서로 작업창 다시 열기**를 선택합니다. 일반 통합문서의 리본에서도
+열리는지는 대상 LTSC PC 검증 전이므로, 우선 시작 문서를 기준으로 확인합니다.
 
 ## 4. 설치 확인
 
@@ -120,12 +117,14 @@ DdotExcel local service is running at https://localhost:3927.
 |---|---|
 | 앱·런타임 | `%LOCALAPPDATA%\DdotExcel` |
 | Office 등록 | `HKCU\SOFTWARE\Microsoft\Office\16.0\Wef\Developer` |
+| 시작 통합문서 | `%LOCALAPPDATA%\DdotExcel\땡땡엑셀 시작.xlsx` |
+| Office Store 차단 실험(선택) | `HKCU\Software\Policies\Microsoft\Office\16.0\WEF\TrustedCatalogs` |
 | 로그인 자동 실행 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` |
 | 인증서 | `Cert:\CurrentUser\My`, `Cert:\CurrentUser\Root` |
 | 서비스 주소 | `https://localhost:3927` |
 
 설치기는 시스템 전역 레지스트리, Windows 서비스, 방화벽 규칙 또는 다른 사용자
-프로필을 변경하지 않습니다.
+프로필을 변경하지 않습니다. 메뉴 6을 실행하지 않으면 Office 정책도 변경하지 않습니다.
 
 ## 6. 서비스 제어
 

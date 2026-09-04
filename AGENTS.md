@@ -31,22 +31,19 @@ xmux/
 
 ## BRANCHES
 
-One trunk, two open bets. `main` is the only place core work lands; a derived branch exists
-only to keep an *unverified* bet out of the shipping line, and stops existing when the bet
-is settled.
+One trunk. `main` is the only product line. The Trusted Catalog and XLL branches are closed
+experiments and must not merge; the current Windows bet stays inside WEF and bypasses the
+Office Add-ins dialog's Add acquisition with an embedded workbook.
 
 |Branch|What it is|Rule|
 |---|---|---|
-|`main`|The version that deploys today: diagnosis kit + Developer warmup + the `ExcelHost` port|Must stay installable. Gates green before any push. **Core changes go here and only here**|
-|`windows/trusted-catalog-pilot`|`main` + the opt-in Trusted Catalog channel (7 files, no binary). Unverified until a Windows PC runs the pilot|Rebase onto `main`, never the reverse. Merges into `main` only after the pilot passes on a real LTSC machine|
-|`adapter/xll-host`|`main` + the non-WEF host track: the pane-side wire an in-process XLL would speak, and the dispatch table its `.NET` side owes|Rebase onto `main`. Merges only after the XLL spike passes on a real machine. Until then it is a bet, however green its tests are|
+|`main`|The version that deploys today: local HTTPS service + Developer registration + embedded-workbook activation|Must stay installable. Gates green before any push. **All product changes land here**|
+|`windows/trusted-catalog-pilot`|Closed failed acquisition experiment|Do not merge; retain only until its remaining evidence is recovered|
+|`origin/adapter/xll-host`|Closed native-host experiment|Do not revive or merge without a new explicit product decision|
 
-A change that belongs to the product — pane, formula, excel, ai — is a `main` change even
-when you noticed it on a derived branch: land it on `main`, then rebase the branch. That is
-why the host port is on `main` rather than on an adapter branch: stages 1–2 are kept
-whatever the pilot decides, so holding them aside only starved `main` of the seam. A second
-adapter branch gets cut when stage 3 has a Windows machine to run on, not before.
-`WEF-ACQUISITION.md` holds the decision rule for which channel ends up winning.
+The `ExcelHost` port remains on `main` because isolation and testability are useful regardless
+of deployment channel. `WEF-ACQUISITION.md` holds the current A→B→C experiment and rollback
+rules.
 
 **Never commit a build artifact.** `addin/release/*.zip` is 36 MB of `dist` plus a pinned
 Node runtime; 38 committed revisions of it were 1.27 GiB of a 1.3 GiB repository and made
@@ -100,7 +97,7 @@ Exports by domain: taskpane 156, excel 103, ai 103, formula 25. ~15.4k LOC of no
 - **`any` and `!` are lint errors.** `noExplicitAny`, `noNonNullAssertion` both error.
 - TypeScript is maximally strict: `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`,
   `noPropertyAccessFromIndexSignature`, `useUnknownInCatchVariables`, `verbatimModuleSyntax`.
-- Tests sit **beside** their source as `*.test.ts` — no `__tests__/` directory. 63 test files;
+- Tests sit **beside** their source as `*.test.ts` — no `__tests__/` directory. 67 test files;
   17 opt into happy-dom, only 3 use `vi.mock` (`chatting`, `chat-workbook`,
   `chat-evidence-integration`).
 - `*.eval.test.ts` is a separate species: real network, real model, gated on `XMUX_EVAL=1`.
@@ -138,7 +135,7 @@ Exports by domain: taskpane 156, excel 103, ai 103, formula 25. ~15.4k LOC of no
 cd addin && pnpm install
 pnpm dev                  # bare vite: HTTPS dev server on :3927, certs auto-trusted
 pnpm manifest:dev         # regenerate manifest.xml — `pnpm dev` does NOT do this
-pnpm test                 # vitest run — 63 test files, never hits the network
+pnpm test                 # vitest run — 67 test files, never hits the network
 XMUX_EVAL=1 pnpm test src/eval   # real model, real quota; appends probes/eval/runs/*.jsonl
 pnpm vendor:office        # vendor office-js locally; `pnpm build` runs it first
 pnpm typecheck            # tsc --noEmit

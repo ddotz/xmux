@@ -137,11 +137,10 @@ the same LTSC target. Case-by-case verdicts and the response playbook live in
 * Operator-reported (not kit-captured): (a) after a failed first Add, restarting Excel
   *without* opening the error view and re-Adding still fails; (b) exporting the post-warmup
   registry + WEF cache and replaying it onto a clean profile, then Adding, still fails.
-* Conclusion: the enabling state lives in Excel **process memory** — opening the Office
-  Add-ins error dialog initializes an in-process catalog/identity subsystem, and only that
-  session's re-Add succeeds. No registry/cache pre-seed can substitute; the warmup wizard
-  is a mitigation, not a root fix. The Trusted Catalog candidate subsequently failed too (F10),
-  so the remaining product path is outside WEF.
+* Conclusion: the enabling state for the tested **Add acquisition** lives in Excel process
+  memory — opening the Office Add-ins error dialog initializes an in-process catalog/identity
+  subsystem, and only that session's re-Add succeeds. No registry/cache pre-seed can substitute.
+  This does not test a workbook-embedded webextension reference that bypasses Add acquisition.
 
 ## F10 — Per-user Trusted Catalog did not recover acquisition on the LTSC target
 
@@ -149,5 +148,19 @@ Operator-reported on 2026-09-01 using prerelease `v1.13.2-catalog.1`: the Truste
 pilot failed on the same Office LTSC target. Detailed failure-stage capture has not yet been
 returned, so this result closes the end-to-end candidate without claiming whether Office
 rejected catalog discovery, manifest acquisition, or activation internally. It is sufficient
-for the channel decision: do not merge the pilot into `main`; proceed with the non-WEF XLL
-host and retain Developer warmup only as the existing temporary WEF fallback.
+for the channel decision at the time, but it does not prove that WEF document insertion fails:
+both tested channels still ended at the Office Add-ins dialog's Add action.
+
+## F11 — Embedded webextension insertion is a distinct, unjudged WEF path
+
+Microsoft's `office-addin-dev-settings sideload` creates an Excel workbook containing
+`xl/webextensions/webextension.xml` with `store="developer" storeType="Registry"`, plus a
+visible task-pane declaration. Opening that document does not ask the user to select the add-in
+and press Add. The Windows installer now generates the same OOXML shape and uses a fresh
+`GET /index.html -> 200` as its activation boundary.
+
+This is an implementation-grounded hypothesis, not target-PC evidence. If direct document
+insertion fails, the installer automates the measured F9 dialog warmup with
+`ExecuteMso("OfficeExtensionsDialog")` and reopens the embedded workbook in the same Excel
+process. `DisableOmexCatalogs=1` is available only as a separately owned and reversible A/B
+experiment. None of these three paths has yet been judged on the LTSC target.

@@ -181,18 +181,23 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\install.ps1
 The installer creates a current-user trusted `localhost` certificate and login startup entry,
 then starts the HTTPS service on loopback. The service creates the Office developer registration
 only after both loopback listeners are ready, repairs later Office deletion, and removes its value
-before stopping so Excel never loads a manifest against a dead endpoint. It then opens a one-time Office
-initializer. On the measured LTSC 2024 cold profile, the first Developer Add stopped before
-`SourceLocation`; opening and closing Office's error view and adding the same manifest again
-made the pane load. The initializer guides that sequence, restores the Developer registration
-after Office closes, and records completion only for the WEF cache generation that loaded the
-pane.
+before stopping so Excel never loads a manifest against a dead endpoint.
+
+Instead of asking the user to acquire the add-in through **Office Add-ins → Add**, the installer
+generates `%LOCALAPPDATA%\DdotExcel\땡땡엑셀 시작.xlsx`. Its embedded webextension points directly
+to the current-user Developer registry and declares the task pane visible. The installer opens
+that workbook automatically and accepts success only after a fresh `GET /index.html -> 200`.
+If direct insertion does not respond, it opens `OfficeExtensionsDialog` by COM, closes the modal,
+and reopens the embedded workbook in the same Excel process. This replaces the old five-step
+manual warmup; both automatic paths still require live validation on the target LTSC machine.
 
 From the extracted package, use `.\scripts\manage.ps1 status|start|stop|restart` to control
 the service. Run `.\scripts\uninstall.ps1` from a normal PowerShell window to remove only
-the process, certificate, Office registration, startup entry, and files owned by 땡땡엑셀.
-The double-clickable installer menu exposes the same operations plus a first-run
-initialization retry.
+the process, certificate, Office registration, startup entry, files, and any Store policy value
+owned by 땡땡엑셀. The double-clickable menu can reopen the embedded workbook and exposes an
+explicit `DisableOmexCatalogs` experiment. That experiment blocks only Office Store lookup for
+the current user, records the previous value, and restores it on uninstall; it never changes the
+broader Office connected-experience policies.
 
 ### Sideload on Windows desktop Excel
 

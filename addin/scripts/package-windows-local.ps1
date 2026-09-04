@@ -110,6 +110,12 @@ try {
         (Join-Path $scriptsRoot "initialize.ps1"),
         (($initialize -replace "`r`n", "`n") -replace "`n", "`r`n"),
         [Text.UTF8Encoding]::new($true))
+    $bootstrapGenerator = [IO.File]::ReadAllText(
+        (Join-Path $PSScriptRoot "create-wef-bootstrap-workbook.ps1"))
+    [IO.File]::WriteAllText(
+        (Join-Path $scriptsRoot "create-bootstrap.ps1"),
+        (($bootstrapGenerator -replace "`r`n", "`n") -replace "`n", "`r`n"),
+        [Text.UTF8Encoding]::new($true))
     Copy-Item `
         -LiteralPath (Join-Path $PSScriptRoot "install-windows-local.ps1") `
         -Destination (Join-Path $scriptsRoot "install.ps1")

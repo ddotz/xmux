@@ -53,7 +53,8 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 | `run-wef-investigation.ps1` | Korean one-menu runner for product, minimal, and trusted-catalog WEF acquisition cases |
 | `analyze-wef-run.ps1` | evidence-backed automatic verdict/report for standard and trusted-catalog capture folders |
 | `menu-wef-investigation.bat` | UTF-8 Windows launcher for the standalone WEF investigation kit |
-| `initialize-windows-local.ps1` | one-time LTSC WEF initializer: measured Developer error-view warmup, fresh-request check, WEF-cache-bound marker |
+| `initialize-windows-local.ps1` | opens an embedded Developer-registry workbook without Add acquisition; falls back to automated `OfficeExtensionsDialog` warmup and verifies a fresh request |
+| `create-wef-bootstrap-workbook.ps1` | emits the official 8-part OOXML task-pane sideload shape with the installed manifest ID/version; no binary template |
 | `vendor-office-js.mjs` | copies office.js + Excel desktop host bundles + en-us/ko-kr strings into `public/office/` (gitignored); runs ahead of both `dev` and `build` |
 | `local-server.mjs` | standalone HTTPS static server; `--root --host --port --cert --key --pfx --passphrase-file --ready-file --pid-file --wef-guid --wef-manifest` |
 | `sideload-mac.sh` | copies `manifest.xml` into Excel's container `wef/`, drops legacy `xmux.manifest.xml` |
@@ -65,7 +66,7 @@ Repo-wide rules live in `../AGENTS.md`. This file covers only what's specific to
 
 ## TESTS
 
-- 63 `*.test.ts` files, node environment by default; 17 opt in via
+- 67 `*.test.ts` files, node environment by default; 17 opt in via
   `// @vitest-environment happy-dom` (DOM-touching `taskpane/` files plus `ai/plan.test.ts`).
 - Excel is never mocked as a global. Tests hand fake context/range objects to the generic
   `excel/` functions. `vi.mock` appears in three files only (`chatting.test.ts`,
